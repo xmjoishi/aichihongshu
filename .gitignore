@@ -1,0 +1,32 @@
+# git ignore 规则
+
+# 原始抓取数据（体积大、含用户信息）
+data/crawl/
+data/analysis/
+
+# 数据库文件
+data/app.db
+data/*.db
+
+# 环境变量
+.env
+
+# 图库图片（体积大，不入 git）
+assets/*
+!assets/.gitkeep
+
+# MediaCrawler 运行时数据
+tools/MediaCrawler/data/
+tools/MediaCrawler/browser_data/
+tools/MediaCrawler/.env
+tools/MediaCrawler/logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# macOS
+.DS_Store

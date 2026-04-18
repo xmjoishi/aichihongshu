@@ -1,0 +1,27 @@
+/* RedNote Home Assistant — Global Styles (Tailwind v4) */
+@import "tailwindcss";
+
+@theme {
+  --color-brand: #ff2442;
+  --color-brand-light: #ff6b81;
+  --color-surface: #fafafa;
+  --color-surface-2: #f4f4f5;
+  --radius-card: 12px;
+  --font-sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-surface);
+}
+
+/* scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: #a1a1aa; }
+
+/* HDR 显示控制：data-hdr="off" 时对所有 img 应用 SDR 压缩 filter */
+:root[data-hdr="off"] img {
+  filter: brightness(0.88) saturate(0.92);
+}
