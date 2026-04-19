@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { api } from "../lib/api";
 
 export interface AIMessage {
@@ -12,16 +12,47 @@ interface UseAIStreamOptions {
   systemExtra?: string;
 }
 
+function storageKey(noteId?: number) {
+  return noteId != null ? `ai-history-note-${noteId}` : null;
+}
+
+function loadHistory(noteId?: number): AIMessage[] {
+  const key = storageKey(noteId);
+  if (!key) return [];
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as AIMessage[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(noteId: number | undefined, msgs: AIMessage[]) {
+  const key = storageKey(noteId);
+  if (!key) return;
+  try {
+    sessionStorage.setItem(key, JSON.stringify(msgs));
+  } catch {}
+}
+
 /**
  * SSE 流式 AI 对话 Hook
  * 返回消息列表、流式输出中的 pending 文本、发送函数、加载状态和清空函数
  */
 export function useAIStream(opts: UseAIStreamOptions = {}) {
-  const [messages, setMessages] = useState<AIMessage[]>([]);
+  const [messages, setMessages] = useState<AIMessage[]>(() => loadHistory(opts.noteId));
   const [streaming, setStreaming] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
+
+  // noteId 切换时从 sessionStorage 恢复历史
+  useEffect(() => {
+    setMessages(loadHistory(opts.noteId));
+    setStreaming("");
+    setLoading(false);
+    setError(null);
+  }, [opts.noteId]);
 
   const send = useCallback(
     (userText: string) => {
@@ -31,6 +62,7 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
       const userMsg: AIMessage = { role: "user", content: userText };
       const newMessages = [...messages, userMsg];
       setMessages(newMessages);
+      saveHistory(opts.noteId, newMessages);
       setStreaming("");
       setLoading(true);
 
@@ -52,10 +84,11 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
         },
         () => {
           // done
-          setMessages((prev) => [
-            ...prev,
-            { role: "assistant", content: buffer },
-          ]);
+          setMessages((prev) => {
+            const updated = [...prev, { role: "assistant" as const, content: buffer }];
+            saveHistory(opts.noteId, updated);
+            return updated;
+          });
           setStreaming("");
           setLoading(false);
         },
@@ -74,7 +107,8 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
     setStreaming("");
     setLoading(false);
     setError(null);
-  }, []);
+    saveHistory(opts.noteId, []);
+  }, [opts.noteId]);
 
   const abort = useCallback(() => {
     ctrlRef.current?.abort();

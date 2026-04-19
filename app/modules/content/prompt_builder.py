@@ -171,10 +171,12 @@ def build_draft_prompt(
     reference: Optional[ReferenceAccount] = None,
     my_profile: Optional[dict] = None,
     extra_instructions: str = "",
+    knowledge_ctx: Optional[dict] = None,
 ) -> str:
     """
     为指定物品构建笔记创作 prompt。
     my_profile: 来自 my_profile 表的 dict（优先于硬编码 persona）。
+    knowledge_ctx: 经验库上下文，由 build_knowledge_ctx() 生成。
     """
     # ── 物品信息块 ──
     analysis = {}
@@ -199,6 +201,9 @@ def build_draft_prompt(
         item_block += f"- 小红书卖点：{'  /  '.join(selling_points)}\n"
     if pairing:
         item_block += f"- 搭配建议：{pairing}\n"
+
+    # ── 经验库上下文块 ──
+    knowledge_block = _build_knowledge_block(knowledge_ctx)
 
     # ── 榜样账号风格块 ──
     if reference:
@@ -259,7 +264,7 @@ def build_draft_prompt(
 
     extra = f"\n## 补充要求\n{extra_instructions}\n" if extra_instructions else ""
 
-    return item_block + style_block + extra + task_block
+    return item_block + knowledge_block + style_block + extra + task_block
 
 
 def build_multi_draft_prompt(
@@ -267,6 +272,7 @@ def build_multi_draft_prompt(
     reference: Optional[ReferenceAccount] = None,
     my_profile: Optional[dict] = None,
     extra_instructions: str = "",
+    knowledge_ctx: Optional[dict] = None,
 ) -> str:
     """
     将多个物品合并成一个笔记的创作 Prompt。
@@ -359,7 +365,8 @@ def build_multi_draft_prompt(
 
     extra = f"\n## 补充要求\n{extra_instructions}\n" if extra_instructions else ""
 
-    return items_block + style_block + extra + task_block
+    knowledge_block = _build_knowledge_block(knowledge_ctx)
+    return items_block + knowledge_block + style_block + extra + task_block
 
 
 def build_topic_prompt(
@@ -453,3 +460,50 @@ def build_style_analysis_prompt(account_notes: list) -> str:
   "可学之处": "（最值得本账号参考的 1-2 点）"
 }}
 只返回 JSON，不要其他说明。"""
+
+
+# ──────────────────────────────────────────────────────────────
+# 经验库上下文块（内部辅助）
+# ──────────────────────────────────────────────────────────────
+
+def _build_knowledge_block(knowledge_ctx: Optional[dict]) -> str:
+    """将 knowledge_ctx dict 转换为 prompt 段落。无数据时返回空字符串。"""
+    if not knowledge_ctx:
+        return ""
+
+    lines = []
+
+    rules = knowledge_ctx.get("rules") or []
+    my_samples = knowledge_ctx.get("my_samples") or []
+    ref_samples = knowledge_ctx.get("ref_samples") or []
+    inspirations = knowledge_ctx.get("inspirations") or []
+
+    if not any([rules, my_samples, ref_samples, inspirations]):
+        return ""
+
+    lines.append("\n## 经验库上下文（基于历史数据沉淀，创作时请优先参考）")
+
+    if rules:
+        lines.append("\n**互动规律**（来自已发布笔记统计）：")
+        for r in rules[:5]:
+            lines.append(f"  ▸ {r}")
+
+    if my_samples:
+        lines.append("\n**我的高赞笔记参考**（学习自己的语气和结构，不要照抄）：")
+        for s in my_samples[:3]:
+            preview = s.get("body_preview", "")
+            lines.append(f"  ▸ 《{s['title']}》（赞 {s['likes']}）{f'  ——  {preview}…' if preview else ''}")
+
+    if ref_samples:
+        lines.append("\n**榜样笔记参考**（学习对标账号的表达方式）：")
+        for s in ref_samples[:3]:
+            preview = s.get("body_preview", "")
+            lines.append(f"  ▸ [{s['account']}]《{s['title']}》（赞 {s['likes']}）{f'  ——  {preview}…' if preview else ''}")
+
+    if inspirations:
+        lines.append("\n**选题灵感方向**（可结合物品特点使用）：")
+        for insp in inspirations[:3]:
+            lines.append(f"  ▸ {insp}")
+
+    lines.append("")
+    return "\n".join(lines)

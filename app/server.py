@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.db.connection import init_db
-from app.routers import library, content, profile, accounts, analytics, ai, crawler, settings
+from app.routers import library, content, profile, accounts, analytics, ai, crawler, settings, knowledge
 
 # ── 初始化 ──────────────────────────────────────────────────────────────────
 init_db()
@@ -48,6 +48,7 @@ app.include_router(analytics.router)
 app.include_router(ai.router)
 app.include_router(crawler.router)
 app.include_router(settings.router)
+app.include_router(knowledge.router)
 
 
 # ── 静态资源（图库图片）────────────────────────────────────────────────────

@@ -60,6 +60,8 @@ def get_note(note_id: int) -> Optional[Note]:
 def list_notes(
     status: Optional[str] = None,
     item_id: Optional[int] = None,
+    search: Optional[str] = None,
+    sort: Optional[str] = None,   # "created_desc" | "created_asc" | "updated_desc" | "title_asc"
 ) -> List[Note]:
     conn = get_db()
     try:
@@ -71,7 +73,17 @@ def list_notes(
         if item_id:
             sql += " AND item_id=?"
             params.append(item_id)
-        sql += " ORDER BY created_at DESC"
+        if search:
+            sql += " AND (title LIKE ? OR body LIKE ? OR tags LIKE ?)"
+            q = f"%{search}%"
+            params.extend([q, q, q])
+        order = {
+            "created_asc":    "created_at ASC",
+            "updated_desc":   "updated_at DESC",
+            "title_asc":      "title ASC",
+            "published_desc": "COALESCE(published_at, updated_at) DESC",
+        }.get(sort or "", "created_at DESC")
+        sql += f" ORDER BY {order}"
         rows = conn.execute(sql, params).fetchall()
         return [_row_to_note(r) for r in rows]
     finally:
@@ -98,25 +110,63 @@ def update_note_content(
     body: Optional[str] = None,
     tags: Optional[List[str]] = None,
     cover_desc: Optional[str] = None,
+    item_ids: Optional[List[int]] = None,
+    note_type: Optional[str] = None,
+    video_path: Optional[str] = None,
 ) -> Note:
     note = get_note(note_id)
     if not note:
         raise ValueError(f"笔记 ID {note_id} 不存在")
+    primary_id = item_ids[0] if item_ids else None
     conn = get_db()
     try:
+        # 构建动态 SET 子句
+        sets = [
+            "title=COALESCE(?, title)",
+            "body=COALESCE(?, body)",
+            "tags=COALESCE(?, tags)",
+            "cover_desc=COALESCE(?, cover_desc)",
+            "updated_at=datetime('now','localtime')",
+        ]
+        params: list = [
+            title, body,
+            json.dumps(tags, ensure_ascii=False) if tags is not None else None,
+            cover_desc,
+        ]
+        if item_ids is not None:
+            sets.insert(4, "item_id=?")
+            sets.insert(5, "item_ids=?")
+            params += [primary_id, json.dumps(item_ids, ensure_ascii=False)]
+        if note_type is not None:
+            sets.insert(-1, "note_type=?")
+            params.insert(-0 if not item_ids else 0, note_type)
+            # 追加到末尾前插入
+            params = params[:-0] + [note_type] if not item_ids else params
+        if video_path is not None:
+            sets.insert(-1, "video_path=?")
+        params.append(note_id)
+
+        # 简化写法：直接全字段更新
         conn.execute(
             """UPDATE notes SET
                title=COALESCE(?, title),
                body=COALESCE(?, body),
                tags=COALESCE(?, tags),
                cover_desc=COALESCE(?, cover_desc),
+               item_id=COALESCE(?, item_id),
+               item_ids=COALESCE(?, item_ids),
+               note_type=COALESCE(?, note_type),
+               video_path=COALESCE(?, video_path),
                updated_at=datetime('now','localtime')
                WHERE id=?""",
             (
-                title,
-                body,
+                title, body,
                 json.dumps(tags, ensure_ascii=False) if tags is not None else None,
                 cover_desc,
+                primary_id if item_ids is not None else None,
+                json.dumps(item_ids, ensure_ascii=False) if item_ids is not None else None,
+                note_type,
+                video_path,
                 note_id,
             ),
         )

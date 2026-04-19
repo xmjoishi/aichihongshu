@@ -95,14 +95,22 @@ function XhsProfileCard({ profile, onRefresh, refreshing }: {
               </div>
             )}
           </div>
-          <button onClick={onRefresh} disabled={refreshing} title="重新抓取小红书主页数据"
-            className="flex items-center gap-1.5 text-xs border border-zinc-200 px-3 py-1.5
-                       rounded-full text-zinc-500 hover:bg-zinc-50 hover:border-zinc-300
-                       disabled:opacity-50 transition-colors"
-          >
-            <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
-            {refreshing ? "抓取中..." : "刷新数据"}
-          </button>
+          <div className="relative group">
+            <button onClick={onRefresh} disabled={refreshing}
+              className="flex items-center gap-1.5 text-xs border border-zinc-200 px-3 py-1.5
+                         rounded-full text-zinc-500 hover:bg-zinc-50 hover:border-zinc-300
+                         disabled:opacity-50 transition-colors"
+            >
+              <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
+              {refreshing ? "抓取中..." : "同步小红书"}
+            </button>
+            {/* Tooltip */}
+            <div className="absolute right-0 top-full mt-2 w-56 bg-zinc-800 text-white text-xs rounded-xl px-3 py-2 leading-relaxed
+                            opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150 z-50 shadow-lg">
+              <p className="font-medium mb-0.5">🕷️ 重新爬取小红书主页</p>
+              <p className="text-zinc-300">调用爬虫抓取最新粉丝数、简介、笔记互动数据，并同步到本地数据库。需要浏览器已登录。</p>
+            </div>
+          </div>
         </div>
 
         {/* 姓名 + IP */}
@@ -110,7 +118,7 @@ function XhsProfileCard({ profile, onRefresh, refreshing }: {
           <div>
             <h3 className="text-base font-bold text-zinc-900">{name}</h3>
             {profile.account_id && (
-              <p className="text-xs text-zinc-400">小红书号：{profile.account_id}</p>
+              <p className="text-xs text-zinc-400 font-mono select-all">账号 ID：{profile.account_id}</p>
             )}
           </div>
           {profile.ip_location && (
@@ -133,20 +141,26 @@ function XhsProfileCard({ profile, onRefresh, refreshing }: {
 
         {/* 简介 */}
         {(profile.xhs_bio || profile.persona_bio) && (
-          <p className="text-sm text-zinc-600 leading-relaxed mb-3 line-clamp-3">
+          <p className="text-sm text-zinc-600 leading-relaxed mb-3 whitespace-pre-wrap">
             {profile.xhs_bio || profile.persona_bio}
           </p>
         )}
 
         {/* 数据栏 */}
-        <div className="flex items-center gap-4 pt-3 border-t border-zinc-50">
-          <StatItem icon={<Users size={13} />} label="粉丝" value={fmtNum(profile.followers)} />
-          <StatItem icon={<Users size={13} />} label="关注" value={fmtNum(profile.xhs_follows)} />
-          <StatItem icon={null} label="笔记" value={fmtNum(profile.total_notes)} />
-          <div className="flex-1" />
-          <StatItem icon={<Heart size={13} className="text-[#ff2442]" />} label="均赞" value={fmtNum(profile.avg_likes)} small />
-          <StatItem icon={<MessageCircle size={13} className="text-zinc-400" />} label="均评" value={fmtNum(profile.avg_comments)} small />
-          <StatItem icon={<Bookmark size={13} className="text-amber-400" />} label="均藏" value={fmtNum(profile.avg_collects)} small />
+        <div className="pt-3 border-t border-zinc-50 space-y-2">
+          <div className="flex items-center gap-4">
+            <StatItem icon={<Users size={13} />} label="粉丝" value={fmtNum(profile.followers)} />
+            <StatItem icon={<Users size={13} />} label="关注" value={fmtNum(profile.xhs_follows)} />
+            <StatItem icon={null} label="笔记" value={fmtNum(profile.total_notes)} />
+            <div className="flex-1" />
+            <StatItem icon={<Heart size={13} className="text-[#ff2442]" />} label="总获赞" value={fmtNum(profile.total_likes)} small />
+            <StatItem icon={<Bookmark size={13} className="text-amber-400" />} label="总收藏" value={fmtNum(profile.total_collects)} small />
+          </div>
+          <div className="flex items-center justify-end gap-4">
+            <StatItem icon={<Heart size={13} className="text-[#ff2442]" />} label="均赞" value={fmtNum(profile.avg_likes)} small />
+            <StatItem icon={<MessageCircle size={13} className="text-zinc-400" />} label="均评" value={fmtNum(profile.avg_comments)} small />
+            <StatItem icon={<Bookmark size={13} className="text-amber-400" />} label="均藏" value={fmtNum(profile.avg_collects)} small />
+          </div>
         </div>
 
         {profile.crawled_at && (
@@ -166,6 +180,7 @@ const inputCls =
 const textareaCls = `${inputCls} resize-y`;
 
 interface EditForm {
+  account_id: string;
   display_name: string;
   niche: string;
   target_audience: string;
@@ -183,6 +198,7 @@ interface EditForm {
 
 function profileToForm(p: ProfileType): EditForm {
   return {
+    account_id: p.account_id ?? "",
     display_name: p.display_name ?? "",
     niche: p.niche ?? "",
     target_audience: p.target_audience ?? "",
@@ -307,6 +323,7 @@ export default function ProfilePage() {
     mutationFn: () => {
       if (!form) throw new Error("no form");
       return api.patch("/api/profile/", {
+        account_id: form.account_id || undefined,
         display_name: form.display_name || undefined,
         niche: form.niche || undefined,
         target_audience: form.target_audience || undefined,
@@ -382,19 +399,6 @@ export default function ProfilePage() {
               <>
                 {/* 小红书名片 */}
                 <XhsProfileCard profile={profile} onRefresh={handleRefresh} refreshing={refreshing} />
-
-                {/* 账号数据补充 */}
-                <Section title="账号数据">
-                  <Field label="账号 ID" value={profile.account_id} />
-                  <Field label="粉丝数" value={profile.followers} />
-                  <Field label="关注数" value={profile.xhs_follows} />
-                  <Field label="已发笔记" value={profile.total_notes} />
-                  <Field label="IP 归属地" value={profile.ip_location} />
-                  <Field label="小红书简介" value={profile.xhs_bio} />
-                  {(profile.xhs_tags ?? []).length > 0 && (
-                    <Chips label="账号标签" items={profile.xhs_tags} />
-                  )}
-                </Section>
               </>
             )}
 
@@ -478,23 +482,13 @@ export default function ProfilePage() {
               <>
                 <FormSection title="账号信息">
                   <p className="text-xs text-zinc-400 mb-4">
-                    以下字段与小红书个人详情页保持一致，可通过「刷新数据」自动同步，也可手动修改。
+                    账号 ID 是小红书系统分配的十六进制用户 ID（非小红书号），用于爬虫同步。
+                    头像、简介、粉丝数等字段由爬虫自动同步，切换到「账号信息」只读视图后点击「同步小红书」更新。
                   </p>
-                  <EditField label="账号显示名">
-                    <input type="text" value={form.display_name}
-                      onFocus={() => { focusedFieldRef.current = "display_name"; }}
-                      onChange={(e) => setField("display_name", e.target.value)}
-                      placeholder="小红书页面上显示的名字"
-                      className={inputCls} />
-                  </EditField>
-                  <EditField label="粉丝数">
-                    <input type="number" value={form.followers}
-                      onChange={(e) => setField("followers", e.target.value)}
-                      className={inputCls} />
-                  </EditField>
-                  <EditField label="发帖节奏" hint="例：每周2篇，周三/周六">
-                    <input type="text" value={form.posting_rhythm}
-                      onChange={(e) => setField("posting_rhythm", e.target.value)}
+                  <EditField label="账号 ID" hint="小红书系统 ID，非小红书号">
+                    <input type="text" value={form.account_id ?? ""}
+                      onChange={(e) => setField("account_id", e.target.value)}
+                      placeholder="671ba42b000000001d033de2"
                       className={inputCls} />
                   </EditField>
                 </FormSection>
@@ -502,7 +496,7 @@ export default function ProfilePage() {
                 <div className="flex items-center gap-2 p-4 bg-zinc-50 rounded-xl border border-zinc-100">
                   <Edit3 size={14} className="text-zinc-400 shrink-0" />
                   <p className="text-xs text-zinc-500">
-                    头像、IP 归属地、账号标签、简介等字段由爬虫自动同步，切换到「账号信息」只读视图后点击「刷新数据」更新。
+                    发帖节奏、垂类定位等运营策略字段在「人设信息」标签页中编辑。
                   </p>
                 </div>
               </>

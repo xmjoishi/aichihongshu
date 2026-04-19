@@ -37,7 +37,9 @@ CREATE TABLE IF NOT EXISTS reference_accounts (
     top_notes       TEXT DEFAULT '[]',     -- TOP 笔记摘要（JSON 数组）
     raw_data        TEXT,                  -- 原始爬取数据（JSON）
     crawled_at      TEXT DEFAULT (datetime('now', 'localtime')),
-    analyzed_at     TEXT
+    analyzed_at     TEXT,
+    insights        TEXT DEFAULT NULL,     -- AI 生成的学习要点（Markdown，缓存）
+    insights_at     TEXT DEFAULT NULL      -- 学习要点生成时间
 );
 
 -- 笔记草稿表
@@ -88,6 +90,8 @@ CREATE TABLE IF NOT EXISTS my_profile (
     -- 账号现有数据
     followers       INTEGER DEFAULT 0,
     total_notes     INTEGER DEFAULT 0,
+    total_likes     INTEGER DEFAULT 0,     -- 总获赞（爬虫缓存）
+    total_collects  INTEGER DEFAULT 0,     -- 总收藏（爬虫缓存）
     avg_likes       REAL DEFAULT 0,
     avg_comments    REAL DEFAULT 0,
     avg_collects    REAL DEFAULT 0,
@@ -106,5 +110,15 @@ CREATE TABLE IF NOT EXISTS my_profile (
     -- 元信息
     created_at      TEXT DEFAULT (datetime('now', 'localtime')),
     updated_at      TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+-- 提示词配置表（快捷操作 prompt，可在设置中编辑）
+CREATE TABLE IF NOT EXISTS prompt_configs (
+    key         TEXT PRIMARY KEY,   -- 唯一标识，如 "quick_title"
+    label       TEXT NOT NULL,      -- 按钮显示名，如 "生成标题"
+    prompt      TEXT NOT NULL,      -- prompt 文本
+    sort_order  INTEGER DEFAULT 0,  -- 排列顺序
+    enabled     INTEGER DEFAULT 1,  -- 1=启用, 0=禁用
+    updated_at  TEXT DEFAULT (datetime('now', 'localtime'))
 );
 """

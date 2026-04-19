@@ -26,11 +26,14 @@ export interface Note {
   cover_desc?: string;
   prompt_used?: string;
   status: "draft" | "ready" | "published";
+  note_type: "text" | "image" | "video";  // 发布类型
+  video_path?: string;
   published_at?: string;
   note_url?: string;
   likes: number;
   comments: number;
   collects: number;
+  use_as_reference?: boolean;
   created_at?: string;
   updated_at?: string;
 }
@@ -63,6 +66,9 @@ export interface Profile {
   xhs_tags: string[];
   crawled_at?: string;
   updated_at?: string;
+  // 动态计算（来自已发布 notes）
+  total_likes?: number;
+  total_collects?: number;
 }
 
 export interface ReferenceAccount {
@@ -70,11 +76,18 @@ export interface ReferenceAccount {
   account_id: string;
   name?: string;
   followers: number;
+  total_likes?: number;
   note_count: number;
   avg_likes: number;
   avg_comments: number;
   avg_collects: number;
+  content_style?: string;   // JSON 字符串，包含 keywords/tone/format/hook/summary
   top_notes: Array<{ title: string; likes: number; url?: string }>;
+  raw_data?: string;
+  crawled_at?: string;
+  analyzed_at?: string;
+  insights?: string;        // AI 生成的学习要点（Markdown）
+  insights_at?: string;
 }
 
 export interface Analytics {
@@ -86,5 +99,99 @@ export interface Analytics {
   };
   accounts: { total: number };
   my_profile: Partial<Profile>;
-  top_notes: Array<{ id: number; title: string; likes: number; item_title: string }>;
+  top_notes: Array<{ id: number; title: string; likes: number; item_title: string; note_url?: string }>;
+  suggestions?: {
+    items_without_notes: number;
+    days_since_publish: number | null;
+    draft_count: number;
+  };
+}
+
+export interface AnalyticsNote {
+  id: number;
+  title?: string;
+  likes: number;
+  comments: number;
+  collects: number;
+  published_at?: string;
+  note_url?: string;
+  cover_desc?: string;
+  cover_image?: string;
+  engagement_rate: number;
+}
+
+export interface TitleLengthBucket {
+  range: string;
+  avg_likes: number;
+  count: number;
+}
+
+export interface HourDist {
+  hour: number;
+  avg_likes: number;
+  count: number;
+}
+
+export interface TagFreq {
+  tag: string;
+  count: number;
+  avg_likes: number;
+}
+
+export interface Insights {
+  title_length_dist: TitleLengthBucket[];
+  hour_dist: HourDist[];
+  tag_freq: TagFreq[];
+  comparison: {
+    mine: { avg_likes: number; avg_comments: number; avg_collects: number };
+    reference: { avg_likes: number; avg_comments: number; avg_collects: number };
+  };
+}
+
+// ── 经验库 ────────────────────────────────────────────────────────────────────
+
+export interface KnowledgeRule {
+  key: string;
+  label: string;
+  desc: string;
+  value: string;
+  enabled: boolean;
+}
+
+export interface KnowledgeMySample {
+  id: number;
+  title?: string;
+  body?: string;
+  body_preview: string;
+  tags: string[];
+  likes: number;
+  comments: number;
+  collects: number;
+  published_at?: string;
+  note_url?: string;
+  use_as_reference: boolean;
+}
+
+export interface KnowledgeRefNote {
+  title: string;
+  body: string;
+  likes: number;
+  note_url?: string;
+}
+
+export interface KnowledgeRefGroup {
+  account_id: string;
+  name: string;
+  notes: KnowledgeRefNote[];
+}
+
+export interface KnowledgeInspiration {
+  id: number;
+  title: string;
+  keyword?: string;
+  source: "ai" | "crawl" | "manual";
+  likes_ref: number;
+  note_ref?: string;
+  saved: number;
+  created_at: string;
 }

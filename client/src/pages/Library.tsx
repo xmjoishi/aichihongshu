@@ -35,15 +35,19 @@ export default function Library() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { imgStyle } = useHDRSetting();
+  // hdr 必须解构（即使不直接使用），变化时会触发组件重渲染，imgStyle() 才能读到最新值
+  const { hdr: _hdr, imgStyle } = useHDRSetting();
   const [selected, setSelected] = useState<Item | null>(null);
   const [multiSelected, setMultiSelected] = useState<Set<number>>(new Set());
   const [draftingMulti, setDraftingMulti] = useState(false);
   const [filterTag, setFilterTag] = useState("");
+  const [filterUnanalyzed, setFilterUnanalyzed] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [page, setPage] = useState(0);
-  const [cols, setCols] = useState(8); // 默认小图8列
+  const [cols, setCols] = useState(8);
   const [analyzingIds, setAnalyzingIds] = useState<Set<number>>(new Set());
+  const [hoveredItem, setHoveredItem] = useState<Item | null>(null);
+  const [previewItem, setPreviewItem] = useState<Item | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const { data: items = [], isLoading } = useQuery<Item[]>({
@@ -198,12 +202,57 @@ export default function Library() {
 
   // 收集所有标签（仅当前页，做标签过滤）
   const allTags = Array.from(new Set(items.flatMap((i) => i.tags)));
+  // 客户端二次筛选：未识别
+  const visibleItems = filterUnanalyzed ? items.filter((i) => !i.analysis_raw) : items;
   const hasPrev = page > 0;
   const hasNext = items.length === PAGE_SIZE;
 
   function changeFilter(tag: string) {
     setFilterTag(tag);
+    setFilterUnanalyzed(false);
     setPage(0);
+  }
+
+  function toggleUnanalyzed() {
+    setFilterUnanalyzed((v) => !v);
+    setFilterTag("");
+    setPage(0);
+  }
+
+  function selectAll() {
+    setMultiSelected(new Set(visibleItems.map((i) => i.id)));
+  }
+
+  function invertSelection() {
+    setMultiSelected(
+      new Set(visibleItems.filter((i) => !multiSelected.has(i.id)).map((i) => i.id))
+    );
+  }
+
+  async function analyzeMulti() {
+    const ids = Array.from(multiSelected).filter(
+      (id) => !items.find((i) => i.id === id)?.analysis_raw
+    );
+    if (ids.length === 0) {
+      toast("所选图片均已识别", "success");
+      return;
+    }
+    // 加入 analyzingIds，触发轮询
+    setAnalyzingIds((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.add(id));
+      return next;
+    });
+    toast(`开始识别 ${ids.length} 张图片...`, "success");
+    // 逐个触发后端分析（后端是 background task，立即返回）
+    for (const id of ids) {
+      try {
+        await api.post(`/api/library/${id}/analyze`, {});
+      } catch {
+        // 单张失败不中断整体
+      }
+    }
+    setMultiSelected(new Set());
   }
 
   // 粘贴入库：监听全局 paste 事件，提取图片文件
@@ -237,8 +286,39 @@ export default function Library() {
     return () => document.removeEventListener("paste", handlePaste);
   }, [handlePaste]);
 
+  // 空格预览：hover 中的图片
+  const hoveredItemRef = useRef<Item | null>(null);
+  hoveredItemRef.current = hoveredItem;
+  const previewItemRef = useRef<Item | null>(null);
+  previewItemRef.current = previewItem;
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      // 如果焦点在输入框内，不拦截空格
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (previewItemRef.current) {
+          // 已经在预览 → 关闭
+          setPreviewItem(null);
+        } else if (hoveredItemRef.current) {
+          // 有 hover 的图片 → 打开预览
+          setPreviewItem(hoveredItemRef.current);
+        }
+      }
+      if (e.code === "Escape") {
+        setPreviewItem(null);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   return (
-    <div className="flex h-full">
+    <>
+      <div className="flex h-full">
       {/* Main area */}
       <div className="flex-1 flex flex-col overflow-hidden relative">
         {/* 第一行：操作栏 */}
@@ -306,13 +386,24 @@ export default function Library() {
 
         {/* 第二行：标签过滤 */}
         <div className="px-6 py-2 border-b border-zinc-100 bg-white">
-          <div className={`flex gap-2 flex-wrap ${tagsExpanded ? "" : "max-h-8 overflow-hidden"}`}>
+          <div className={`flex gap-2 flex-wrap items-center ${tagsExpanded ? "" : "max-h-8 overflow-hidden"}`}>
             <button
               onClick={() => changeFilter("")}
               className={`text-xs px-3 py-1 rounded-full transition-colors shrink-0 ${
-                filterTag === "" ? "bg-[#ff2442] text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                filterTag === "" && !filterUnanalyzed ? "bg-[#ff2442] text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
               }`}
             >全部</button>
+            {/* 未识别快捷筛选 */}
+            <button
+              onClick={toggleUnanalyzed}
+              className={`text-xs px-3 py-1 rounded-full transition-colors shrink-0 border ${
+                filterUnanalyzed
+                  ? "bg-amber-500 text-white border-amber-500"
+                  : "border-amber-300 text-amber-600 hover:bg-amber-50"
+              }`}
+            >
+              ✦ 未识别
+            </button>
             {allTags.map((t) => (
               <button key={t}
                 onClick={() => changeFilter(filterTag === t ? "" : t)}
@@ -321,6 +412,34 @@ export default function Library() {
                 }`}
               >#{t}</button>
             ))}
+            {/* 选择操作 */}
+            {visibleItems.length > 0 && (
+              <div className="flex items-center gap-1 ml-auto shrink-0">
+                <button
+                  onClick={selectAll}
+                  className="text-xs px-2.5 py-1 rounded-full bg-zinc-100 text-zinc-500 hover:bg-zinc-200 transition-colors"
+                  title="全选当前显示的图片"
+                >
+                  全选
+                </button>
+                <button
+                  onClick={invertSelection}
+                  className="text-xs px-2.5 py-1 rounded-full bg-zinc-100 text-zinc-500 hover:bg-zinc-200 transition-colors"
+                  title="反选"
+                >
+                  反选
+                </button>
+                {multiSelected.size > 0 && (
+                  <button
+                    onClick={() => { setMultiSelected(new Set()); setDeleteMultiConfirm(false); }}
+                    className="text-xs px-2.5 py-1 rounded-full bg-zinc-100 text-zinc-500 hover:bg-zinc-200 transition-colors"
+                    title="取消所有选择"
+                  >
+                    全不选
+                  </button>
+                )}
+              </div>
+            )}
           </div>
           {allTags.length > 6 && (
             <button
@@ -347,13 +466,16 @@ export default function Library() {
           ) : (
             <>
               <div className={`grid ${COLS_CLASS[cols] ?? "grid-cols-4"} gap-4`}>
-                {items.map((item) => {
+                {visibleItems.map((item) => {
                   const isMulti = multiSelected.has(item.id);
                   const isSingle = selected?.id === item.id;
+                  const isAnalyzing = analyzingIds.has(item.id);
                   return (
                     <div
                       key={item.id}
                       onClick={(e) => handleCardClick(item, e)}
+                      onMouseEnter={() => setHoveredItem(item)}
+                      onMouseLeave={() => setHoveredItem(null)}
                       className={`group cursor-pointer rounded-xl overflow-hidden border-2 transition-all relative ${
                         isSingle
                           ? "border-[#ff2442] shadow-md"
@@ -377,20 +499,29 @@ export default function Library() {
                           alt={item.title}
                           loading="lazy"
                           style={imgStyle()}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          className="w-full h-full object-cover"
                           onError={(e) => {
                             (e.target as HTMLImageElement).src =
                               "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect fill='%23f4f4f5' width='100' height='100'/%3E%3C/svg%3E";
                           }}
                         />
-                        {/* AI 识别标识 */}
-                        <div className={`absolute bottom-1 left-1 px-1.5 py-0.5 rounded text-[10px] font-medium leading-tight ${
-                          item.analysis_raw
-                            ? "bg-black/50 text-white"
-                            : "bg-zinc-800/60 text-zinc-300"
-                        }`}>
-                          {item.analysis_raw ? "AI ✓" : "未识别"}
-                        </div>
+                        {/* AI 识别标识 / analyzing 遮罩 */}
+                        {isAnalyzing ? (
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-t-xl">
+                            <div className="flex flex-col items-center gap-1.5">
+                              <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                              <span className="text-white text-[10px] font-medium">识别中</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className={`absolute bottom-1 left-1 px-1.5 py-0.5 rounded text-[10px] font-medium leading-tight ${
+                            item.analysis_raw
+                              ? "bg-black/50 text-white"
+                              : "bg-zinc-800/60 text-zinc-300"
+                          }`}>
+                            {item.analysis_raw ? "AI ✓" : "未识别"}
+                          </div>
+                        )}
                       </div>
                       <div className="p-2">
                         <p className="text-xs font-medium text-zinc-800 truncate">{item.title}</p>
@@ -472,6 +603,14 @@ export default function Library() {
                   <Sparkles size={14} />
                 )}
                 合并生成草稿
+              </button>
+              <button
+                onClick={analyzeMulti}
+                className="flex items-center gap-1.5 text-sm text-zinc-200 hover:text-white px-3 py-1.5 rounded-xl hover:bg-zinc-800 transition-colors"
+                title="批量 AI 识别未识别的图片"
+              >
+                <Sparkles size={14} className="text-amber-400" />
+                批量识别
               </button>
               <button
                 onClick={() => setDeleteMultiConfirm(true)}
@@ -611,6 +750,27 @@ export default function Library() {
         </div>
       )}
     </div>
+
+    {/* 空格预览 Lightbox */}
+    {previewItem && (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm"
+        onClick={() => setPreviewItem(null)}
+      >
+        <img
+          src={`${API_BASE}/api/library/${previewItem.id}/image`}
+          alt={previewItem.title}
+          style={imgStyle()}
+          className="max-h-[90vh] max-w-[90vw] rounded-2xl shadow-2xl object-contain"
+          onClick={(e) => e.stopPropagation()}
+        />
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/60 text-white text-xs px-4 py-1.5 rounded-full backdrop-blur-sm">
+          {previewItem.title}
+          <span className="ml-3 text-white/50">按空格或 ESC 关闭</span>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 

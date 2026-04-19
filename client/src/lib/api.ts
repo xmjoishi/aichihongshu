@@ -36,6 +36,13 @@ export const api = {
     fetch(`${API_BASE}${path}`, { method: "DELETE" })
       .then((r) => handleResponse(r, `DELETE ${path}`)),
 
+  put: (path: string, body: unknown) =>
+    fetch(`${API_BASE}${path}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then((r) => handleResponse(r, `PUT ${path}`)),
+
   upload: (path: string, formData: FormData) =>
     fetch(`${API_BASE}${path}`, { method: "POST", body: formData })
       .then((r) => handleResponse(r, `UPLOAD ${path}`)),
@@ -45,6 +52,7 @@ export const api = {
   /**
    * SSE 流式请求。每收到一行 data: {...} 就调用 onChunk(parsed)。
    * 返回 AbortController，调用 abort() 可取消。
+   * method 默认 POST，传 "GET" 时 body 参数忽略。
    */
   stream: (
     path: string,
@@ -52,16 +60,20 @@ export const api = {
     onChunk: (data: Record<string, unknown>) => void,
     onDone?: () => void,
     onError?: (err: Error) => void,
+    method: "POST" | "GET" = "POST",
   ): AbortController => {
     const ctrl = new AbortController();
     (async () => {
       try {
-        const r = await fetch(`${API_BASE}${path}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+        const fetchOpts: RequestInit = {
+          method,
           signal: ctrl.signal,
-        });
+        };
+        if (method === "POST") {
+          fetchOpts.headers = { "Content-Type": "application/json" };
+          fetchOpts.body = JSON.stringify(body);
+        }
+        const r = await fetch(`${API_BASE}${path}`, fetchOpts);
         if (!r.ok) throw new Error(`SSE ${path}: ${r.status}`);
         const reader = r.body!.getReader();
         const decoder = new TextDecoder();
@@ -90,3 +102,17 @@ export const api = {
     return ctrl;
   },
 };
+
+/**
+ * 用 Playwright Chromium（爬虫同款浏览器）打开指定 URL。
+ * 若爬虫浏览器已在运行则在其中开新标签，否则启动 Chromium 并打开。
+ * 静默调用，不抛错。
+ */
+export function openInChromium(url: string): void {
+  if (!url) return;
+  fetch(`${API_BASE}/api/crawler/open-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  }).catch(() => {/* 静默失败 */});
+}

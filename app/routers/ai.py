@@ -38,7 +38,15 @@ def _build_system(note_id: Optional[int], item_id: Optional[int], extra: Optiona
             item_row = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
             if item_row:
                 item = dict(item_row)
-                item_info = f"\n\n当前操作的图库物品：{item.get('title', '')}，风格：{item.get('style', '')}，场景：{item.get('scene', '')}，标签：{item.get('tags', '')}"
+                analysis = (item.get('analysis_raw') or '').strip()
+                item_info = (
+                    f"\n\n当前操作的图库物品：{item.get('title', '')}"
+                    f"，风格：{item.get('style', '')}"
+                    f"，场景：{item.get('scene', '')}"
+                    f"，标签：{item.get('tags', '')}"
+                )
+                if analysis:
+                    item_info += f"\n图片 AI 分析：{analysis[:500]}"
 
         note_info = ""
         if note_id:
@@ -47,6 +55,30 @@ def _build_system(note_id: Optional[int], item_id: Optional[int], extra: Optiona
                 note = dict(note_row)
                 body_preview = (note.get('body') or '')[:300]
                 note_info = f"\n\n当前编辑的笔记草稿：\n标题：{note.get('title') or '（无）'}\n正文：{body_preview or '（无）'}"
+
+                # 注入笔记关联的所有图片分析结果
+                item_ids_raw = note.get('item_ids') or '[]'
+                try:
+                    item_ids = json.loads(item_ids_raw) if isinstance(item_ids_raw, str) else item_ids_raw
+                except Exception:
+                    item_ids = []
+
+                if item_ids:
+                    placeholders = ','.join('?' * len(item_ids))
+                    rows = conn.execute(
+                        f"SELECT title, style, scene, color, material, tags, analysis_raw FROM items WHERE id IN ({placeholders})",
+                        item_ids,
+                    ).fetchall()
+                    items_desc_parts = []
+                    for r in rows:
+                        r = dict(r)
+                        desc = f"- 【{r.get('title', '')}】风格：{r.get('style', '')}，场景：{r.get('scene', '')}，颜色：{r.get('color', '')}，材质：{r.get('material', '')}"
+                        analysis = (r.get('analysis_raw') or '').strip()
+                        if analysis:
+                            desc += f"\n  AI分析：{analysis[:400]}"
+                        items_desc_parts.append(desc)
+                    if items_desc_parts:
+                        note_info += f"\n\n笔记关联图片（{len(rows)} 张）：\n" + "\n".join(items_desc_parts)
     finally:
         conn.close()
 

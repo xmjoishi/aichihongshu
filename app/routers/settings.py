@@ -4,7 +4,7 @@
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -100,3 +100,90 @@ def update_env_config(body: EnvConfig):
     for k, v in updates.items():
         os.environ[k] = v
     return {"ok": True}
+
+
+# ── 提示词配置 ─────────────────────────────────────────────────────
+
+class PromptConfig(BaseModel):
+    key: str
+    label: str
+    prompt: str
+    sort_order: int = 0
+    enabled: bool = True
+
+
+class PromptUpdate(BaseModel):
+    label: Optional[str] = None
+    prompt: Optional[str] = None
+    sort_order: Optional[int] = None
+    enabled: Optional[bool] = None
+
+
+@router.get("/prompts")
+def get_prompts():
+    """获取所有快捷操作 prompt 配置，按 sort_order 排序"""
+    from app.db.connection import get_db
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT key, label, prompt, sort_order, enabled FROM prompt_configs ORDER BY sort_order"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@router.put("/prompts/{key}")
+def update_prompt(key: str, body: PromptUpdate):
+    """更新指定 prompt 配置"""
+    from app.db.connection import get_db
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT key FROM prompt_configs WHERE key=?", (key,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="prompt not found")
+        updates = body.model_dump(exclude_none=True)
+        if not updates:
+            return {"ok": True}
+        set_clause = ", ".join(f"{k}=?" for k in updates)
+        set_clause += ", updated_at=datetime('now','localtime')"
+        conn.execute(
+            f"UPDATE prompt_configs SET {set_clause} WHERE key=?",
+            [*updates.values(), key],
+        )
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@router.post("/prompts")
+def add_prompt(body: PromptConfig):
+    """新增自定义 prompt"""
+    from app.db.connection import get_db
+    conn = get_db()
+    try:
+        conn.execute(
+            """INSERT INTO prompt_configs (key, label, prompt, sort_order, enabled)
+               VALUES (?, ?, ?, ?, ?)""",
+            (body.key, body.label, body.prompt, body.sort_order, 1 if body.enabled else 0),
+        )
+        conn.commit()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
+@router.delete("/prompts/{key}")
+def delete_prompt(key: str):
+    """删除自定义 prompt（内置的也可删，重置时重新 init_db 即可恢复）"""
+    from app.db.connection import get_db
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM prompt_configs WHERE key=?", (key,))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()

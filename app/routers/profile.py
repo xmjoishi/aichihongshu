@@ -2,7 +2,6 @@
 """账号人设 REST API"""
 
 import json
-import asyncio
 from typing import Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -44,6 +43,7 @@ def api_get_profile():
 
 
 class ProfileUpdate(BaseModel):
+    account_id: Optional[str] = None
     display_name: Optional[str] = None
     niche: Optional[str] = None
     target_audience: Optional[str] = None
@@ -125,9 +125,9 @@ def api_refresh_profile(background_tasks: BackgroundTasks):
 
 
 def _do_refresh(account_id: str):
-    """后台任务：调用爬虫刷新账号主页数据"""
+    """后台任务：通过 subprocess 调用爬虫刷新账号主页数据（使用 MediaCrawler 独立 venv）"""
+    import subprocess
     import sys
-    import os
     from pathlib import Path
 
     _refresh_status["running"] = True
@@ -137,23 +137,54 @@ def _do_refresh(account_id: str):
         project_root = Path(__file__).parent.parent.parent
         media_crawler_dir = project_root / "tools" / "MediaCrawler"
 
-        # 构造账号 URL（只需 account_id，不需要 xsec_token 也能抓到公开信息）
+        # 构造账号 URL
         creator_url = f"https://www.xiaohongshu.com/user/profile/{account_id}"
 
-        # 动态导入 crawler 模块（避免循环导入）
-        import importlib.util
-        crawler_path = project_root / "crawler" / "xhs_creator.py"
-        spec = importlib.util.spec_from_file_location("xhs_creator", crawler_path)
-        xhs_creator = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(xhs_creator)
+        # 用 MediaCrawler 自己的 uv 环境运行脚本（包含 aiofiles 等依赖）
+        cmd = [
+            "uv", "run",
+            "--project", str(media_crawler_dir),
+            "python",
+            str(project_root / "crawler" / "xhs_creator.py"),
+            "--url", creator_url,
+            "--my-profile",
+        ]
 
-        notes, creator_info = asyncio.run(xhs_creator.run_crawl(creator_url))
+        print(f"[profile/refresh] 运行爬虫：{' '.join(cmd)}")
+        result = subprocess.run(
+            cmd,
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
 
-        if creator_info:
-            xhs_creator.save_my_profile_crawl_data(creator_info)
-        else:
+        # 打印爬虫输出，方便调试
+        if result.stdout:
+            for line in result.stdout.splitlines():
+                print(f"[xhs_creator] {line}")
+        if result.stderr:
+            for line in result.stderr.splitlines():
+                print(f"[xhs_creator:err] {line}")
+
+        if result.returncode != 0:
+            _refresh_status["last_error"] = f"爬虫进程退出码 {result.returncode}"
+            return
+
+        # 检查是否有 RESULT_JSON 输出
+        creator_info = None
+        for line in result.stdout.splitlines():
+            if line.startswith("RESULT_JSON:"):
+                payload = line[len("RESULT_JSON:"):]
+                if payload.strip() != "null":
+                    creator_info = json.loads(payload)
+                break
+
+        if not creator_info:
             _refresh_status["last_error"] = "爬虫未返回账号主页信息，可能需要重新扫码登录"
 
+    except subprocess.TimeoutExpired:
+        _refresh_status["last_error"] = "爬虫超时（120s），请检查网络或重新扫码"
     except Exception as e:
         _refresh_status["last_error"] = str(e)
         print(f"[profile/refresh] 刷新失败：{e}")

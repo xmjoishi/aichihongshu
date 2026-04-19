@@ -1,10 +1,9 @@
 /**
  * HDR 图片显示控制
  *
- * 在支持 HDR 的显示器上，直接渲染 HDR 图片会颜色过曝。
- * 此 hook 提供一个全局开关（存 localStorage，默认关闭），
- * 关闭时在 <body> 上挂载 data-hdr="off" attribute，
- * 配合全局 CSS 对所有图片应用 filter。
+ * 开关语义：
+ *  hdr=true  → 「开启 HDR」→ 原图渲染，无 filter（HDR 显示器上色彩鲜艳/过曝）
+ *  hdr=false → 「关闭 HDR」→ 加 filter 压制，模拟 SDR 效果（默认值）
  */
 import { useState, useEffect, useCallback } from "react";
 
@@ -12,7 +11,9 @@ const LS_KEY = "hdr_display";
 
 function readLS(): boolean {
   try {
-    return localStorage.getItem(LS_KEY) === "true";
+    const v = localStorage.getItem(LS_KEY);
+    // 只有明确存了 "true" 才算开启；null/其他值都是关闭
+    return v === "true";
   } catch {
     return false;
   }
@@ -22,37 +23,55 @@ function applyToDOM(hdr: boolean) {
   document.documentElement.setAttribute("data-hdr", hdr ? "on" : "off");
 }
 
+// 模块级单例：避免多个组件各自监听时状态不同步
+let _listeners: Array<(v: boolean) => void> = [];
+let _current: boolean = readLS();
+
+function notifyAll(v: boolean) {
+  _current = v;
+  _listeners.forEach((fn) => fn(v));
+}
+
 export function useHDRSetting() {
-  const [hdr, setHdr] = useState<boolean>(readLS);
+  const [hdr, setHdr] = useState<boolean>(() => {
+    // 初始化时同步读 localStorage，确保首次渲染值正确
+    const v = readLS();
+    applyToDOM(v);
+    return v;
+  });
 
   useEffect(() => {
-    const val = readLS();
-    setHdr(val);
-    applyToDOM(val);
+    // 注册到模块级监听列表
+    _listeners.push(setHdr);
 
-    function onHDRChange(e: Event) {
-      const v = (e as CustomEvent<boolean>).detail;
-      setHdr(v);
-      applyToDOM(v);
-    }
-    window.addEventListener("hdr-setting-change", onHDRChange);
-    return () => window.removeEventListener("hdr-setting-change", onHDRChange);
+    // 同步到当前模块全局值（处理多实例场景）
+    const current = _current;
+    setHdr(current);
+    applyToDOM(current);
+
+    return () => {
+      _listeners = _listeners.filter((fn) => fn !== setHdr);
+    };
   }, []);
 
   const toggle = useCallback((value: boolean) => {
     try {
       localStorage.setItem(LS_KEY, String(value));
     } catch { /* ignore */ }
-    setHdr(value);
     applyToDOM(value);
-    window.dispatchEvent(new CustomEvent("hdr-setting-change", { detail: value }));
+    notifyAll(value);
   }, []);
 
   /**
-   * 兼容旧用法：返回空对象（filter 现在由全局 CSS 统一处理）
-   * 保留此函数签名避免修改所有调用处
+   * 返回应用于 <img> 的 inline style。
+   * 直接读 DOM attribute，不依赖 React state，永远实时准确。
+   * - data-hdr="off"（默认）：加 filter 压制 HDR
+   * - data-hdr="on"：原图，无 filter
    */
-  const imgStyle = (): React.CSSProperties => ({});
+  const imgStyle = (): React.CSSProperties => {
+    const isOn = document.documentElement.getAttribute("data-hdr") === "on";
+    return isOn ? {} : { filter: "brightness(0.88) saturate(0.92)" };
+  };
 
   return { hdr, toggle, imgStyle };
 }

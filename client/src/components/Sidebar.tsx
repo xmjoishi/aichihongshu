@@ -1,13 +1,13 @@
 import { NavLink } from "react-router-dom";
 import {
-  LayoutGrid, FileText, Users, User, BarChart2, Send, Settings,
+  LayoutGrid, FileText, Users, User, BarChart2, Settings, TrendingUp,
 } from "lucide-react";
 
 const nav = [
   { to: "/", icon: BarChart2, label: "看板" },
   { to: "/library", icon: LayoutGrid, label: "图库" },
   { to: "/notes", icon: FileText, label: "笔记" },
-  { to: "/publish", icon: Send, label: "发布" },
+  { to: "/data", icon: TrendingUp, label: "数据" },
   { to: "/accounts", icon: Users, label: "榜样" },
   { to: "/profile", icon: User, label: "账号" },
 ];

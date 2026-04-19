@@ -53,6 +53,8 @@ class ReferenceAccount(BaseModel):
     raw_data: Optional[str] = None
     crawled_at: Optional[str] = None
     analyzed_at: Optional[str] = None
+    insights: Optional[str] = None
+    insights_at: Optional[str] = None
 
     @field_validator("top_notes", mode="before")
     @classmethod
@@ -77,6 +79,8 @@ class Note(BaseModel):
     cover_desc: Optional[str] = None
     prompt_used: Optional[str] = None
     status: str = "draft"
+    note_type: str = "text"   # text | image | video
+    video_path: Optional[str] = None
     published_at: Optional[str] = None
     note_url: Optional[str] = None
     likes: int = 0

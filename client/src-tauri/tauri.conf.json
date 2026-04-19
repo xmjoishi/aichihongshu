@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "client",
+  "productName": "AI吃红书",
   "version": "0.1.0",
-  "identifier": "com.wuxianhao.client",
+  "identifier": "com.wuxianhao.aichihongshu",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "client",
+        "title": "AI吃红书（爱吃红薯）",
         "width": 800,
         "height": 600
       }

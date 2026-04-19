@@ -21,6 +21,15 @@ body {
 ::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 9999px; }
 ::-webkit-scrollbar-thumb:hover { background: #a1a1aa; }
 
+/* scrollbar-hide utility */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
 /* HDR 显示控制：data-hdr="off" 时对所有 img 应用 SDR 压缩 filter */
 :root[data-hdr="off"] img {
   filter: brightness(0.88) saturate(0.92);

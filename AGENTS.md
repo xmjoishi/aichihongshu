@@ -122,6 +122,10 @@ python crawler/xhs_creator.py --url "https://www.xiaohongshu.com/user/profile/<i
 - `xhs_search.py` / `xhs_creator.py` 通过 `patch_config()` 在运行时动态覆盖配置，**不要手动改 `tools/MediaCrawler/config/`**
 - 默认 `ENABLE_CDP_MODE = False`（Playwright 模式，扫码登录），登录态缓存在 `tools/MediaCrawler/browser_data/`
 - 爬虫原始 CSV 在 `tools/MediaCrawler/data/xhs/`，脚本会读取最新一个
+- `patch_config()` 必须同时修改 `config.base_config` 和 `import config as cfg` 两个命名空间，因为 `config/__init__` 做的是值复制而非引用
+- `store/xhs/__init__.py` 的 `save_creator` 接收的是原始 camelCase `userPageData`；`interactions[].count` 可能是字符串或"1.2万"格式，不能直接当 int 用，需 `safe_count()` 处理
+- URL 里的 `/profile/<ID>` 与小红书实际 `user_id` 可能不同，爬虫捕获到的 `creator_info.user_id` 才是真实 ID
+- `xsec_token` 只有在浏览器内从搜索结果点击进入主页后地址栏才会带，直接输入 URL 不会有
 
 ## MiniMax 接入
 - Token Plan 图片分析：使用 `/v1/coding_plan/vlm` 原生接口（与 MCP `understand_image` 相同底层）
@@ -130,8 +134,21 @@ python crawler/xhs_creator.py --url "https://www.xiaohongshu.com/user/profile/<i
 - `.env` 中 `MINIMAX_BASE_URL` 填 Anthropic 兼容地址，图片分析走 `https://api.minimaxi.com` 固定地址
 
 ## 数据库 Schema（SQLite）
-4 张表：`items`（图库物品）/ `reference_accounts`（榜样账号）/ `notes`（笔记草稿）/ `crawl_logs`（抓取记录）
+5 张表：`items`（图库物品）/ `reference_accounts`（榜样账号）/ `notes`（笔记草稿）/ `crawl_logs`（抓取记录）/ `my_profile`（我的账号人设，单行 id=1）
 DB 文件：`data/app.db`
+
+### my_profile 关键字段
+查询时必须显式 SELECT 需要的字段，`summary` 接口等处**不能只取统计字段**，否则 `persona_name` 等人设字段会丢失：
+```sql
+SELECT followers, total_notes, avg_likes, avg_comments, avg_collects,
+       persona_name, niche, display_name
+FROM my_profile WHERE id=1
+```
+
+### notes 时间字段说明
+- `published_at`：笔记在小红书的真实发布时间（爬虫抓取写入，毫秒时间戳 → ISO 格式）
+- `created_at`：记录导入本地数据库的时间（爬虫批量导入时所有笔记 created_at 相同）
+- **趋势图等统计应用 `published_at`，不要用 `created_at`**
 
 ## 工作流（v0.1 标准路径）
 ```
@@ -149,6 +166,17 @@ DB 文件：`data/app.db`
 - 不要提交 `data/` / `assets/` 下的任何用户数据文件
 - MediaCrawler 仅限学习/研究用途，禁止商业化使用
 - 不要把 `.env` 提交到 git（已在 .gitignore）
+- **修改后端代码后必须重启服务**，FastAPI 默认不热重载（除非加 `--reload`）：
+  ```bash
+  pkill -f "app.server" && uv run python -m app.server --port 8765 &
+  ```
+
+## 前端开发注意事项
+- Dashboard 布局用 `max-w-4xl mx-auto` 才能全屏居中，单用 `max-w-4xl` 会居左
+- Dashboard 人设 banner 有两种状态：已设置 → 红色渐变卡片；未设置 → 虚线边框引导卡片
+- 建议行动色彩规范：红色=阻塞项（人设未设置）、琥珀色=建议项（未出稿/久未发布）、灰色=提醒项（有草稿）
+- `analytics/summary` 返回的 `suggestions` 字段包含：`items_without_notes`（未出稿图库数）、`days_since_publish`（距上次发布天数）、`draft_count`（草稿数），可用于看板行动引导
+- 趋势图数据来自 `analytics/notes-trend`，返回 `{ granularity, items }`，数据点 >14 时自动按周聚合
 
 ## 运营 Skill
 项目配套 `xiaohongshu-ops` skill（安装在 `~/.config/opencode/skills/xiaohongshu-ops/`）。
