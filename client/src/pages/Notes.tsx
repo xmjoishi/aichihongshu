@@ -2,35 +2,23 @@ import { useState, useEffect, useRef } from "react";
 import { usePanelResize } from "../hooks/usePanelResize";
 import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
-import { api, API_BASE, openInChromium } from "../lib/api";
+import { api, API_BASE, openInBrowser, openInSystemBrowser } from "../lib/api";
+import { NOTE_TYPE_GROUPS, getNoteTypeBadge, type NoteType } from "../lib/noteTypes";
 import { Note, Item } from "../lib/types";
 import { Spinner, Empty, StatusBadge } from "../components/ui";
-import { Save, Copy, ChevronRight, Sparkles, ImagePlus, Hash, FileText, Trash2, X, Search, Send, Check, ExternalLink, Rocket, Loader2 } from "lucide-react";
+import { Save, Copy, ChevronRight, Sparkles, ImagePlus, Hash, FileText, Trash2, X, Search, Send, Check, ExternalLink, Rocket, Loader2, FolderOpen, Images } from "lucide-react";
 import AIPanel from "../components/AIPanel";
 import { useToast } from "../components/Toast";
 import { useHDRSetting } from "../hooks/useHDRSetting";
 import { useDebounce } from "../hooks/useDebounce";
-import RichBodyEditor from "../components/RichBodyEditor";
+import BodyEditor from "../components/BodyEditor";
 
-/** 把 HTML 字符串转成纯文本（用于复制/导出/兼容旧存储） */
-function htmlToPlainText(html: string): string {
-  // <br>/<p> → 换行，剥去所有标签
-  return html
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
 
 const AUTOSAVE_DELAY = 1500; // ms
 
 // ── Publish Modal ─────────────────────────────────────────────────────────────
+
+type StageFile = { index: number; filename: string; item_id: number; title: string; url: string };
 
 function PublishModal({
   note,
@@ -44,12 +32,45 @@ function PublishModal({
   const [noteUrl, setNoteUrl] = useState(note.note_url ?? "");
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState<"title" | "body" | "all" | null>(null);
+  const [staging, setStaging] = useState(false);
+  const [stageFiles, setStageFiles] = useState<StageFile[] | null>(null);
+  const [stageDir, setStageDir] = useState<string>("");
   const { toast } = useToast();
+
+  const hasImages = (note.item_ids?.length ?? 0) > 0;
 
   const tagLine = note.tags.length > 0
     ? "\n\n" + note.tags.map((t) => `#${t}`).join(" ")
     : "";
   const fullText = `${note.title ?? ""}\n\n${note.body ?? ""}${tagLine}`.trim();
+
+  // 进入时自动暂存图片
+  useEffect(() => {
+    if (!hasImages) return;
+    prepareImages();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function prepareImages() {
+    setStaging(true);
+    try {
+      const res = await api.post(`/api/content/${note.id}/stage-images`, {});
+      setStageFiles(res.files ?? []);
+      setStageDir(res.stage_dir ?? "");
+    } catch {
+      // 非致命错误，不影响发布流程
+    } finally {
+      setStaging(false);
+    }
+  }
+
+  async function openInFinder() {
+    try {
+      await api.post(`/api/content/${note.id}/open-stage-dir`, {});
+    } catch {
+      toast("无法打开文件夹", "error");
+    }
+  }
 
   async function copy(type: "title" | "body" | "all") {
     const text =
@@ -68,6 +89,10 @@ function PublishModal({
         status: "published",
         note_url: noteUrl || undefined,
       });
+      // 清理暂存目录
+      if (stageFiles !== null) {
+        api.delete(`/api/content/${note.id}/stage-images`).catch(() => {});
+      }
       toast("已标记为发布 ✓", "success");
       onPublished(noteUrl);
     } catch (e: unknown) {
@@ -79,7 +104,8 @@ function PublishModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[92vh] flex flex-col overflow-hidden">
+        {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-100 shrink-0">
           <div className="flex items-center gap-2">
             <Send size={16} className="text-[#ff2442]" />
@@ -89,19 +115,84 @@ function PublishModal({
             <X size={18} />
           </button>
         </div>
+
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-          {note.item_ids && note.item_ids.length > 0 && (
-            <div>
-              <p className="text-xs text-zinc-400 mb-2">配图（共 {note.item_ids.length} 张）</p>
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {note.item_ids.map((id) => (
-                  <img key={id} src={`${API_BASE}/api/library/${id}/image`}
-                    className="w-20 h-20 rounded-xl object-cover shrink-0 bg-zinc-100" alt=""
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                ))}
+
+          {/* ── 图片暂存区 ── */}
+          {hasImages && (
+            <div className="rounded-xl border border-zinc-200 overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2 bg-zinc-50 border-b border-zinc-100">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-600">
+                  <Images size={13} />
+                  配图暂存
+                  {stageFiles !== null && (
+                    <span className="text-zinc-400 font-normal">（{stageFiles.length} 张，按顺序上传）</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  {stageFiles !== null && stageDir && (
+                    <button
+                      onClick={openInFinder}
+                      className="flex items-center gap-1 text-xs text-zinc-500 hover:text-[#ff2442] transition-colors px-2 py-1 rounded-lg hover:bg-zinc-100"
+                      title="在 Finder 中打开暂存文件夹"
+                    >
+                      <FolderOpen size={12} />
+                      打开文件夹
+                    </button>
+                  )}
+                  {staging && (
+                    <span className="text-xs text-zinc-400 flex items-center gap-1">
+                      <Loader2 size={11} className="animate-spin" />准备中…
+                    </span>
+                  )}
+                </div>
               </div>
+
+              {/* 图片网格 */}
+              {stageFiles === null && !staging ? (
+                <div className="px-3 py-3 flex gap-2 overflow-x-auto">
+                  {note.item_ids!.map((id) => (
+                    <img key={id} src={`${API_BASE}/api/library/${id}/image`}
+                      className="w-20 h-20 rounded-xl object-cover shrink-0 bg-zinc-100" alt=""
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  ))}
+                </div>
+              ) : stageFiles !== null && stageFiles.length > 0 ? (
+                <div className="px-3 py-3 flex gap-2 overflow-x-auto">
+                  {stageFiles.map((f) => (
+                    <div key={f.filename} className="shrink-0 flex flex-col items-center gap-1">
+                      <div className="relative">
+                        <img
+                          src={`${API_BASE}${f.url}`}
+                          className="w-20 h-20 rounded-xl object-cover bg-zinc-100"
+                          alt={f.title}
+                        />
+                        <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] rounded-md px-1 py-0.5 leading-none">
+                          {f.index}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-zinc-400 max-w-[80px] truncate">{f.title || f.filename}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : staging ? (
+                <div className="px-3 py-5 flex justify-center">
+                  <Loader2 size={20} className="animate-spin text-zinc-300" />
+                </div>
+              ) : null}
+
+              {/* 提示文字 */}
+              {stageFiles !== null && (
+                <div className="px-3 py-2 bg-amber-50 border-t border-amber-100">
+                  <p className="text-[11px] text-amber-700 leading-relaxed">
+                    图片已复制到暂存文件夹，请点击「打开文件夹」后按编号顺序拖拽上传到小红书。确认发布后将自动清理。
+                  </p>
+                </div>
+              )}
             </div>
           )}
+
+          {/* ── 标题 ── */}
           <div className="bg-zinc-50 rounded-xl p-3">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-xs font-medium text-zinc-500">标题</span>
@@ -113,6 +204,8 @@ function PublishModal({
             </div>
             <p className="text-sm text-zinc-800 font-medium leading-snug">{note.title || "（无标题）"}</p>
           </div>
+
+          {/* ── 正文 ── */}
           <div className="bg-zinc-50 rounded-xl p-3">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-xs font-medium text-zinc-500">正文 + 标签</span>
@@ -127,15 +220,19 @@ function PublishModal({
               <p className="text-xs text-[#ff2442] mt-2">{note.tags.map((t) => `#${t}`).join(" ")}</p>
             )}
           </div>
+
+          {/* ── 一键复制 + 打开发布页 ── */}
           <button onClick={() => copy("all")}
             className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 border-dashed border-zinc-200 text-xs text-zinc-500 hover:border-[#ff2442] hover:text-[#ff2442] transition-colors">
             {copied === "all" ? <Check size={13} className="text-green-500" /> : <Copy size={13} />}
             {copied === "all" ? "已复制全文" : "一键复制全文（标题 + 正文 + 标签）"}
           </button>
-          <button onClick={() => openInChromium("https://creator.xiaohongshu.com/publish/publish")}
+          <button onClick={() => openInSystemBrowser("https://creator.xiaohongshu.com/publish/publish")}
             className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#ff2442] text-white text-xs font-medium hover:bg-[#e01f3a] transition-colors">
             <ExternalLink size={13} />打开小红书发布页
           </button>
+
+          {/* ── 笔记链接 ── */}
           <div>
             <label className="text-xs text-zinc-400 block mb-1.5">发布后粘贴笔记链接（可选，用于数据追踪）</label>
             <input type="text" value={noteUrl} onChange={(e) => setNoteUrl(e.target.value)}
@@ -143,6 +240,8 @@ function PublishModal({
               className="w-full text-xs border border-zinc-200 rounded-xl px-3 py-2 outline-none focus:border-[#ff2442] transition-colors placeholder:text-zinc-300" />
           </div>
         </div>
+
+        {/* Footer */}
         <div className="px-5 py-4 border-t border-zinc-100 shrink-0 flex gap-2">
           <button onClick={onClose}
             className="flex-1 py-2 rounded-xl border border-zinc-200 text-xs text-zinc-500 hover:bg-zinc-50 transition-colors">
@@ -370,13 +469,15 @@ export function NoteList() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <StatusBadge status={note.status} />
-                      {note.note_type && note.note_type !== "text" && (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                          note.note_type === "image" ? "bg-blue-50 text-blue-500" : "bg-purple-50 text-purple-500"
-                        }`}>
-                          {note.note_type === "image" ? "🖼️图文" : "🎬视频"}
-                        </span>
-                      )}
+                      {(() => {
+                        const badge = getNoteTypeBadge(note.note_type);
+                        if (!badge) return null;
+                        return (
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${badge.className}`}>
+                            {badge.label}
+                          </span>
+                        );
+                      })()}
                       <span className="text-xs text-zinc-400">{note.created_at?.slice(0, 10)}</span>
                     </div>
                     <p className="text-sm font-medium text-zinc-900 truncate">
@@ -401,7 +502,7 @@ export function NoteList() {
                       <div className="flex gap-2 items-center">
                         {note.note_url && (
                           <button
-                            onClick={(e) => { e.stopPropagation(); openInChromium(note.note_url!); }}
+                            onClick={(e) => { e.stopPropagation(); openInBrowser(note.note_url!); }}
                             className="flex items-center gap-1 text-xs text-[#ff2442] border border-[#ff2442]/30 bg-[#ff2442]/5 px-2.5 py-1 rounded-lg hover:bg-[#ff2442]/10 transition-colors"
                             title="在小红书查看"
                           >
@@ -514,7 +615,7 @@ export function NoteEditor() {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");       // HTML 字符串（Tiptap 输出）
   const [tagsInput, setTagsInput] = useState("");
-  const [noteType, setNoteType] = useState<"text" | "image" | "video">("text");
+  const [noteType, setNoteType] = useState<NoteType>("text");
   const [saving, setSaving] = useState(false);
   const [autoSaved, setAutoSaved] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -533,10 +634,15 @@ export function NoteEditor() {
   const [inited, setInited] = useState(false);
   if (note && !inited) {
     setTitle(note.title ?? "");
-    // 若已是 HTML（含 <p> 或 <strong>）直接用，否则把纯文本换行转为 <p>
+    // body 直接存纯文本；兼容旧版 HTML 存储：自动剥离标签
     const rawBody = note.body ?? "";
     const isHtml = /<[a-z][\s\S]*>/i.test(rawBody);
-    setBody(isHtml ? rawBody : rawBody.split(/\n+/).filter(Boolean).map((l) => `<p>${l}</p>`).join("") || "");
+    const plainBody = isHtml
+      ? rawBody
+          .replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n")
+          .replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/\n{3,}/g, "\n\n").trim()
+      : rawBody;
+    setBody(plainBody);
     setTagsInput(note.tags.join(" "));
     setNoteType((note.note_type as "text" | "image" | "video") || "text");
     setInited(true);
@@ -552,7 +658,7 @@ export function NoteEditor() {
       try {
         await api.patch(`/api/content/${noteId}`, {
           title: newTitle,
-          body: htmlToPlainText(newBody),
+          body: newBody,
           tags,
           note_type: noteType,
         });
@@ -572,7 +678,7 @@ export function NoteEditor() {
     try {
       const tags = tagsInput.split(/[\s,，#]+/).map((t) => t.trim()).filter(Boolean);
       // 存纯文本，兼容现有 body 字段和导出逻辑
-      await api.patch(`/api/content/${noteId}`, { title, body: htmlToPlainText(body), tags, note_type: noteType });
+      await api.patch(`/api/content/${noteId}`, { title, body, tags, note_type: noteType });
       qc.invalidateQueries({ queryKey: ["notes"] });
       qc.invalidateQueries({ queryKey: ["note", noteId] });
       toast("已保存", "success");
@@ -612,11 +718,10 @@ export function NoteEditor() {
 
   /** AIPanel 点击「应用到编辑器」时，将文本追加到正文（转为 HTML 段落） */
   function handleAIApply(text: string) {
-    // 把纯文本换行转为 <p> 段落，拼入现有 HTML
-    const paragraphs = text.split(/\n+/).filter(Boolean).map((l) => `<p>${l}</p>`).join("");
-    const newHtml = body ? body + paragraphs : paragraphs;
-    setBody(newHtml);
-    scheduleAutoSave(title, newHtml, tagsInput);
+    // AI 返回纯文本，直接拼接到现有内容
+    const newBody = body ? body + "\n" + text : text;
+    setBody(newBody);
+    scheduleAutoSave(title, newBody, tagsInput);
   }
 
   if (isLoading) return <Spinner />;
@@ -696,6 +801,8 @@ export function NoteEditor() {
             <NoteImagePanel
               itemIds={note.item_ids?.length ? note.item_ids : (note.item_id ? [note.item_id] : [])}
               title={title}
+              body={body}
+              tags={note.tags}
             />
 
             {/* Text editor */}
@@ -721,13 +828,14 @@ export function NoteEditor() {
                 />
               </div>
 
-              {/* Body — RichBodyEditor 填满剩余空间 */}
-              <RichBodyEditor
+              {/* Body — 纯文本编辑器 + 表情 */}
+              <BodyEditor
                 value={body}
-                onChange={(html) => {
-                  setBody(html);
-                  scheduleAutoSave(title, html, tagsInput);
+                onChange={(text) => {
+                  setBody(text);
+                  scheduleAutoSave(title, text, tagsInput);
                 }}
+                tagsLength={tagsInput.length}
                 className="flex-1 min-h-0"
               />
 
@@ -749,33 +857,77 @@ export function NoteEditor() {
                 />
               </div>
 
-              {/* 发布类型选择 */}
-              <div className="shrink-0 border-t border-zinc-100 px-6 py-2.5 flex items-center gap-3">
+              {/* 发布类型选择 — 两层结构 */}
+              <div className="shrink-0 border-t border-zinc-100 px-6 py-2.5 flex items-center gap-3 flex-wrap">
                 <span className="text-[11px] text-zinc-400 shrink-0">发布类型</span>
-                <div className="flex gap-1.5">
-                  {([
-                    { key: "text",  label: "文字配图", icon: "📝" },
-                    { key: "image", label: "图文多图",  icon: "🖼️" },
-                    { key: "video", label: "视频",     icon: "🎬" },
-                  ] as const).map(({ key, label, icon }) => (
-                    <button
-                      key={key}
-                      onClick={async () => {
-                        setNoteType(key);
-                        try {
-                          await api.patch(`/api/content/${noteId}`, { note_type: key });
-                          qc.invalidateQueries({ queryKey: ["note", noteId] });
-                        } catch {/* ignore */}
-                      }}
-                      className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors ${
-                        noteType === key
-                          ? "bg-[#ff2442] text-white"
-                          : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200"
-                      }`}
-                    >
-                      <span>{icon}</span>{label}
-                    </button>
-                  ))}
+                <div className="flex gap-2 flex-wrap">
+                  {NOTE_TYPE_GROUPS.map((group) => {
+                    const groupActive = group.types.some((t) => t.key === noteType);
+                    // 单类型分组直接渲染按钮，多类型分组渲染分组+子项
+                    if (group.types.length === 1) {
+                      const t = group.types[0];
+                      return (
+                        <button
+                          key={t.key}
+                          disabled={!t.available}
+                          onClick={async () => {
+                            if (!t.available) return;
+                            setNoteType(t.key);
+                            try {
+                              await api.patch(`/api/content/${noteId}`, { note_type: t.key });
+                              qc.invalidateQueries({ queryKey: ["note", noteId] });
+                            } catch {/* ignore */}
+                          }}
+                          title={t.description}
+                          className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors ${
+                            noteType === t.key
+                              ? "bg-[#ff2442] text-white"
+                              : t.available
+                                ? "bg-zinc-100 text-zinc-500 hover:bg-zinc-200"
+                                : "bg-zinc-50 text-zinc-300 cursor-not-allowed"
+                          }`}
+                        >
+                          <span>{t.icon}</span>{t.label}
+                          {!t.available && <span className="text-[9px] ml-0.5">即将</span>}
+                        </button>
+                      );
+                    }
+                    // 多类型分组（图文）：分组标题 + 子按钮
+                    return (
+                      <div key={group.key} className="flex items-center gap-1">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium border ${
+                          groupActive ? "border-[#ff2442]/30 text-[#ff2442] bg-[#ff2442]/5" : "border-zinc-200 text-zinc-400"
+                        }`}>
+                          {group.icon}{group.label}
+                        </span>
+                        <span className="text-zinc-200 text-[10px]">›</span>
+                        {group.types.map((t) => (
+                          <button
+                            key={t.key}
+                            disabled={!t.available}
+                            onClick={async () => {
+                              if (!t.available) return;
+                              setNoteType(t.key);
+                              try {
+                                await api.patch(`/api/content/${noteId}`, { note_type: t.key });
+                                qc.invalidateQueries({ queryKey: ["note", noteId] });
+                              } catch {/* ignore */}
+                            }}
+                            title={t.description}
+                            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors ${
+                              noteType === t.key
+                                ? "bg-[#ff2442] text-white"
+                                : t.available
+                                  ? "bg-zinc-100 text-zinc-500 hover:bg-zinc-200"
+                                  : "bg-zinc-50 text-zinc-300 cursor-not-allowed"
+                            }`}
+                          >
+                            <span>{t.icon}</span>{t.label}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -797,8 +949,8 @@ export function NoteEditor() {
             setTagsInput(tags);
             scheduleAutoSave(title, body, tags);
           }}
-          onApplyBody={(html, mode) => {
-            const newBody = mode === "replace" ? html : body + html;
+          onApplyBody={(text, mode) => {
+            const newBody = mode === "replace" ? text : (body ? body + "\n\n" + text : text);
             setBody(newBody);
             scheduleAutoSave(title, newBody, tagsInput);
           }}
@@ -1107,11 +1259,13 @@ async function uploadAndLink(
 }
 
 // ── NoteImagePanel ────────────────────────────────────────────────────────────
-// 仿小红书编辑页左侧图片区：顶部多图缩略条 + 大图预览 + 正文占位
+// 仿小红书编辑页左侧预览区：「笔记预览」和「封面预览」两种视图切换
 
-function NoteImagePanel({ itemIds, title }: {
+function NoteImagePanel({ itemIds, title, body, tags }: {
   itemIds: number[];
   title: string;
+  body: string;
+  tags: string[];
 }) {
   const { imgStyle } = useHDRSetting();
   const results = useQueries({
@@ -1121,77 +1275,266 @@ function NoteImagePanel({ itemIds, title }: {
       enabled: !!id,
     })),
   });
-  const images = results
-    .map((r) => r.data)
-    .filter((d): d is Item => !!d);
+  const images = results.map((r) => r.data).filter((d): d is Item => !!d);
 
-  const [selectedIdx, setSelectedIdx] = useState(0);
-  const safeIdx = Math.min(selectedIdx, Math.max(images.length - 1, 0));
-  void setSelectedIdx; // 左侧预览暂无切换交互，保留 state 供后续扩展
+  // 拉取账号人设（头像 + 名称）
+  const { data: profile } = useQuery({
+    queryKey: ["profile"],
+    queryFn: () => api.get("/api/profile/") as Promise<{ display_name?: string; avatar_url?: string }>,
+    staleTime: 5 * 60 * 1000,
+  });
+  const displayName = profile?.display_name || "账号名称";
+  const avatarUrl = profile?.avatar_url || "";
+
+  const [tab, setTab] = useState<"note" | "cover">("note");
+  const [imgIdx, setImgIdx] = useState(0);
+  const safeIdx = Math.min(imgIdx, Math.max(images.length - 1, 0));
+
+  // 封面图（第一张）
+  const coverImg = images[0];
 
   return (
-    <div className="w-[220px] shrink-0 border-r border-zinc-100 bg-zinc-50 flex flex-col items-center py-6 px-4 gap-3">
+    <div className="w-[230px] shrink-0 border-r border-zinc-100 bg-zinc-50 flex flex-col items-center py-4 px-3 gap-3 overflow-y-auto">
 
-      {/* ── 仿小红书发布页手机卡片 ── */}
-      <div className="w-full rounded-2xl overflow-hidden shadow-lg border border-zinc-200 bg-white flex flex-col">
-
-        {/* 大图预览区（无顶部缩略条） */}
-        <div className="relative w-full aspect-[3/4] bg-zinc-100 overflow-hidden">
-          {images.length > 0 ? (
-            <img
-              src={`${API_BASE}/api/library/${images[safeIdx]?.id}/image`}
-              alt={images[safeIdx]?.title}
-              style={imgStyle()}
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-zinc-300">
-              <ImagePlus size={28} />
-              <span className="text-xs">暂无关联图片</span>
-            </div>
-          )}
-          {images.length > 1 && (
-            <div className="absolute bottom-2 right-2 bg-black/40 text-white text-[10px] px-1.5 py-0.5 rounded-full">
-              {safeIdx + 1}/{images.length}
-            </div>
-          )}
-        </div>
-
-        {/* 标题 + 正文占位条 */}
-        <div className="px-2.5 py-2.5 space-y-1.5">
-          {title ? (
-            <p className="text-[11px] font-semibold text-zinc-800 leading-snug line-clamp-2">{title}</p>
-          ) : (
-            <div className="h-2.5 w-4/5 rounded bg-zinc-100" />
-          )}
-          <div className="h-2 w-full rounded bg-zinc-100" />
-          <div className="h-2 w-3/4 rounded bg-zinc-100" />
-          <div className="h-2 w-1/2 rounded bg-zinc-100 mt-0.5" />
-          <div className="flex gap-1 mt-1.5">
-            <div className="h-2 w-8 rounded-full bg-[#ff2442]/15" />
-            <div className="h-2 w-10 rounded-full bg-[#ff2442]/15" />
-            <div className="h-2 w-8 rounded-full bg-[#ff2442]/15" />
-          </div>
-        </div>
+      {/* 切换 Tab */}
+      <div className="w-full flex bg-zinc-100 rounded-xl p-0.5 shrink-0">
+        {(["note", "cover"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`flex-1 text-[11px] font-medium py-1.5 rounded-lg transition-colors ${
+              tab === t ? "bg-white text-zinc-800 shadow-sm" : "text-zinc-400 hover:text-zinc-600"
+            }`}
+          >
+            {t === "note" ? "笔记预览" : "封面预览"}
+          </button>
+        ))}
       </div>
 
-      {/* 物品信息（多图时显示数量） */}
-      {images.length > 0 && (
-        <div className="w-full text-center space-y-0.5">
-          {images.length === 1 ? (
+      {/* 手机壳 */}
+      <div className="w-full shrink-0">
+        {/* 手机外壳 */}
+        <div className="relative mx-auto w-full rounded-[22px] border-[3px] border-zinc-800 bg-white shadow-xl overflow-hidden">
+          {/* 状态栏 */}
+          <div className="flex items-center justify-between px-4 pt-2 pb-1 bg-white shrink-0">
+            <span className="text-[9px] font-semibold text-zinc-800">9:41</span>
+            <div className="flex items-center gap-1">
+              <svg width="10" height="7" viewBox="0 0 10 7" fill="none"><rect x="0" y="2" width="2" height="5" rx="0.5" fill="#3f3f46"/><rect x="2.5" y="1.5" width="2" height="5.5" rx="0.5" fill="#3f3f46"/><rect x="5" y="0.5" width="2" height="6.5" rx="0.5" fill="#3f3f46"/><rect x="7.5" y="0" width="2" height="7" rx="0.5" fill="#3f3f46"/></svg>
+              <svg width="11" height="8" viewBox="0 0 11 8" fill="none"><path d="M5.5 1.5C7.4 1.5 9.1 2.3 10.3 3.6L11 2.9C9.6 1.4 7.65 0.5 5.5 0.5C3.35 0.5 1.4 1.4 0 2.9L0.7 3.6C1.9 2.3 3.6 1.5 5.5 1.5Z" fill="#3f3f46"/><path d="M5.5 3.5C6.9 3.5 8.15 4.1 9.05 5.05L9.75 4.35C8.65 3.2 7.15 2.5 5.5 2.5C3.85 2.5 2.35 3.2 1.25 4.35L1.95 5.05C2.85 4.1 4.1 3.5 5.5 3.5Z" fill="#3f3f46"/><circle cx="5.5" cy="6.5" r="1" fill="#3f3f46"/></svg>
+              <svg width="16" height="8" viewBox="0 0 16 8" fill="none"><rect x="0.5" y="0.5" width="13" height="7" rx="2" stroke="#3f3f46"/><rect x="1.5" y="1.5" width="10" height="5" rx="1.5" fill="#3f3f46"/><path d="M14.5 2.5V5.5C15.1 5.2 15.5 4.7 15.5 4C15.5 3.3 15.1 2.8 14.5 2.5Z" fill="#3f3f46"/></svg>
+            </div>
+          </div>
+
+          {tab === "note" ? (
+            /* ── 笔记预览 ── */
             <>
-              <p className="text-xs font-medium text-zinc-700 truncate">{images[0].title}</p>
-              {images[0].style && <p className="text-xs text-zinc-400 truncate">{images[0].style}</p>}
+              {/* 导航栏 */}
+              <div className="flex items-center justify-between px-3 py-1.5 border-b border-zinc-100">
+                <ChevronRight size={14} className="rotate-180 text-zinc-500" />
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {avatarUrl ? (
+                    <img src={avatarUrl} className="w-4 h-4 rounded-full object-cover shrink-0" alt="" />
+                  ) : (
+                    <div className="w-4 h-4 rounded-full bg-[#ff2442]/20 shrink-0" />
+                  )}
+                  <span className="text-[10px] font-medium text-zinc-800 truncate max-w-[80px]">{displayName}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] border border-[#ff2442] text-[#ff2442] px-1.5 py-0.5 rounded-full leading-none">关注</span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-zinc-500"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+                </div>
+              </div>
+
+              {/* 大图区域 */}
+              <div className="relative w-full aspect-[4/5] bg-zinc-100 overflow-hidden">
+                {images.length > 0 ? (
+                  <img
+                    src={`${API_BASE}/api/library/${images[safeIdx]?.id}/image`}
+                    alt={images[safeIdx]?.title}
+                    style={imgStyle()}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 text-zinc-300">
+                    <ImagePlus size={22} />
+                    <span className="text-[10px]">暂无图片</span>
+                  </div>
+                )}
+                {/* 翻页箭头 */}
+                {images.length > 1 && (
+                  <>
+                    <button
+                      onClick={() => setImgIdx(Math.max(safeIdx - 1, 0))}
+                      className="absolute left-1 top-1/2 -translate-y-1/2 w-6 h-6 bg-black/30 rounded-full flex items-center justify-center"
+                    >
+                      <ChevronRight size={12} className="rotate-180 text-white" />
+                    </button>
+                    <button
+                      onClick={() => setImgIdx(Math.min(safeIdx + 1, images.length - 1))}
+                      className="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 bg-black/30 rounded-full flex items-center justify-center"
+                    >
+                      <ChevronRight size={12} className="text-white" />
+                    </button>
+                    {/* 计数 */}
+                    <div className="absolute top-2 right-2 bg-black/40 text-white text-[9px] px-1.5 py-0.5 rounded-full">
+                      {safeIdx + 1}/{images.length}
+                    </div>
+                    {/* 点点指示器 */}
+                    <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-1">
+                      {images.map((_, i) => (
+                        <div key={i} className={`rounded-full transition-all ${i === safeIdx ? "w-3 h-1.5 bg-[#ff2442]" : "w-1.5 h-1.5 bg-white/60"}`} />
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* 正文区域 */}
+              <div className="px-3 py-2 max-h-[90px] overflow-hidden">
+                {title && (
+                  <p className="text-[10px] font-semibold text-zinc-800 leading-snug mb-1 line-clamp-1">{title}</p>
+                )}
+                {body ? (
+                  <p className="text-[9px] text-zinc-600 leading-relaxed line-clamp-4 whitespace-pre-wrap">{body}</p>
+                ) : (
+                  <div className="space-y-1">
+                    <div className="h-1.5 w-full rounded bg-zinc-100" />
+                    <div className="h-1.5 w-4/5 rounded bg-zinc-100" />
+                    <div className="h-1.5 w-3/5 rounded bg-zinc-100" />
+                  </div>
+                )}
+                {tags.length > 0 && (
+                  <p className="text-[8px] text-[#ff2442] mt-1 line-clamp-1">{tags.map(t => `#${t}`).join(" ")}</p>
+                )}
+              </div>
+
+              {/* 底部操作栏 */}
+              <div className="flex items-center px-3 py-2 border-t border-zinc-100 gap-2">
+                <div className="flex-1 bg-zinc-100 rounded-full px-2 py-1">
+                  <span className="text-[8px] text-zinc-400">说点什么…</span>
+                </div>
+                <div className="flex items-center gap-2.5">
+                  {[
+                    <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span className="text-[8px]">点赞</span></>,
+                    <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg><span className="text-[8px]">收藏</span></>,
+                    <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span className="text-[8px]">评论</span></>,
+                  ].map((icon, i) => (
+                    <div key={i} className="flex items-center gap-0.5 text-zinc-400">{icon}</div>
+                  ))}
+                </div>
+              </div>
             </>
           ) : (
-            <p className="text-xs font-medium text-zinc-700">{images.length} 张图片</p>
+            /* ── 封面预览（信息流视图） ── */
+            <>
+              {/* 顶部 tab 导航 */}
+              <div className="flex items-center justify-between px-2 pt-1 pb-1.5 border-b border-zinc-100">
+                <span className="text-[9px] text-zinc-400">关注</span>
+                <span className="text-[9px] font-semibold text-zinc-800 border-b border-zinc-800 pb-0.5">发现</span>
+                <span className="text-[9px] text-zinc-400">附近</span>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-zinc-500"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              </div>
+              {/* 分类 tab */}
+              <div className="flex items-center gap-2 px-2 py-1 border-b border-zinc-100 overflow-hidden">
+                {["推荐","直播","短剧","穿搭","旅行"].map((t, i) => (
+                  <span key={t} className={`text-[8px] whitespace-nowrap ${i === 0 ? "font-semibold text-zinc-800" : "text-zinc-400"}`}>{t}</span>
+                ))}
+              </div>
+
+              {/* 瀑布流双列 */}
+              <div className="flex gap-1.5 px-1.5 py-1.5" style={{ minHeight: 220 }}>
+                {/* 左列：当前笔记在第一位 */}
+                <div className="flex-1 flex flex-col gap-1.5">
+                  {/* 当前笔记 */}
+                  <div className="rounded-xl overflow-hidden bg-zinc-50 border border-zinc-100">
+                    <div className="aspect-[3/4] bg-zinc-100 overflow-hidden">
+                      {coverImg ? (
+                        <img
+                          src={`${API_BASE}/api/library/${coverImg.id}/image`}
+                          alt={coverImg.title}
+                          style={imgStyle()}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <ImagePlus size={16} className="text-zinc-300" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="px-1.5 py-1">
+                      <p className="text-[8px] font-medium text-zinc-800 line-clamp-2 leading-snug">
+                        {title || "笔记标题…"}
+                      </p>
+                      <div className="flex items-center justify-between mt-0.5">
+                        <div className="flex items-center gap-0.5">
+                          {avatarUrl ? (
+                            <img src={avatarUrl} className="w-3 h-3 rounded-full object-cover shrink-0" alt="" />
+                          ) : (
+                            <div className="w-3 h-3 rounded-full bg-[#ff2442]/20" />
+                          )}
+                          <span className="text-[7px] text-zinc-400 truncate max-w-[40px]">{displayName}</span>
+                        </div>
+                        <div className="flex items-center gap-0.5 text-zinc-400">
+                          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                          <span className="text-[7px]">0</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  {/* 占位卡片 */}
+                  <div className="rounded-xl overflow-hidden bg-zinc-50 border border-zinc-100">
+                    <div className="aspect-[3/5] bg-zinc-100" />
+                    <div className="px-1.5 py-1 space-y-0.5">
+                      <div className="h-1.5 w-4/5 rounded bg-zinc-200" />
+                      <div className="h-1 w-3/5 rounded bg-zinc-100" />
+                    </div>
+                  </div>
+                </div>
+                {/* 右列：占位卡片 */}
+                <div className="flex-1 flex flex-col gap-1.5 pt-3">
+                  <div className="rounded-xl overflow-hidden bg-zinc-50 border border-zinc-100">
+                    <div className="aspect-[3/4] bg-zinc-100" />
+                    <div className="px-1.5 py-1 space-y-0.5">
+                      <div className="h-1.5 w-4/5 rounded bg-zinc-200" />
+                      <div className="h-1 w-3/5 rounded bg-zinc-100" />
+                    </div>
+                  </div>
+                  <div className="rounded-xl overflow-hidden bg-zinc-50 border border-zinc-100">
+                    <div className="aspect-[3/3] bg-zinc-100" />
+                    <div className="px-1.5 py-1 space-y-0.5">
+                      <div className="h-1.5 w-4/5 rounded bg-zinc-200" />
+                      <div className="h-1 w-3/5 rounded bg-zinc-100" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 底部导航栏 */}
+              <div className="flex items-center justify-around px-2 py-2 border-t border-zinc-100">
+                {[
+                  { label: "首页", active: true },
+                  { label: "市集", active: false },
+                  { label: "+", active: false, special: true },
+                  { label: "消息", active: false },
+                  { label: "我", active: false },
+                ].map((item) => (
+                  <div key={item.label} className="flex flex-col items-center">
+                    {item.special ? (
+                      <div className="w-6 h-4 bg-[#ff2442] rounded-md flex items-center justify-center">
+                        <span className="text-white text-[10px] font-bold leading-none">+</span>
+                      </div>
+                    ) : (
+                      <span className={`text-[8px] ${item.active ? "font-semibold text-zinc-800" : "text-zinc-400"}`}>
+                        {item.label}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </div>
-      )}
-
-      <p className="text-xs text-zinc-400 text-center leading-relaxed">
-        在右侧填写标题和正文<br />完成后复制发布到小红书
-      </p>
+      </div>
     </div>
   );
 }
@@ -1210,6 +1553,12 @@ function NoteImageStrip({ itemIds, noteId, onItemIdsChange }: {
   const [uploading, setUploading] = useState(false);
   const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
   const [showPicker, setShowPicker] = useState(false);
+  // 拖拽排序状态
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
+  const dragIdxRef = useRef<number | null>(null);
+  const overIdxRef = useRef<number | null>(null);
+  const isDraggingRef = useRef(false);
   const results = useQueries({
     queries: itemIds.map((id) => ({
       queryKey: ["item", id],
@@ -1237,16 +1586,68 @@ function NoteImageStrip({ itemIds, noteId, onItemIdsChange }: {
     <>
       <div className="flex gap-2.5 mb-5 overflow-x-auto scrollbar-none pb-0.5">
         {images.map((img, idx) => (
-          <div key={img.id} className="relative shrink-0 group">
+          <div
+            key={img.id}
+            className={[
+              "relative shrink-0 group transition-all select-none",
+              dragIdx === idx ? "opacity-40 scale-95" : "opacity-100 scale-100",
+              overIdx === idx && dragIdx !== null && dragIdx !== idx
+                ? "ring-2 ring-offset-2 ring-blue-400 rounded-xl"
+                : "",
+            ].join(" ")}
+            onMouseDown={(e) => {
+              if (e.button !== 0) return;
+              e.preventDefault();
+              dragIdxRef.current = idx;
+              isDraggingRef.current = false;
+
+              const onMouseMove = () => {
+                if (!isDraggingRef.current) {
+                  isDraggingRef.current = true;
+                  setDragIdx(dragIdxRef.current);
+                }
+              };
+
+              const onMouseUp = async () => {
+                window.removeEventListener("mousemove", onMouseMove);
+                window.removeEventListener("mouseup", onMouseUp);
+                const from = dragIdxRef.current;
+                const to = overIdxRef.current;
+                setDragIdx(null);
+                setOverIdx(null);
+                dragIdxRef.current = null;
+                overIdxRef.current = null;
+                isDraggingRef.current = false;
+
+                if (from === null || to === null || from === to) return;
+                const newIds = [...itemIds];
+                const [moved] = newIds.splice(from, 1);
+                newIds.splice(to, 0, moved);
+                try {
+                  await api.patch(`/api/content/${noteId}`, { item_ids: newIds });
+                  onItemIdsChange(newIds);
+                } catch (e: unknown) { toast((e as Error).message, "error"); }
+              };
+
+              window.addEventListener("mousemove", onMouseMove);
+              window.addEventListener("mouseup", onMouseUp);
+            }}
+            onMouseEnter={() => {
+              if (dragIdxRef.current !== null) {
+                overIdxRef.current = idx;
+                setOverIdx(idx);
+              }
+            }}
+          >
             <div
-              className="w-[120px] h-[120px] rounded-xl overflow-hidden border-2 border-[#ff2442] shadow-sm cursor-zoom-in"
-              onClick={() => setLightboxIdx(idx)}
+              className="w-[120px] h-[120px] rounded-xl overflow-hidden border-2 border-[#ff2442] shadow-sm cursor-grab active:cursor-grabbing"
+              onClick={() => { if (!isDraggingRef.current) setLightboxIdx(idx); }}
             >
               <img
                 src={`${API_BASE}/api/library/${img.id}/image`}
                 alt={img.title}
                 style={imgStyle()}
-                className="w-full h-full object-cover"
+                className="w-full h-full object-cover pointer-events-none"
               />
               <span className="absolute top-1 right-1 min-w-[18px] h-[18px] rounded-full bg-black/50 text-white text-[10px] font-bold flex items-center justify-center px-1 leading-none">
                 {idx + 1}

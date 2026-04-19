@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, ExternalLink, Check, X, Send } from "lucide-react";
-import { api, API_BASE, openInChromium } from "../lib/api";
+import { api, API_BASE, openInSystemBrowser } from "../lib/api";
 import { Note } from "../lib/types";
 import { Spinner, StatusBadge } from "../components/ui";
 import { useToast } from "../components/Toast";
@@ -139,7 +139,7 @@ function PublishModal({
 
           {/* 跳转小红书 */}
           <button
-            onClick={() => openInChromium("https://creator.xiaohongshu.com/publish/publish")}
+            onClick={() => openInSystemBrowser("https://creator.xiaohongshu.com/publish/publish")}
             className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl
                        bg-[#ff2442] text-white text-xs font-medium hover:bg-[#e01f3a] transition-colors"
           >

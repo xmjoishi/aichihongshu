@@ -6,7 +6,7 @@ import {
   ExternalLink, RefreshCw, ChevronUp, ChevronDown,
   Sparkles, X, CornerDownLeft, StopCircle,
 } from "lucide-react";
-import { api, API_BASE, openInChromium } from "../lib/api";
+import { api, API_BASE, openInBrowser } from "../lib/api";
 import type { Analytics, AnalyticsNote, Insights } from "../lib/types";
 import { MdContent } from "../components/MdContent";
 import { useAIStream } from "../hooks/useAIStream";
@@ -271,7 +271,7 @@ function RankingTab() {
                   <td className="px-3 py-3">
                     {note.note_url && (
                       <button
-                        onClick={() => openInChromium(note.note_url!)}
+                        onClick={() => openInBrowser(note.note_url!)}
                         className="text-zinc-300 hover:text-[#ff2442] transition-colors"
                       >
                         <ExternalLink size={14} />

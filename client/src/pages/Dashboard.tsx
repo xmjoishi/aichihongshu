@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api, openInChromium } from "../lib/api";
+import { api, openInBrowser } from "../lib/api";
 import { Analytics } from "../lib/types";
 import { Spinner } from "../components/ui";
 import {
@@ -131,7 +131,8 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto overflow-y-auto h-full w-full">
+    <div className="overflow-y-auto h-full w-full">
+    <div className="p-6 max-w-4xl mx-auto w-full">
       <h1 className="text-xl font-semibold text-zinc-900 mb-6">运营看板</h1>
 
       {/* ── Profile banner ── */}
@@ -282,7 +283,7 @@ export default function Dashboard() {
                 <span className="text-sm font-semibold text-[#ff2442] shrink-0">❤ {n.likes}</span>
                 {n.note_url && (
                   <button
-                    onClick={() => openInChromium(n.note_url!)}
+                    onClick={() => openInBrowser(n.note_url!)}
                     title="在小红书查看"
                     className="shrink-0 p-1 text-zinc-300 hover:text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity"
                   >
@@ -294,6 +295,7 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+    </div>
     </div>
   );
 }

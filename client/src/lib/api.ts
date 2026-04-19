@@ -1,6 +1,8 @@
 // API base URL — FastAPI server
 export const API_BASE = "http://127.0.0.1:8765";
 
+import { openUrl } from "@tauri-apps/plugin-opener";
+
 async function handleResponse(r: Response, label: string) {
   if (!r.ok) {
     let detail = `${r.status}`;
@@ -105,14 +107,24 @@ export const api = {
 
 /**
  * 用 Playwright Chromium（爬虫同款浏览器）打开指定 URL。
+ * 适合需要小红书登录态的内容链接（笔记、用户主页等）。
  * 若爬虫浏览器已在运行则在其中开新标签，否则启动 Chromium 并打开。
- * 静默调用，不抛错。
+ * fire-and-forget：不 await，不做任何 fallback，避免触发 Tauri about:blank。
  */
-export function openInChromium(url: string): void {
+export function openInBrowser(url: string): void {
   if (!url) return;
   fetch(`${API_BASE}/api/crawler/open-url`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url }),
   }).catch(() => {/* 静默失败 */});
+}
+
+/**
+ * 用系统默认浏览器打开 URL。
+ * 适合创作者中心发布页等不需要爬虫登录态的场景。
+ */
+export async function openInSystemBrowser(url: string): Promise<void> {
+  if (!url) return;
+  await openUrl(url);
 }

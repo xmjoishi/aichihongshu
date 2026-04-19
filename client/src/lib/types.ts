@@ -26,7 +26,7 @@ export interface Note {
   cover_desc?: string;
   prompt_used?: string;
   status: "draft" | "ready" | "published";
-  note_type: "text" | "image" | "video";  // 发布类型
+  note_type: "text" | "image" | "video" | "article";  // 发布类型
   video_path?: string;
   published_at?: string;
   note_url?: string;

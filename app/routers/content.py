@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
 """笔记草稿 REST API"""
 
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.db.connection import get_db
@@ -35,7 +40,7 @@ class NoteUpdate(BaseModel):
     tags: Optional[list[str]] = None
     cover_desc: Optional[str] = None
     item_ids: Optional[list[int]] = None
-    note_type: Optional[str] = None   # text | image | video
+    note_type: Optional[str] = None   # text（文字配图）| image（图片）| video（视频）| article（长文）
     video_path: Optional[str] = None
 
 
@@ -171,8 +176,106 @@ def api_export_note(note_id: int):
     return {"markdown": md}
 
 
-@router.post("/draft")
-def api_draft_prompt(body: DraftRequest):
+# ── 半自动发布：暂存图片 ───────────────────────────────────────────────────────
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+STAGING_DIR = PROJECT_ROOT / "data" / "publish_staging"
+
+
+def _stage_dir(note_id: int) -> Path:
+    return STAGING_DIR / str(note_id)
+
+
+@router.post("/{note_id}/stage-images")
+def api_stage_images(note_id: int):
+    """把笔记关联的图库图片复制到 data/publish_staging/{note_id}/，方便手动上传到小红书。
+    返回暂存目录路径和文件列表。
+    """
+    note = get_note(note_id)
+    if not note:
+        raise HTTPException(404, f"笔记 {note_id} 不存在")
+
+    assets_dir = PROJECT_ROOT / "assets"
+    stage = _stage_dir(note_id)
+    stage.mkdir(parents=True, exist_ok=True)
+
+    # 解析关联图片
+    import json as _json
+    item_ids: list[int] = []
+    if note.item_ids:
+        try:
+            item_ids = _json.loads(note.item_ids) if isinstance(note.item_ids, str) else list(note.item_ids)
+        except Exception:
+            pass
+    elif note.item_id:
+        item_ids = [note.item_id]
+
+    files: list[dict] = []
+    for idx, iid in enumerate(item_ids, 1):
+        item = get_item(iid)
+        if not item or not item.image_path:
+            continue
+        src = assets_dir / item.image_path
+        if not src.exists():
+            src = PROJECT_ROOT / item.image_path
+        if not src.exists():
+            continue
+        # 保持顺序，以序号+原始扩展名命名，便于用户按顺序上传
+        dest_name = f"{idx:02d}_{src.name}"
+        dest = stage / dest_name
+        shutil.copy2(src, dest)
+        files.append({
+            "index": idx,
+            "filename": dest_name,
+            "item_id": iid,
+            "title": item.title or "",
+            "url": f"/api/content/{note_id}/stage-images/{dest_name}",
+        })
+
+    return {
+        "note_id": note_id,
+        "stage_dir": str(stage),
+        "count": len(files),
+        "files": files,
+    }
+
+
+@router.get("/{note_id}/stage-images/{filename}")
+def api_serve_stage_image(note_id: int, filename: str):
+    """提供暂存图片的文件服务"""
+    # 防止路径穿越
+    safe_name = Path(filename).name
+    img = _stage_dir(note_id) / safe_name
+    if not img.exists():
+        raise HTTPException(404, "图片不存在，请先调用 POST stage-images")
+    return FileResponse(str(img))
+
+
+@router.delete("/{note_id}/stage-images")
+def api_clear_stage_images(note_id: int):
+    """确认发布后清理暂存目录"""
+    stage = _stage_dir(note_id)
+    if stage.exists():
+        shutil.rmtree(stage)
+    return {"ok": True, "note_id": note_id}
+
+
+@router.post("/{note_id}/open-stage-dir")
+def api_open_stage_dir(note_id: int):
+    """在 Finder（macOS）中打开暂存目录，方便用户拖拽上传图片"""
+    stage = _stage_dir(note_id)
+    if not stage.exists():
+        raise HTTPException(404, "暂存目录不存在，请先调用 POST stage-images")
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(stage)])
+    elif sys.platform.startswith("linux"):
+        subprocess.Popen(["xdg-open", str(stage)])
+    else:
+        subprocess.Popen(["explorer", str(stage)])
+    return {"ok": True, "path": str(stage)}
+
+
+
     """生成笔记创作 Prompt（供 AI 使用）"""
     from app.modules.content.prompt_builder import build_draft_prompt
     from app.routers.knowledge import build_knowledge_ctx

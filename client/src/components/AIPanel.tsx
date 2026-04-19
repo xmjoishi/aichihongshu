@@ -13,7 +13,7 @@ interface AIPanelProps {
   onApply?: (text: string) => void;
   onApplyTitle?: (title: string) => void;
   onApplyTags?: (tags: string) => void;
-  onApplyBody?: (html: string, mode: "replace" | "append") => void;
+  onApplyBody?: (text: string, mode: "replace" | "append") => void;
   onClose?: () => void;
 }
 
@@ -81,7 +81,7 @@ function StructuredOutput({
   outputType: OutputType;
   onApplyTitle?: (t: string) => void;
   onApplyTags?: (t: string) => void;
-  onApplyBody?: (html: string, mode: "replace" | "append") => void;
+  onApplyBody?: (text: string, mode: "replace" | "append") => void;
   onRegenerate?: () => void;
 }) {
   const [usedIdx, setUsedIdx] = useState<number | null>(null);
@@ -136,27 +136,34 @@ function StructuredOutput({
   }
 
   if (outputType === "body") {
-    // 把纯文本段落转成 HTML，供 Tiptap 接收
-    const toHtml = (text: string) =>
-      text
-        .split(/\n{2,}/)
-        .filter(Boolean)
-        .map((para) =>
-          `<p>${para
-            .split(/\n/)
-            .join("<br>")
-            .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-            .replace(/\*(.+?)\*/g, "<em>$1</em>")
-          }</p>`
-        )
-        .join("");
+    // 从 AI 输出中提取正文部分（兼容多种格式）
+    const extractBodyText = (raw: string): string => {
+      // 去掉 markdown bold 标记，方便统一匹配
+      const text = raw.replace(/\*\*(.+?)\*\*/g, "$1").replace(/\*(.+?)\*/g, "$1");
+
+      // 尝试提取"优化后的正文："/"优化后正文："段落，到下一个分节标题为止
+      // 分节标题特征：行首出现"优化说明"/"说明"/"备注"/"---"，或行首是表格 "|"
+      const sectionMatch = text.match(
+        /优化后(?:的)?正文[：:]\s*\n([\s\S]+?)(?:\n{1,2}(?:优化说明|说明|备注)[：:\s]|\n{1,2}---|\n{1,2}\|.+\||\n{0,2}$)/
+      );
+      if (sectionMatch) return sectionMatch[1].trim();
+
+      // 没有结构标记，返回去掉首行（如果首行像标题）后的内容
+      const lines = text.trim().split("\n");
+      if (lines[0].endsWith("：") || lines[0].endsWith(":")) {
+        return lines.slice(1).join("\n").trim();
+      }
+      return text.trim();
+    };
+
+    const plainText = extractBodyText(content);
 
     return (
       <div className="mt-2.5 pt-2.5 border-t border-zinc-200 flex items-center gap-2 flex-wrap">
         <span className="text-[10px] text-zinc-400">采纳到正文：</span>
         <button
           onClick={() => {
-            onApplyBody?.(toHtml(content), "replace");
+            onApplyBody?.(plainText, "replace");
             setBodyApplied("replace");
           }}
           className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border transition-all ${
@@ -171,7 +178,7 @@ function StructuredOutput({
         </button>
         <button
           onClick={() => {
-            onApplyBody?.(toHtml(content), "append");
+            onApplyBody?.(plainText, "append");
             setBodyApplied("append");
           }}
           className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border transition-all ${

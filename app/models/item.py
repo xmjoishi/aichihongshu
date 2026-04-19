@@ -79,7 +79,7 @@ class Note(BaseModel):
     cover_desc: Optional[str] = None
     prompt_used: Optional[str] = None
     status: str = "draft"
-    note_type: str = "text"   # text | image | video
+    note_type: str = "text"   # text（文字配图）| image（图片）| video（视频，待实现）| article（长文，待实现）
     video_path: Optional[str] = None
     published_at: Optional[str] = None
     note_url: Optional[str] = None

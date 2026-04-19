@@ -5,7 +5,7 @@ import {
   ChevronDown, ChevronUp, ExternalLink,
   Sparkles, Check,
 } from "lucide-react";
-import { api, openInChromium } from "../lib/api";
+import { api, openInBrowser } from "../lib/api";
 import type {
   KnowledgeRule, KnowledgeMySample,
   KnowledgeRefGroup, KnowledgeInspiration,
@@ -153,7 +153,7 @@ function MySamplesSection() {
               )}
             </div>
             {s.note_url && (
-              <button onClick={(e) => { e.stopPropagation(); openInChromium(s.note_url!); }}
+              <button onClick={(e) => { e.stopPropagation(); openInBrowser(s.note_url!); }}
                 className="shrink-0 text-zinc-300 hover:text-[#ff2442] transition-colors mt-0.5">
                 <ExternalLink size={13} />
               </button>
@@ -228,7 +228,7 @@ function RefSamplesSection() {
                           </button>
                         )}
                         {note.note_url && (
-                          <button onClick={() => openInChromium(note.note_url!)}
+                          <button onClick={() => openInBrowser(note.note_url!)}
                             className="text-zinc-300 hover:text-[#ff2442] transition-colors">
                             <ExternalLink size={12} />
                           </button>

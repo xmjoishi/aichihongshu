@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, openInChromium } from "../lib/api";
+import { api, openInBrowser } from "../lib/api";
 import { ReferenceAccount } from "../lib/types";
 import { Spinner, Empty } from "../components/ui";
 import {
@@ -27,11 +27,45 @@ function parseStyleKeywords(raw?: string): string[] {
   return [];
 }
 
+function fixJsonQuotes(s: string): string {
+  // AI 有时在 JSON 字符串值里嵌套直引号（如 自称"姐"），导致 JSON 无效。
+  // 策略：逐字符扫描，在字符串值内部遇到的裸 " 替换成中文引号 " / "
+  let result = "";
+  let inString = false;
+  let escaped = false;
+  let quoteCount = 0; // 当前字符串值内遇到的裸引号计数（奇=开，偶=闭）
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (escaped) { result += ch; escaped = false; continue; }
+    if (ch === "\\") { result += ch; escaped = true; continue; }
+    if (ch === '"') {
+      if (!inString) {
+        inString = true; quoteCount = 0; result += ch;
+      } else {
+        // 判断是否是合法的字符串结束引号：后面是 ,}]: 或空白
+        const next = s[i + 1] ?? "";
+        if (/[\s,\}\]:]/.test(next) || i === s.length - 1) {
+          inString = false; result += ch;
+        } else {
+          // 嵌套裸引号，替换成中文引号
+          quoteCount++;
+          result += quoteCount % 2 === 1 ? "\u201c" : "\u201d";
+        }
+      }
+      continue;
+    }
+    result += ch;
+  }
+  return result;
+}
+
 function parseStyleFull(raw?: string): { keywords: string[]; tone?: string; format?: string; hook?: string; audience?: string; summary?: string } | null {
   if (!raw) return null;
-  try {
-    return JSON.parse(stripFence(raw));
-  } catch {}
+  const cleaned = stripFence(raw);
+  // 第一次尝试直接解析
+  try { return JSON.parse(cleaned); } catch {}
+  // 第二次：修复嵌套引号后再解析
+  try { return JSON.parse(fixJsonQuotes(cleaned)); } catch {}
   return null;
 }
 
@@ -190,7 +224,7 @@ function AccountCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <button
-              onClick={(e) => { e.stopPropagation(); openInChromium(`https://www.xiaohongshu.com/user/profile/${acc.account_id}`); }}
+              onClick={(e) => { e.stopPropagation(); openInBrowser(`https://www.xiaohongshu.com/user/profile/${acc.account_id}`); }}
               className="font-medium text-zinc-900 truncate hover:text-[#ff2442] transition-colors flex items-center gap-1"
             >
               {acc.name ?? acc.account_id}
@@ -254,7 +288,7 @@ function AccountCard({
               <span className="text-zinc-300 shrink-0">{i + 1}.</span>
               {n.url ? (
                 <button
-                  onClick={(e) => { e.stopPropagation(); openInChromium(n.url!); }}
+                  onClick={(e) => { e.stopPropagation(); openInBrowser(n.url!); }}
                   className="text-zinc-600 flex-1 truncate hover:text-[#ff2442] transition-colors text-left"
                 >
                   {n.title}
@@ -492,7 +526,7 @@ function AccountDrawer({
           <div className="flex items-center justify-between">
             <div>
               <button
-                onClick={() => openInChromium(`https://www.xiaohongshu.com/user/profile/${acc.account_id}`)}
+                onClick={() => openInBrowser(`https://www.xiaohongshu.com/user/profile/${acc.account_id}`)}
                 className="font-semibold text-zinc-900 text-sm hover:text-[#ff2442] transition-colors flex items-center gap-1"
               >
                 {acc.name ?? acc.account_id}
@@ -731,7 +765,7 @@ function AccountDrawer({
                     <span className="text-zinc-300 shrink-0 mt-0.5">{i + 1}.</span>
                     {n.url ? (
                       <button
-                        onClick={() => openInChromium(n.url!)}
+                        onClick={() => openInBrowser(n.url!)}
                         className="text-zinc-700 flex-1 leading-relaxed hover:text-[#ff2442] transition-colors flex items-start gap-1 text-left"
                       >
                         {n.title}
