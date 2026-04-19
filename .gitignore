@@ -30,3 +30,4 @@ venv/
 
 # macOS
 .DS_Store
+data/publish_staging/
