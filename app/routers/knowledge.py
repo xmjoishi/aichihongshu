@@ -11,8 +11,17 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.db.connection import get_db
+from app.services import account_pool
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+
+
+def _active_pool_id() -> int:
+    """获取当前激活的运营账号 ID。无激活账号时抛 400。"""
+    aid = account_pool.get_active_id()
+    if aid is None:
+        raise HTTPException(400, "尚未激活运营账号，请先在顶栏切换")
+    return aid
 
 
 # ─── 互动规律 ────────────────────────────────────────────────────────────────
@@ -201,11 +210,14 @@ def api_toggle_my_sample(note_id: int, body: ToggleReferenceBody):
 
 @router.get("/ref-samples")
 def api_get_ref_samples():
-    """返回所有榜样账号的参考库笔记，按账号分组"""
+    """返回所有榜样账号的参考库笔记，按账号分组（仅当前激活账号）"""
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
         rows = conn.execute(
-            "SELECT account_id, name, ref_notes FROM reference_accounts ORDER BY name"
+            "SELECT account_id, name, ref_notes FROM reference_accounts "
+            "WHERE account_pool_id=? ORDER BY name",
+            (pool_id,),
         ).fetchall()
         result = []
         for r in rows:
@@ -234,12 +246,14 @@ class RefSampleBody(BaseModel):
 
 @router.post("/ref-samples")
 def api_add_ref_sample(body: RefSampleBody):
-    """向榜样账号的参考库添加一条笔记样本"""
+    """向榜样账号的参考库添加一条笔记样本（仅当前激活账号下的榜样）"""
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT ref_notes FROM reference_accounts WHERE account_id=?",
-            (body.account_id,),
+            "SELECT ref_notes FROM reference_accounts "
+            "WHERE account_id=? AND account_pool_id=?",
+            (body.account_id, pool_id),
         ).fetchone()
         if not row:
             raise HTTPException(404, f"账号 {body.account_id} 不存在")
@@ -257,8 +271,9 @@ def api_add_ref_sample(body: RefSampleBody):
             "note_url": body.note_url or "",
         })
         conn.execute(
-            "UPDATE reference_accounts SET ref_notes=? WHERE account_id=?",
-            (json.dumps(notes, ensure_ascii=False), body.account_id),
+            "UPDATE reference_accounts SET ref_notes=? "
+            "WHERE account_id=? AND account_pool_id=?",
+            (json.dumps(notes, ensure_ascii=False), body.account_id, pool_id),
         )
         conn.commit()
         return {"ok": True, "count": len(notes)}
@@ -268,12 +283,14 @@ def api_add_ref_sample(body: RefSampleBody):
 
 @router.delete("/ref-samples/{account_id}/{idx}")
 def api_delete_ref_sample(account_id: str, idx: int):
-    """从榜样参考库移除指定索引的笔记"""
+    """从榜样参考库移除指定索引的笔记（仅当前激活账号下的榜样）"""
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT ref_notes FROM reference_accounts WHERE account_id=?",
-            (account_id,),
+            "SELECT ref_notes FROM reference_accounts "
+            "WHERE account_id=? AND account_pool_id=?",
+            (account_id, pool_id),
         ).fetchone()
         if not row:
             raise HTTPException(404, f"账号 {account_id} 不存在")
@@ -285,8 +302,9 @@ def api_delete_ref_sample(account_id: str, idx: int):
             raise HTTPException(400, "索引超出范围")
         notes.pop(idx)
         conn.execute(
-            "UPDATE reference_accounts SET ref_notes=? WHERE account_id=?",
-            (json.dumps(notes, ensure_ascii=False), account_id),
+            "UPDATE reference_accounts SET ref_notes=? "
+            "WHERE account_id=? AND account_pool_id=?",
+            (json.dumps(notes, ensure_ascii=False), account_id, pool_id),
         )
         conn.commit()
         return {"ok": True, "count": len(notes)}
@@ -352,10 +370,11 @@ def api_delete_inspiration(inspiration_id: int):
 
 # ─── 经验库汇总（供 prompt 注入用）────────────────────────────────────────────
 
-def build_knowledge_ctx(conn) -> dict:
+def build_knowledge_ctx(conn, account_pool_id: Optional[int] = None) -> dict:
     """
     构建经验库上下文 dict，供 build_draft_prompt 注入。
     直接传入 conn，避免重复建连接。
+    account_pool_id：当前激活账号 ID，用于过滤榜样样本（None 时不过滤，向后兼容）。
     """
     # 互动规律（只取 enabled 的）
     all_rules = _compute_rules(conn)
@@ -381,11 +400,17 @@ def build_knowledge_ctx(conn) -> dict:
             "likes": r["likes"] or 0,
         })
 
-    # 榜样笔记样本（所有账号合并，取前3条）
+    # 榜样笔记样本（按当前激活账号过滤，取前3条）
     ref_samples = []
-    ref_rows = conn.execute(
-        "SELECT name, account_id, ref_notes FROM reference_accounts"
-    ).fetchall()
+    if account_pool_id is not None:
+        ref_rows = conn.execute(
+            "SELECT name, account_id, ref_notes FROM reference_accounts WHERE account_pool_id=?",
+            (account_pool_id,),
+        ).fetchall()
+    else:
+        ref_rows = conn.execute(
+            "SELECT name, account_id, ref_notes FROM reference_accounts"
+        ).fetchall()
     for r in ref_rows:
         try:
             notes = json.loads(r["ref_notes"] or "[]")

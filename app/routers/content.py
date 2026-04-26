@@ -319,14 +319,14 @@ def api_draft(body: DraftRequest):
         account_row = None
         if body.account_id:
             account_row = conn.execute(
-                "SELECT * FROM reference_accounts WHERE account_id=?",
-                (body.account_id,)
+                "SELECT * FROM reference_accounts WHERE account_id=? AND account_pool_id=?",
+                (body.account_id, pool_id),
             ).fetchone()
             account = dict(account_row) if account_row else None
         else:
             account = None
         # 构建经验库上下文
-        knowledge_ctx = build_knowledge_ctx(conn)
+        knowledge_ctx = build_knowledge_ctx(conn, account_pool_id=pool_id)
     finally:
         conn.close()
 
@@ -384,11 +384,11 @@ def api_draft_multi(body: MultiDraftRequest):
         account = None
         if body.account_id:
             row = conn.execute(
-                "SELECT * FROM reference_accounts WHERE account_id=?",
-                (body.account_id,)
+                "SELECT * FROM reference_accounts WHERE account_id=? AND account_pool_id=?",
+                (body.account_id, pool_id)
             ).fetchone()
             account = dict(row) if row else None
-        knowledge_ctx = build_knowledge_ctx(conn)
+        knowledge_ctx = build_knowledge_ctx(conn, account_pool_id=pool_id)
     finally:
         conn.close()
 
@@ -505,6 +505,7 @@ def api_draft_generate(body: GenerateDraftRequest):
     if not ids:
         raise HTTPException(400, "item_id 或 item_ids 不能为空")
 
+    pool_id = _active_pool_id()
     items = []
     for iid in ids:
         item = get_item(iid, account_pool_id=pool_id)
@@ -522,8 +523,8 @@ def api_draft_generate(body: GenerateDraftRequest):
         account = None
         if body.account_id:
             row = conn.execute(
-                "SELECT * FROM reference_accounts WHERE account_id=?",
-                (body.account_id,),
+                "SELECT * FROM reference_accounts WHERE account_id=? AND account_pool_id=?",
+                (body.account_id, pool_id),
             ).fetchone()
             account = dict(row) if row else None
     finally:

@@ -43,7 +43,8 @@ def api_summary():
         ).fetchone()
 
         accounts_count = conn.execute(
-            "SELECT COUNT(*) FROM reference_accounts"
+            "SELECT COUNT(*) FROM reference_accounts WHERE account_pool_id=?",
+            (pool_id,),
         ).fetchone()[0]
 
         profile_row = conn.execute(
@@ -213,7 +214,9 @@ def api_analytics_insights():
             (pool_id,),
         ).fetchone()
         ref_stats = conn.execute(
-            "SELECT AVG(avg_likes), AVG(avg_comments), AVG(avg_collects) FROM reference_accounts"
+            "SELECT AVG(avg_likes), AVG(avg_comments), AVG(avg_collects) FROM reference_accounts "
+            "WHERE account_pool_id=?",
+            (pool_id,),
         ).fetchone()
 
         return {

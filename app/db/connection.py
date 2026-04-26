@@ -104,6 +104,9 @@ def init_db() -> None:
     # ── v0.3 自动迁移：角色重命名 + 多账号数据归属 ─────────────────────────
     _migrate_v03_account_roles(conn)
 
+    # ── v0.3.1 自动迁移：reference_accounts 加入多账号隔离 ────────────────
+    _migrate_v031_reference_accounts(conn)
+
     conn.close()
     print(f"[db] 数据库已初始化：{_DB_PATH}")
 
@@ -358,4 +361,84 @@ def _backfill_account_pool_id(conn: sqlite3.Connection) -> None:
         ).rowcount
         if n > 0:
             print(f"[db] backfill {tbl}.account_pool_id={op_id}（{n} 行）")
+    # 顺带把 reference_accounts 也回填（如果已经有 account_pool_id 列）
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(reference_accounts)").fetchall()]
+    if "account_pool_id" in cols:
+        n = conn.execute(
+            "UPDATE reference_accounts SET account_pool_id=? WHERE account_pool_id IS NULL",
+            (op_id,),
+        ).rowcount
+        if n > 0:
+            print(f"[db] backfill reference_accounts.account_pool_id={op_id}（{n} 行）")
     conn.commit()
+
+
+def _migrate_v031_reference_accounts(conn: sqlite3.Connection) -> None:
+    """v0.3.1：reference_accounts 加 account_pool_id 列 + 改 UNIQUE 约束。
+
+    迁移步骤：
+    1. 若已有 account_pool_id 列则跳过
+    2. ALTER TABLE 添加列（默认 NULL）
+    3. 回填到第一个 operation 账号
+    4. 重建表，把 account_id 的 UNIQUE 改为 (account_pool_id, account_id) 复合 UNIQUE
+    """
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(reference_accounts)").fetchall()]
+    if not cols:
+        return  # 表都不存在，schema 会按新结构建好
+    if "account_pool_id" in cols:
+        return  # 已迁移
+
+    op = conn.execute(
+        "SELECT id FROM account_pool WHERE role='operation' ORDER BY id LIMIT 1"
+    ).fetchone()
+    op_id = op["id"] if op else None
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        # 1) 加列 + 回填
+        conn.execute("ALTER TABLE reference_accounts ADD COLUMN account_pool_id INTEGER")
+        if op_id is not None:
+            n = conn.execute(
+                "UPDATE reference_accounts SET account_pool_id=?",
+                (op_id,),
+            ).rowcount
+            print(f"[db] backfill reference_accounts.account_pool_id={op_id}（{n} 行）")
+
+        # 2) 重建表以替换 UNIQUE 约束
+        conn.execute("ALTER TABLE reference_accounts RENAME TO reference_accounts_old")
+        conn.execute("""
+            CREATE TABLE reference_accounts (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_pool_id INTEGER REFERENCES account_pool(id) ON DELETE CASCADE,
+                account_id      TEXT NOT NULL,
+                name            TEXT,
+                followers       INTEGER DEFAULT 0,
+                total_likes     INTEGER DEFAULT 0,
+                note_count      INTEGER DEFAULT 0,
+                avg_likes       REAL DEFAULT 0,
+                avg_comments    REAL DEFAULT 0,
+                avg_collects    REAL DEFAULT 0,
+                content_style   TEXT,
+                top_notes       TEXT DEFAULT '[]',
+                raw_data        TEXT,
+                crawled_at      TEXT DEFAULT (datetime('now', 'localtime')),
+                analyzed_at     TEXT,
+                insights        TEXT DEFAULT NULL,
+                insights_at     TEXT DEFAULT NULL,
+                ref_notes       TEXT DEFAULT '[]',
+                UNIQUE(account_pool_id, account_id)
+            );
+        """)
+        old_cols = [r["name"] for r in conn.execute("PRAGMA table_info(reference_accounts_old)").fetchall()]
+        new_cols = [r["name"] for r in conn.execute("PRAGMA table_info(reference_accounts)").fetchall()]
+        common = [c for c in old_cols if c in new_cols and c != "id"]
+        common_str = ", ".join(common)
+        conn.execute(
+            f"INSERT INTO reference_accounts (id, {common_str}) "
+            f"SELECT id, {common_str} FROM reference_accounts_old"
+        )
+        conn.execute("DROP TABLE reference_accounts_old")
+        conn.commit()
+        print("[db] reference_accounts 已升级为多账号隔离模式")
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""榜样账号 REST API"""
+"""榜样账号 REST API（按当前激活账号隔离）"""
 
 import json
 import os
@@ -10,17 +10,27 @@ from pydantic import BaseModel
 
 from app.db.connection import get_db
 from app.models.item import ReferenceAccount
+from app.services import account_pool
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
+
+
+def _active_pool_id() -> int:
+    """获取当前激活的运营账号 ID。无激活账号时抛 400。"""
+    aid = account_pool.get_active_id()
+    if aid is None:
+        raise HTTPException(400, "尚未激活运营账号，请先在顶栏切换")
+    return aid
 
 
 def _row_to_account(row) -> ReferenceAccount:
     return ReferenceAccount(**dict(row))
 
 
-def _get_or_404(conn, account_id: str) -> dict:
+def _get_or_404(conn, account_id: str, pool_id: int) -> dict:
     row = conn.execute(
-        "SELECT * FROM reference_accounts WHERE account_id=?", (account_id,)
+        "SELECT * FROM reference_accounts WHERE account_id=? AND account_pool_id=?",
+        (account_id, pool_id),
     ).fetchone()
     if not row:
         raise HTTPException(404, f"账号 {account_id} 不存在")
@@ -31,10 +41,12 @@ def _get_or_404(conn, account_id: str) -> dict:
 
 @router.get("/", response_model=list[ReferenceAccount])
 def api_list_accounts():
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
         rows = conn.execute(
-            "SELECT * FROM reference_accounts ORDER BY avg_likes DESC"
+            "SELECT * FROM reference_accounts WHERE account_pool_id=? ORDER BY avg_likes DESC",
+            (pool_id,),
         ).fetchall()
         return [_row_to_account(r) for r in rows]
     finally:
@@ -45,9 +57,10 @@ def api_list_accounts():
 
 @router.get("/{account_id}", response_model=ReferenceAccount)
 def api_get_account(account_id: str):
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
-        return ReferenceAccount(**_get_or_404(conn, account_id))
+        return ReferenceAccount(**_get_or_404(conn, account_id, pool_id))
     finally:
         conn.close()
 
@@ -68,21 +81,22 @@ class AccountCreate(BaseModel):
 
 @router.post("/", response_model=ReferenceAccount)
 def api_add_account(body: AccountCreate):
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
         conn.execute(
             """INSERT INTO reference_accounts
-               (account_id, name, followers, note_count, avg_likes, avg_comments,
+               (account_pool_id, account_id, name, followers, note_count, avg_likes, avg_comments,
                 avg_collects, content_style, top_notes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(account_id) DO UPDATE SET
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(account_pool_id, account_id) DO UPDATE SET
                  name=excluded.name, followers=excluded.followers,
                  note_count=excluded.note_count, avg_likes=excluded.avg_likes,
                  avg_comments=excluded.avg_comments, avg_collects=excluded.avg_collects,
                  content_style=excluded.content_style, top_notes=excluded.top_notes,
                  crawled_at=datetime('now','localtime')""",
             (
-                body.account_id, body.name, body.followers, body.note_count,
+                pool_id, body.account_id, body.name, body.followers, body.note_count,
                 body.avg_likes, body.avg_comments, body.avg_collects,
                 body.content_style,
                 json.dumps(body.top_notes or [], ensure_ascii=False),
@@ -108,19 +122,22 @@ class AccountPatch(BaseModel):
 
 @router.patch("/{account_id}", response_model=ReferenceAccount)
 def api_patch_account(account_id: str, body: AccountPatch):
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
-        _get_or_404(conn, account_id)  # 确认存在
+        _get_or_404(conn, account_id, pool_id)  # 确认存在
         updates = {k: v for k, v in body.model_dump().items() if v is not None}
         if not updates:
-            return ReferenceAccount(**_get_or_404(conn, account_id))
+            return ReferenceAccount(**_get_or_404(conn, account_id, pool_id))
         set_clause = ", ".join(f"{k}=?" for k in updates)
-        values = list(updates.values()) + [account_id]
+        values = list(updates.values()) + [account_id, pool_id]
         conn.execute(
-            f"UPDATE reference_accounts SET {set_clause} WHERE account_id=?", values
+            f"UPDATE reference_accounts SET {set_clause} "
+            "WHERE account_id=? AND account_pool_id=?",
+            values,
         )
         conn.commit()
-        return ReferenceAccount(**_get_or_404(conn, account_id))
+        return ReferenceAccount(**_get_or_404(conn, account_id, pool_id))
     finally:
         conn.close()
 
@@ -129,10 +146,12 @@ def api_patch_account(account_id: str, body: AccountPatch):
 
 @router.delete("/{account_id}")
 def api_delete_account(account_id: str):
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
         conn.execute(
-            "DELETE FROM reference_accounts WHERE account_id=?", (account_id,)
+            "DELETE FROM reference_accounts WHERE account_id=? AND account_pool_id=?",
+            (account_id, pool_id),
         )
         conn.commit()
     finally:
@@ -185,9 +204,10 @@ async def _call_text(prompt: str, system: str, max_tokens: int = 1024) -> str:
 @router.post("/{account_id}/analyze")
 async def api_analyze_account(account_id: str):
     """基于 top_notes + raw_data，AI 分析并写入 content_style（SSE 流式）"""
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
-        acc = _get_or_404(conn, account_id)
+        acc = _get_or_404(conn, account_id, pool_id)
     finally:
         conn.close()
 
@@ -240,8 +260,9 @@ async def api_analyze_account(account_id: str):
                         db = get_db()
                         try:
                             db.execute(
-                                "UPDATE reference_accounts SET content_style=?, analyzed_at=datetime('now','localtime') WHERE account_id=?",
-                                (clean, account_id)
+                                "UPDATE reference_accounts SET content_style=?, analyzed_at=datetime('now','localtime') "
+                                "WHERE account_id=? AND account_pool_id=?",
+                                (clean, account_id, pool_id)
                             )
                             db.commit()
                         finally:
@@ -265,9 +286,10 @@ async def api_get_insights(account_id: str, refresh: bool = False):
     获取/生成「值得学习的地方」摘要（SSE 流式）。
     有缓存时直接返回；refresh=true 强制重新生成。
     """
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
-        acc = _get_or_404(conn, account_id)
+        acc = _get_or_404(conn, account_id, pool_id)
     finally:
         conn.close()
 
@@ -332,8 +354,9 @@ async def api_get_insights(account_id: str, refresh: bool = False):
                         db = get_db()
                         try:
                             db.execute(
-                                "UPDATE reference_accounts SET insights=?, insights_at=datetime('now','localtime') WHERE account_id=?",
-                                (full_text, account_id)
+                                "UPDATE reference_accounts SET insights=?, insights_at=datetime('now','localtime') "
+                                "WHERE account_id=? AND account_pool_id=?",
+                                (full_text, account_id, pool_id)
                             )
                             db.commit()
                         finally:
@@ -360,9 +383,10 @@ class ImitateRequest(BaseModel):
 @router.post("/{account_id}/imitate")
 async def api_imitate(account_id: str, body: ImitateRequest):
     """针对榜样账号的某条高赞笔记，生成仿写 Prompt（非流式）"""
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
-        acc = _get_or_404(conn, account_id)
+        acc = _get_or_404(conn, account_id, pool_id)
     finally:
         conn.close()
 

@@ -236,9 +236,11 @@ def content_draft(item_id, account_id, extra, save):
     reference = None
     if account_id:
         from app.db.connection import get_db
+        pool_id = _active_pool_id()
         conn = get_db()
         row = conn.execute(
-            "SELECT * FROM reference_accounts WHERE account_id=?", (account_id,)
+            "SELECT * FROM reference_accounts WHERE account_id=? AND account_pool_id=?",
+            (account_id, pool_id),
         ).fetchone()
         conn.close()
         if row:
@@ -313,9 +315,11 @@ def content_topic(account_id, analysis_file, extra, item_ids):
     reference = None
     if account_id:
         from app.db.connection import get_db
+        pool_id = _active_pool_id()
         conn = get_db()
         row = conn.execute(
-            "SELECT * FROM reference_accounts WHERE account_id=?", (account_id,)
+            "SELECT * FROM reference_accounts WHERE account_id=? AND account_pool_id=?",
+            (account_id, pool_id),
         ).fetchone()
         conn.close()
         if row:
@@ -461,11 +465,13 @@ def accounts():
 
 @accounts.command("list")
 def accounts_list():
-    """列出已抓取的榜样账号"""
+    """列出当前激活账号下的榜样账号"""
     from app.db.connection import get_db
+    pool_id = _active_pool_id()
     conn = get_db()
     rows = conn.execute(
-        "SELECT * FROM reference_accounts ORDER BY crawled_at DESC"
+        "SELECT * FROM reference_accounts WHERE account_pool_id=? ORDER BY crawled_at DESC",
+        (pool_id,),
     ).fetchall()
     conn.close()
 
@@ -530,10 +536,10 @@ def accounts_add(account_id, name, note_count, avg_likes, avg_comments, avg_coll
     try:
         conn.execute(
             """INSERT INTO reference_accounts
-               (account_id, name, note_count, avg_likes, avg_comments, avg_collects,
+               (account_pool_id, account_id, name, note_count, avg_likes, avg_comments, avg_collects,
                 total_likes, top_notes, content_style, raw_data, crawled_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
-               ON CONFLICT(account_id) DO UPDATE SET
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
+               ON CONFLICT(account_pool_id, account_id) DO UPDATE SET
                  name=excluded.name,
                  note_count=excluded.note_count,
                  avg_likes=excluded.avg_likes,
@@ -545,6 +551,7 @@ def accounts_add(account_id, name, note_count, avg_likes, avg_comments, avg_coll
                  crawled_at=datetime('now','localtime')
             """,
             (
+                _active_pool_id(),
                 account_id, name, note_count,
                 avg_likes, avg_comments, avg_collects,
                 int(avg_likes * note_count),
@@ -572,7 +579,8 @@ def accounts_show(account_id):
 
     conn = get_db()
     row = conn.execute(
-        "SELECT * FROM reference_accounts WHERE account_id=?", (account_id,)
+        "SELECT * FROM reference_accounts WHERE account_id=? AND account_pool_id=?",
+        (account_id, _active_pool_id()),
     ).fetchone()
     conn.close()
 
@@ -611,7 +619,8 @@ def accounts_delete(account_id):
 
     conn = get_db()
     cur = conn.execute(
-        "DELETE FROM reference_accounts WHERE account_id=?", (account_id,)
+        "DELETE FROM reference_accounts WHERE account_id=? AND account_pool_id=?",
+        (account_id, _active_pool_id()),
     )
     conn.commit()
     conn.close()

@@ -24,10 +24,11 @@ CREATE TABLE IF NOT EXISTS items (
     deleted_at  TEXT                     -- 软删除时间，NULL 表示正常
 );
 
--- 榜样账号表
+-- 榜样账号表（按运营账号隔离：同一榜样可被多个运营账号关注，但每个 (pool, account) 组合唯一）
 CREATE TABLE IF NOT EXISTS reference_accounts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    account_id      TEXT UNIQUE NOT NULL,  -- 小红书账号 ID
+    account_pool_id INTEGER REFERENCES account_pool(id) ON DELETE CASCADE,
+    account_id      TEXT NOT NULL,         -- 小红书账号 ID
     name            TEXT,
     followers       INTEGER DEFAULT 0,
     total_likes     INTEGER DEFAULT 0,
@@ -41,7 +42,8 @@ CREATE TABLE IF NOT EXISTS reference_accounts (
     crawled_at      TEXT DEFAULT (datetime('now', 'localtime')),
     analyzed_at     TEXT,
     insights        TEXT DEFAULT NULL,     -- AI 生成的学习要点（Markdown，缓存）
-    insights_at     TEXT DEFAULT NULL      -- 学习要点生成时间
+    insights_at     TEXT DEFAULT NULL,     -- 学习要点生成时间
+    UNIQUE(account_pool_id, account_id)
 );
 
 -- 笔记草稿表

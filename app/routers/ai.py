@@ -267,13 +267,14 @@ def _build_inspire_prompt(body: "InspireRequest") -> tuple[str, str]:
         if body.extra_image_desc:
             items_text += f"\n\n【还需要的图片（暂无实物，请在正文中说明）】\n{body.extra_image_desc}"
 
-        # --- 榜样账号风格 ---
+        # --- 榜样账号风格（按当前激活账号过滤） ---
         accounts_text = ""
-        if body.account_ids:
+        if body.account_ids and pool_id:
             placeholders = ",".join("?" * len(body.account_ids))
             acc_rows = conn.execute(
-                f"SELECT name, content_style, top_notes FROM reference_accounts WHERE account_id IN ({placeholders})",
-                body.account_ids,
+                f"SELECT name, content_style, top_notes FROM reference_accounts "
+                f"WHERE account_id IN ({placeholders}) AND account_pool_id=?",
+                list(body.account_ids) + [pool_id],
             ).fetchall()
             acc_parts = []
             for r in acc_rows:

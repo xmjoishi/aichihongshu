@@ -426,8 +426,11 @@ def _sync_notes_to_db(conn, notes: list, creator_info: dict, account_pool_id: in
 
 
 
-def save_to_db(account_id: str, name: str, notes: list, stats: dict):
-    """把账号数据写入 reference_accounts 表"""
+def save_to_db(account_id: str, name: str, notes: list, stats: dict, account_pool_id: int | None = None):
+    """把账号数据写入 reference_accounts 表（按 account_pool_id 隔离）
+
+    account_pool_id：v0.3 多账号隔离。未指定时回退到当前激活的运营账号。
+    """
     sys.path.insert(0, str(PROJECT_ROOT))
     # 加载项目根的 .env
     try:
@@ -439,14 +442,20 @@ def save_to_db(account_id: str, name: str, notes: list, stats: dict):
     from app.db.connection import get_db, init_db
     init_db()
 
+    if account_pool_id is None:
+        from app.services import account_pool as _ap
+        account_pool_id = _ap.get_active_id()
+        if account_pool_id is None:
+            raise RuntimeError("未指定 account_pool_id 且无激活账号")
+
     conn = get_db()
     try:
         conn.execute(
             """INSERT INTO reference_accounts
-               (account_id, name, note_count, avg_likes, avg_comments, avg_collects,
+               (account_pool_id, account_id, name, note_count, avg_likes, avg_comments, avg_collects,
                 total_likes, top_notes, raw_data, crawled_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
-               ON CONFLICT(account_id) DO UPDATE SET
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
+               ON CONFLICT(account_pool_id, account_id) DO UPDATE SET
                  name=excluded.name,
                  note_count=excluded.note_count,
                  avg_likes=excluded.avg_likes,
@@ -458,6 +467,7 @@ def save_to_db(account_id: str, name: str, notes: list, stats: dict):
                  crawled_at=datetime('now','localtime')
             """,
             (
+                account_pool_id,
                 account_id,
                 name,
                 stats["note_count"],
@@ -470,7 +480,7 @@ def save_to_db(account_id: str, name: str, notes: list, stats: dict):
             ),
         )
         conn.commit()
-        print(f"[xhs_creator] 账号数据已写入数据库：{account_id}")
+        print(f"[xhs_creator] 账号数据已写入数据库：{account_id}（pool_id={account_pool_id}）")
     finally:
         conn.close()
 
@@ -548,7 +558,7 @@ def main():
         print_summary(stats, name)
 
         if args.save_db:
-            save_to_db(account_id, name, notes, stats)
+            save_to_db(account_id, name, notes, stats, account_pool_id=args.account_pool_id)
             # 输出结构化结果，供 FastAPI 子进程解析（无论 --my-profile 与否都输出）
             result = {"account_id": account_id, "nickname": name}
             if creator_info:

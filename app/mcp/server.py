@@ -186,7 +186,8 @@ def draft_note_prompt(item_id: int, account_id: str = None, save: bool = True) -
         account = None
         if account_id:
             acc_row = conn.execute(
-                "SELECT * FROM reference_accounts WHERE account_id=?", (account_id,)
+                "SELECT * FROM reference_accounts WHERE account_id=? AND account_pool_id=?",
+                (account_id, pool_id),
             ).fetchone()
             account = dict(acc_row) if acc_row else None
     finally:
@@ -269,13 +270,16 @@ def export_note(note_id: int) -> dict:
 
 @mcp.tool()
 def list_accounts() -> list[dict]:
-    """列出所有榜样账号（按均赞降序）"""
+    """列出当前激活账号下的榜样账号（按均赞降序）"""
     from app.db.connection import get_db
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
         rows = conn.execute(
             "SELECT account_id, name, followers, note_count, avg_likes, avg_comments, "
-            "avg_collects, top_notes FROM reference_accounts ORDER BY avg_likes DESC"
+            "avg_collects, top_notes FROM reference_accounts "
+            "WHERE account_pool_id=? ORDER BY avg_likes DESC",
+            (pool_id,),
         ).fetchall()
         result = []
         for r in rows:

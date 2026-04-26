@@ -45,6 +45,9 @@ export default function ActiveAccountSwitcher() {
       qc.invalidateQueries({ queryKey: ["profile"] });
       qc.invalidateQueries({ queryKey: ["notes"] });
       qc.invalidateQueries({ queryKey: ["items"] });
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["analytics"] });
+      qc.invalidateQueries({ queryKey: ["knowledge"] });
     } catch (e) {
       toast(`切换失败：${(e as Error).message}`, "error");
     }
