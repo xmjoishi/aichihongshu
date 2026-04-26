@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { api, fetchTopics, inspireStream, type InspireParams } from "../lib/api";
 import { Item, ReferenceAccount, Insights, Note } from "../lib/types";
-import { Empty, Tag } from "../components/ui";
+import { Empty } from "../components/ui";
 import { useToast } from "../components/Toast";
 
 type TopicItem = { word: string; count: number };

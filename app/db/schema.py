@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS items (
     tags        TEXT DEFAULT '[]',       -- JSON 数组，多维度标签
     analysis_raw TEXT,                   -- MiniMax 原始返回（JSON）
     note_count  INTEGER DEFAULT 0,       -- 已生成笔记数
+    -- v0.3 多账号隔离：归属的运营账号
+    account_pool_id INTEGER REFERENCES account_pool(id) ON DELETE SET NULL,
     created_at  TEXT DEFAULT (datetime('now', 'localtime')),
     updated_at  TEXT DEFAULT (datetime('now', 'localtime')),
     deleted_at  TEXT                     -- 软删除时间，NULL 表示正常
@@ -54,6 +56,8 @@ CREATE TABLE IF NOT EXISTS notes (
     prompt_used TEXT,                      -- 生成时用的 prompt（可复盘）
     status      TEXT DEFAULT 'draft',      -- draft | ready | published
     item_ids    TEXT DEFAULT '[]',          -- 关联的图库物品 ID 列表（JSON 数组，多图笔记）
+    -- v0.3 多账号隔离：归属的运营账号
+    account_pool_id INTEGER REFERENCES account_pool(id) ON DELETE SET NULL,
     published_at TEXT,
     note_url    TEXT,                      -- 发布后的链接
     likes       INTEGER DEFAULT 0,
@@ -72,9 +76,10 @@ CREATE TABLE IF NOT EXISTS crawl_logs (
     created_at  TEXT DEFAULT (datetime('now', 'localtime'))
 );
 
--- 我的账号人设表（单行，用 id=1 约定）
+-- 我的账号人设表（v0.3 多行：每个运营账号一行，account_pool_id 唯一）
 CREATE TABLE IF NOT EXISTS my_profile (
-    id              INTEGER PRIMARY KEY DEFAULT 1,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_pool_id INTEGER UNIQUE REFERENCES account_pool(id) ON DELETE CASCADE,
     -- 基本信息
     account_id      TEXT,                  -- 小红书账号 ID（可选）
     display_name    TEXT,                  -- 账号显示名
@@ -107,6 +112,9 @@ CREATE TABLE IF NOT EXISTS my_profile (
     ip_location     TEXT,                  -- IP 归属地（如"上海"）
     xhs_tags        TEXT DEFAULT '[]',     -- 账号标签（JSON 数组，如["家居博主","软装达人"]）
     crawled_at      TEXT,                  -- 最近一次爬取时间
+    -- v0.2 风险免责声明确认（全局共享，不绑定具体账号）
+    risk_warning_ack    INTEGER DEFAULT 0,
+    risk_warning_ack_at TEXT,
     -- 元信息
     created_at      TEXT DEFAULT (datetime('now', 'localtime')),
     updated_at      TEXT DEFAULT (datetime('now', 'localtime'))
@@ -120,5 +128,33 @@ CREATE TABLE IF NOT EXISTS prompt_configs (
     sort_order  INTEGER DEFAULT 0,  -- 排列顺序
     enabled     INTEGER DEFAULT 1,  -- 1=启用, 0=禁用
     updated_at  TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+-- ── v0.3 重构后：账号池 ──
+-- 角色精简为 operation（运营账号）/ assistant（辅助账号）
+-- operation：发布笔记、维护主号；可绑定独立的人设/笔记/图库
+-- assistant：仅作为浏览器容器，用于搜索/抓取，不关联人设和笔记
+CREATE TABLE IF NOT EXISTS account_pool (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    alias           TEXT UNIQUE NOT NULL,
+    role            TEXT NOT NULL DEFAULT 'operation'
+                    CHECK(role IN ('operation','assistant')),
+    user_data_dir   TEXT UNIQUE NOT NULL,
+    xhs_user_id     TEXT,
+    display_name    TEXT,
+    followers       INTEGER DEFAULT 0,
+    status          TEXT DEFAULT 'active'
+                    CHECK(status IN ('active','banned','suspended','retired')),
+    ban_count       INTEGER DEFAULT 0,
+    last_used_at    TEXT,
+    notes           TEXT,
+    created_at      TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+-- 全局应用配置表
+CREATE TABLE IF NOT EXISTS app_settings (
+    key             TEXT PRIMARY KEY,
+    value           TEXT,
+    updated_at      TEXT DEFAULT (datetime('now', 'localtime'))
 );
 """

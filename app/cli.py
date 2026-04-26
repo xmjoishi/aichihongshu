@@ -17,6 +17,18 @@ from rich import box
 console = Console()
 
 
+def _active_pool_id() -> int:
+    """获取当前激活账号 id；未激活则报错退出。"""
+    from app.services import account_pool
+
+    aid = account_pool.get_active_id()
+    if aid is None:
+        console.print("[red]错误：尚未激活运营账号[/red]")
+        console.print("[dim]请先在 GUI 顶栏激活，或运行 SQL：UPDATE account_pool SET is_active=1 WHERE id=1[/dim]")
+        sys.exit(1)
+    return aid
+
+
 # ──────────────────────────────────────────────
 # 根命令
 # ──────────────────────────────────────────────
@@ -76,7 +88,7 @@ def library_add(image_path, title, analyze):
         except Exception as e:
             console.print(f"[yellow]⚠ MiniMax 分析失败（{e}），将跳过分析直接入库[/yellow]")
 
-    item = add_item(image_path=image_path, title=title, analysis=analysis)
+    item = add_item(image_path=image_path, title=title, analysis=analysis, account_pool_id=_active_pool_id())
     console.print(f"[green]✓[/green] 已添加物品 ID={item.id}：{item.title}")
     _print_item_detail(item)
 
@@ -87,7 +99,7 @@ def library_add(image_path, title, analyze):
 def library_list(tag, style):
     """列出图库物品"""
     from app.modules.library.manager import list_items
-    items = list_items(tag=tag, style=style)
+    items = list_items(tag=tag, style=style, account_pool_id=_active_pool_id())
 
     if not items:
         console.print("[dim]图库为空[/dim]")
@@ -121,7 +133,7 @@ def library_list(tag, style):
 def library_show(item_id):
     """查看物品详情"""
     from app.modules.library.manager import get_item
-    item = get_item(item_id)
+    item = get_item(item_id, account_pool_id=_active_pool_id())
     if not item:
         console.print(f"[red]物品 ID {item_id} 不存在[/red]")
         sys.exit(1)
@@ -136,10 +148,10 @@ def library_tag(item_id, add_tag, remove_tag):
     """管理物品标签"""
     from app.modules.library.manager import add_tag as _add, remove_tag as _remove
     if add_tag:
-        item = _add(item_id, add_tag)
+        item = _add(item_id, add_tag, account_pool_id=_active_pool_id())
         console.print(f"[green]✓[/green] 已添加标签「{add_tag}」→ {item.tags_str()}")
     if remove_tag:
-        item = _remove(item_id, remove_tag)
+        item = _remove(item_id, remove_tag, account_pool_id=_active_pool_id())
         console.print(f"[green]✓[/green] 已删除标签「{remove_tag}」→ {item.tags_str()}")
 
 
@@ -150,7 +162,7 @@ def library_tag(item_id, add_tag, remove_tag):
 def library_delete(item_id, delete_file):
     """删除图库物品"""
     from app.modules.library.manager import delete_item
-    ok = delete_item(item_id, delete_file=delete_file)
+    ok = delete_item(item_id, delete_file=delete_file, account_pool_id=_active_pool_id())
     if ok:
         console.print(f"[green]✓[/green] 已删除物品 ID={item_id}")
     else:
@@ -203,7 +215,7 @@ def content_draft(item_id, account_id, extra, save):
     from app.modules.content.prompt_builder import build_draft_prompt
     from app.modules.content.manager import create_note
 
-    item = get_item(item_id)
+    item = get_item(item_id, account_pool_id=_active_pool_id())
     if not item:
         console.print(f"[red]物品 ID {item_id} 不存在[/red]")
         sys.exit(1)
@@ -211,8 +223,9 @@ def content_draft(item_id, account_id, extra, save):
     # 读取我的账号人设
     my_profile = None
     from app.db.connection import get_db as _get_db
+    pool_id = _active_pool_id()
     _conn = _get_db()
-    _row = _conn.execute("SELECT * FROM my_profile WHERE id=1").fetchone()
+    _row = _conn.execute("SELECT * FROM my_profile WHERE account_pool_id=?", (pool_id,)).fetchone()
     _conn.close()
     if _row:
         my_profile = dict(_row)
@@ -248,6 +261,7 @@ def content_draft(item_id, account_id, extra, save):
             item_id=item_id,
             account_ref=account_id,
             prompt_used=prompt,
+            account_pool_id=pool_id,
         )
         console.print(f"[green]✓[/green] 草稿记录已创建 ID={note.id}（status=draft，等待填入内容）")
         console.print(f"[dim]填入内容后执行：python app/cli.py content edit {note.id}[/dim]")
@@ -265,12 +279,13 @@ def content_topic(account_id, analysis_file, extra, item_ids):
     from app.modules.content.prompt_builder import build_topic_prompt
 
     # 获取物品列表
+    pool_id = _active_pool_id()
     if item_ids:
         ids = [int(x.strip()) for x in item_ids.split(",") if x.strip()]
-        items = [get_item(i) for i in ids]
+        items = [get_item(i, account_pool_id=pool_id) for i in ids]
         items = [x for x in items if x]
     else:
-        items = list_items()
+        items = list_items(account_pool_id=pool_id)
 
     if not items:
         console.print("[yellow]⚠ 图库为空，先用 library add 导入物品[/yellow]")
@@ -328,7 +343,7 @@ def content_topic(account_id, analysis_file, extra, item_ids):
 def content_list(status, item_id):
     """列出笔记草稿"""
     from app.modules.content.manager import list_notes
-    notes = list_notes(status=status, item_id=item_id)
+    notes = list_notes(status=status, item_id=item_id, account_pool_id=_active_pool_id())
 
     if not notes:
         console.print("[dim]暂无笔记[/dim]")
@@ -362,7 +377,7 @@ def content_list(status, item_id):
 def content_show(note_id):
     """查看笔记详情"""
     from app.modules.content.manager import get_note
-    note = get_note(note_id)
+    note = get_note(note_id, account_pool_id=_active_pool_id())
     if not note:
         console.print(f"[red]笔记 ID {note_id} 不存在[/red]")
         sys.exit(1)
@@ -391,12 +406,17 @@ def content_edit(note_id, title, body, cover, tags, status):
     """更新笔记内容"""
     from app.modules.content.manager import update_note_content, update_note_status, get_note
 
+    pool_id = _active_pool_id()
+    if not get_note(note_id, account_pool_id=pool_id):
+        console.print(f"[red]笔记 ID {note_id} 不存在（或不属于当前账号）[/red]")
+        sys.exit(1)
+
     tags_list = [t.strip().lstrip("#") for t in tags.split(",")] if tags else None
     update_note_content(note_id, title=title, body=body, tags=tags_list, cover_desc=cover)
     if status:
         update_note_status(note_id, status)
 
-    note = get_note(note_id)
+    note = get_note(note_id, account_pool_id=pool_id)
     console.print(f"[green]✓[/green] 笔记 ID={note_id} 已更新（{note.status}）")
 
 
@@ -408,14 +428,15 @@ def content_export(note_id, output):
     from app.modules.content.manager import get_note, export_note_markdown
     from app.modules.library.manager import get_item
 
-    note = get_note(note_id)
+    pool_id = _active_pool_id()
+    note = get_note(note_id, account_pool_id=pool_id)
     if not note:
         console.print(f"[red]笔记 ID {note_id} 不存在[/red]")
         sys.exit(1)
 
     item_title = ""
     if note.item_id:
-        item = get_item(note.item_id)
+        item = get_item(note.item_id, account_pool_id=pool_id)
         if item:
             item_title = item.title
 
@@ -780,18 +801,19 @@ def profile_init(url, account_id, name, niche, audience, pillars, persona_name, 
         hashtags_list = _split(hashtags)
 
     # ── 写入数据库 ────────────────────────────────────────────────────
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
         conn.execute(
             """INSERT INTO my_profile
-               (id, account_id, display_name, niche, target_audience, content_pillars,
+               (account_pool_id, account_id, display_name, niche, target_audience, content_pillars,
                 persona_name, persona_bio, persona_tone, persona_taboos,
                 followers, total_notes, avg_likes, avg_comments, avg_collects,
                 preferred_styles, preferred_scenes, hashtag_pool, posting_rhythm,
                 updated_at)
-               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                        datetime('now','localtime'))
-               ON CONFLICT(id) DO UPDATE SET
+               ON CONFLICT(account_pool_id) DO UPDATE SET
                  account_id=excluded.account_id,
                  display_name=excluded.display_name,
                  niche=excluded.niche,
@@ -813,6 +835,7 @@ def profile_init(url, account_id, name, niche, audience, pillars, persona_name, 
                  updated_at=datetime('now','localtime')
             """,
             (
+                pool_id,
                 account_id, name, niche, audience,
                 _json.dumps(pillars_list, ensure_ascii=False),
                 persona_name, persona_bio, persona_tone,
@@ -838,7 +861,7 @@ def profile_init(url, account_id, name, niche, audience, pillars, persona_name, 
     # 同步小红书主页原始数据（头像/粉丝/bio/IP/标签）
     if url and creator_info:
         try:
-            save_my_profile_crawl_data(creator_info)
+            save_my_profile_crawl_data(creator_info, account_pool_id=pool_id)
             console.print(f"[green]✓[/green] 小红书主页信息已同步（粉丝：{creator_info.get('fans', 0)}）")
         except Exception as e:
             console.print(f"[yellow]⚠ 同步小红书主页信息失败：{e}[/yellow]")
@@ -851,7 +874,7 @@ def profile_show():
     import json as _json
 
     conn = get_db()
-    row = conn.execute("SELECT * FROM my_profile WHERE id=1").fetchone()
+    row = conn.execute("SELECT * FROM my_profile WHERE account_pool_id=?", (_active_pool_id(),)).fetchone()
     conn.close()
 
     if not row:
@@ -970,7 +993,10 @@ def profile_edit(**kwargs):
 
     conn = get_db()
     try:
-        conn.execute(f"UPDATE my_profile SET {set_clause} WHERE id=1", values)
+        conn.execute(
+            f"UPDATE my_profile SET {set_clause} WHERE account_pool_id=?",
+            values + [_active_pool_id()],
+        )
         conn.commit()
     finally:
         conn.close()

@@ -20,6 +20,7 @@ class Item(BaseModel):
     tags: List[str] = []
     analysis_raw: Optional[str] = None
     note_count: int = 0
+    account_pool_id: Optional[int] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -73,6 +74,7 @@ class Note(BaseModel):
     item_id: Optional[int] = None
     item_ids: List[int] = []
     account_ref: Optional[str] = None
+    account_pool_id: Optional[int] = None
     title: Optional[str] = None
     body: Optional[str] = None
     tags: List[str] = []

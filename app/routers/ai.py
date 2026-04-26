@@ -35,10 +35,14 @@ class ChatRequest(BaseModel):
 def _build_system(note_id: Optional[int], item_id: Optional[int], extra: Optional[str]) -> str:
     """构建注入了账号人设和当前内容上下文的系统 Prompt"""
     from app.db.connection import get_db
+    from app.services import account_pool as _ap
 
+    pool_id = _ap.get_active_id()
     conn = get_db()
     try:
-        profile_row = conn.execute("SELECT * FROM my_profile WHERE id=1").fetchone()
+        profile_row = conn.execute(
+            "SELECT * FROM my_profile WHERE account_pool_id=?", (pool_id,)
+        ).fetchone() if pool_id else None
         profile = dict(profile_row) if profile_row else {}
 
         item_info = ""
@@ -167,11 +171,15 @@ def _build_inspire_prompt(body: "InspireRequest") -> tuple[str, str]:
     返回 (system, user_message)。
     """
     from app.db.connection import get_db
+    from app.services import account_pool as _ap
 
+    pool_id = _ap.get_active_id()
     conn = get_db()
     try:
         # --- 人设 ---
-        profile_row = conn.execute("SELECT * FROM my_profile WHERE id=1").fetchone()
+        profile_row = conn.execute(
+            "SELECT * FROM my_profile WHERE account_pool_id=?", (pool_id,)
+        ).fetchone() if pool_id else None
         profile = dict(profile_row) if profile_row else {}
         persona_name = profile.get("persona_name") or "运营者"
         persona_tone = profile.get("persona_tone") or "接地气，短句，先吐槽再给结论"

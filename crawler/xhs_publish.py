@@ -32,11 +32,18 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).parent.parent
 MEDIA_CRAWLER_DIR = PROJECT_ROOT / "tools" / "MediaCrawler"
 sys.path.insert(0, str(MEDIA_CRAWLER_DIR))
+sys.path.insert(0, str(PROJECT_ROOT))  # for crawler._user_data_dir
 os.chdir(MEDIA_CRAWLER_DIR)  # MediaCrawler 需要从自身目录运行
 
 XHS_CREATOR_URL = "https://creator.xiaohongshu.com/publish/publish?source=official"
 USER_DATA_DIR = MEDIA_CRAWLER_DIR / "browser_data" / "xhs_user_data_dir"
 TMP_UPLOAD_DIR = Path("/tmp/xhs_publish_uploads")
+
+
+def _resolve_active_user_data_dir() -> Path:
+    """v0.2 多账号：复用统一的解析工具。"""
+    from crawler._user_data_dir import resolve_active_user_data_dir
+    return resolve_active_user_data_dir()
 
 
 # ── 工具函数 ──────────────────────────────────────────────
@@ -588,11 +595,21 @@ def parse_args():
     parser.add_argument("--video", type=str, default="", help="视频文件路径（video 类型）")
     parser.add_argument("--headless", action="store_true", help="无头模式")
     parser.add_argument("--dry-run", action="store_true", help="仅打印参数，不实际发布")
+    parser.add_argument("--user-data-dir", type=str, default=None,
+                        help="浏览器 user_data_dir 路径（v0.2 多账号隔离），默认自动读激活账号")
     return parser.parse_args()
 
 
 async def main():
     args = parse_args()
+
+    # v0.2: 解析 user_data_dir（CLI > 激活账号 > 老路径）
+    global USER_DATA_DIR
+    if args.user_data_dir:
+        USER_DATA_DIR = Path(args.user_data_dir)
+    else:
+        USER_DATA_DIR = _resolve_active_user_data_dir()
+    print(f"[发布] 使用 user_data_dir: {USER_DATA_DIR}")
 
     # 仅检测登录状态
     if args.check_login:

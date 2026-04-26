@@ -10,19 +10,40 @@ import signal
 import tempfile
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+from app.services import account_pool
+from app.services.protection import require_protection
 
 router = APIRouter(prefix="/api/crawler", tags=["crawler"])
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 MC_DIR = PROJECT_ROOT / "tools" / "MediaCrawler"
-XHS_USER_DATA_DIR = MC_DIR / "browser_data" / "xhs_user_data_dir"
 MC_PYTHON = MC_DIR / ".venv" / "bin" / "python"
+
+
+def _active_user_data_dir() -> Path:
+    """v0.2: 动态返回当前激活账号的 user_data_dir。"""
+    return Path(account_pool.get_active_user_data_dir())
 
 # 全局浏览器进程状态
 _browser_proc: Optional[subprocess.Popen] = None
+# v0.3：按 user_data_dir 为 key 的多浏览器进程字典（允许 operation/assistant 同时各开一个）
+_browser_procs: dict[str, subprocess.Popen] = {}
+
+
+def _resolve_user_data_dir(account_id: Optional[int]) -> Path:
+    """根据可选 account_id 返回 user_data_dir；缺省时用激活账号。"""
+    if account_id is None:
+        return _active_user_data_dir()
+    acc = account_pool.get_account(account_id)
+    if not acc:
+        raise HTTPException(404, f"账号 {account_id} 不存在")
+    p = Path(acc["user_data_dir"])
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 # 文件队列路径：服务器往这里追加 URL，浏览器脚本每 0.5 秒轮询读取并清空
 # 用文件队列而非 stdin pipe，服务器重启后仍可向已有浏览器发送 URL，无需 kill 浏览器
@@ -119,15 +140,15 @@ def _write_login_script() -> str:
     return str(p)
 
 
-def _is_browser_running() -> bool:
-    """检查浏览器进程是否仍在运行（兼容服务器重启后句柄丢失的情况）。"""
-    global _browser_proc
-    if _browser_proc and _browser_proc.poll() is None:
+def _is_browser_running_for(udd: Path) -> bool:
+    """检查指定 user_data_dir 对应的 Chromium 是否仍在运行。"""
+    proc = _browser_procs.get(str(udd))
+    if proc and proc.poll() is None:
         return True
-    # 服务器重启后句柄为 None：通过 pgrep 检查 Chromium 是否还在用 user_data_dir
+    # 服务器重启后句柄丢失：通过 pgrep 兜底判断
     try:
         result = subprocess.run(
-            ["pgrep", "-f", f"user-data-dir={XHS_USER_DATA_DIR}"],
+            ["pgrep", "-f", f"user-data-dir={udd}"],
             capture_output=True, timeout=2,
         )
         return result.returncode == 0
@@ -135,8 +156,15 @@ def _is_browser_running() -> bool:
         return False
 
 
+def _is_browser_running() -> bool:
+    """兼容旧调用：默认查激活账号。"""
+    return _is_browser_running_for(_active_user_data_dir())
+
+
 def _send_url_to_browser(url: str) -> bool:
-    """将 URL 追加到文件队列，浏览器脚本在下次轮询（≤0.5s）时打开它。"""
+    """将 URL 追加到文件队列，浏览器脚本在下次轮询（≤0.5s）时打开它。
+    （v0.3 文件队列仍是单一 _URL_QUEUE_FILE，所有浏览器实例共用，会被先发现的进程消费）
+    """
     if not _is_browser_running():
         return False
     try:
@@ -147,65 +175,87 @@ def _send_url_to_browser(url: str) -> bool:
         return False
 
 
-def _clear_singleton_lock() -> None:
+def _clear_singleton_lock_for(udd: Path) -> None:
     """删除 Chromium 遗留的 Singleton 锁文件（仅在确认无进程运行时调用）。"""
     for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
         try:
-            f = XHS_USER_DATA_DIR / name
+            f = udd / name
             if f.exists():
                 f.unlink()
         except Exception:
             pass
 
 
-@router.post("/browser")
-def api_open_browser():
-    """用 Playwright Chromium 打开创作者中心（与发布脚本共享 cookie）"""
-    global _browser_proc
+def _clear_singleton_lock() -> None:
+    """兼容旧调用：清当前激活账号目录。"""
+    _clear_singleton_lock_for(_active_user_data_dir())
 
-    if _is_browser_running():
-        pid = _browser_proc.pid if (_browser_proc and _browser_proc.poll() is None) else None
-        return {"status": "running", "pid": pid}
 
-    XHS_USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _clear_singleton_lock()
+@router.post("/browser", dependencies=[Depends(require_protection("browser_open"))])
+def api_open_browser(account_id: Optional[int] = None):
+    """用 Playwright Chromium 打开创作者中心（与发布脚本共享 cookie）。
+    可传 account_id 指定账号；缺省时使用当前激活账号。
+    """
+    udd = _resolve_user_data_dir(account_id)
+
+    if _is_browser_running_for(udd):
+        proc = _browser_procs.get(str(udd))
+        pid = proc.pid if (proc and proc.poll() is None) else None
+        return {"status": "running", "pid": pid, "user_data_dir": str(udd)}
+
+    udd.mkdir(parents=True, exist_ok=True)
+    _clear_singleton_lock_for(udd)
     script = _write_login_script()
 
-    _browser_proc = subprocess.Popen(
-        [_get_python(), script, str(XHS_USER_DATA_DIR),
+    proc = subprocess.Popen(
+        [_get_python(), script, str(udd),
          "https://creator.xiaohongshu.com/new/home", str(_URL_QUEUE_FILE)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         preexec_fn=os.setsid,
     )
-    return {"status": "launched", "pid": _browser_proc.pid}
+    _browser_procs[str(udd)] = proc
+    global _browser_proc
+    _browser_proc = proc  # 兼容旧引用
+    return {"status": "launched", "pid": proc.pid, "user_data_dir": str(udd)}
 
 
 @router.delete("/browser")
-def api_close_browser():
-    """关闭登录浏览器"""
-    global _browser_proc
-    if not _browser_proc or _browser_proc.poll() is not None:
-        _browser_proc = None
+def api_close_browser(account_id: Optional[int] = None):
+    """关闭指定账号的浏览器（缺省关闭当前激活账号的）"""
+    udd = _resolve_user_data_dir(account_id)
+    proc = _browser_procs.get(str(udd))
+    if not proc or proc.poll() is not None:
+        # 兜底：可能由 pgrep 检测到的外部进程，尝试 pkill
+        try:
+            subprocess.run(
+                ["pkill", "-f", f"user-data-dir={udd}"],
+                capture_output=True, timeout=2,
+            )
+        except Exception:
+            pass
+        _browser_procs.pop(str(udd), None)
         return {"status": "not_running"}
     try:
-        pgid = os.getpgid(_browser_proc.pid)
+        pgid = os.getpgid(proc.pid)
         os.killpg(pgid, signal.SIGTERM)
     except Exception:
-        _browser_proc.terminate()
-    _browser_proc = None
+        proc.terminate()
+    _browser_procs.pop(str(udd), None)
     return {"status": "closed"}
 
 
 @router.get("/browser")
-def api_browser_status():
-    """查询登录浏览器状态"""
-    running = _is_browser_running()
+def api_browser_status(account_id: Optional[int] = None):
+    """查询指定账号的浏览器状态（缺省查当前激活账号的）"""
+    udd = _resolve_user_data_dir(account_id)
+    running = _is_browser_running_for(udd)
     if not running:
-        return {"running": False}
-    pid = _browser_proc.pid if (_browser_proc and _browser_proc.poll() is None) else None
-    return {"running": True, "pid": pid}
+        return {"running": False, "user_data_dir": str(udd)}
+    proc = _browser_procs.get(str(udd))
+    pid = proc.pid if (proc and proc.poll() is None) else None
+    return {"running": True, "pid": pid, "user_data_dir": str(udd)}
 
 
 class OpenUrlRequest(BaseModel):
@@ -228,12 +278,13 @@ def api_open_url(body: OpenUrlRequest):
 
     # 浏览器未运行，启动新浏览器
     global _browser_proc
-    XHS_USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    udd = _active_user_data_dir()
+    udd.mkdir(parents=True, exist_ok=True)
     _clear_singleton_lock()
     script = _write_login_script()
 
     proc = subprocess.Popen(
-        [_get_python(), script, str(XHS_USER_DATA_DIR), url, str(_URL_QUEUE_FILE)],
+        [_get_python(), script, str(udd), url, str(_URL_QUEUE_FILE)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -261,6 +312,7 @@ async def _crawl_and_stream(url: str, name: str, save_db: bool):
         "python", str(PROJECT_ROOT / "crawler" / "xhs_creator.py"),
         "--url", url,
         "--save-db",
+        "--user-data-dir", str(_active_user_data_dir()),
     ]
     if name:
         cmd += ["--name", name]
@@ -304,7 +356,7 @@ async def _crawl_and_stream(url: str, name: str, save_db: bool):
         yield sse(f"启动失败：{e}", done=True, error=True)
 
 
-@router.post("/creator")
+@router.post("/creator", dependencies=[Depends(require_protection("crawler_creator"))])
 async def api_crawl_creator(body: CrawlRequest):
     """调起爬虫抓取创作者数据，SSE 推流进度"""
     return StreamingResponse(

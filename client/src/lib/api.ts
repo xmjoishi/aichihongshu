@@ -3,7 +3,34 @@ export const API_BASE = "http://127.0.0.1:8765";
 
 import { openUrl } from "@tauri-apps/plugin-opener";
 
+/** 风险二次确认所需的特殊错误（HTTP 428）。 */
+export class RiskConfirmationRequiredError extends Error {
+  action: string;
+  role: string;
+  alias: string;
+  payload: Record<string, unknown>;
+  constructor(payload: Record<string, unknown>) {
+    super(String(payload?.message ?? "需要风险确认"));
+    this.name = "RiskConfirmationRequiredError";
+    this.action = String(payload?.action ?? "");
+    this.role = String(payload?.role ?? "");
+    this.alias = String(payload?.alias ?? "");
+    this.payload = payload;
+  }
+}
+
 async function handleResponse(r: Response, label: string) {
+  if (r.status === 428) {
+    // 风险二次确认
+    try {
+      const j = await r.json();
+      const detail = (j?.detail ?? j) as Record<string, unknown>;
+      throw new RiskConfirmationRequiredError(detail);
+    } catch (e) {
+      if (e instanceof RiskConfirmationRequiredError) throw e;
+      throw new Error(`${label}: 428 需要二次确认`);
+    }
+  }
   if (!r.ok) {
     let detail = `${r.status}`;
     try {
@@ -15,33 +42,37 @@ async function handleResponse(r: Response, label: string) {
   return r.json();
 }
 
+/** 风险确认 header 工厂。 */
+export const riskAckHeader = (ack: boolean): Record<string, string> =>
+  ack ? { "X-Risk-Acknowledged": "yes" } : {};
+
 export const api = {
-  get: (path: string) =>
-    fetch(`${API_BASE}${path}`)
+  get: (path: string, headers: Record<string, string> = {}) =>
+    fetch(`${API_BASE}${path}`, { headers })
       .then((r) => handleResponse(r, `GET ${path}`)),
 
-  post: (path: string, body: unknown) =>
+  post: (path: string, body: unknown, headers: Record<string, string> = {}) =>
     fetch(`${API_BASE}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
     }).then((r) => handleResponse(r, `POST ${path}`)),
 
-  patch: (path: string, body: unknown) =>
+  patch: (path: string, body: unknown, headers: Record<string, string> = {}) =>
     fetch(`${API_BASE}${path}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
     }).then((r) => handleResponse(r, `PATCH ${path}`)),
 
-  delete: (path: string) =>
-    fetch(`${API_BASE}${path}`, { method: "DELETE" })
+  delete: (path: string, headers: Record<string, string> = {}) =>
+    fetch(`${API_BASE}${path}`, { method: "DELETE", headers })
       .then((r) => handleResponse(r, `DELETE ${path}`)),
 
-  put: (path: string, body: unknown) =>
+  put: (path: string, body: unknown, headers: Record<string, string> = {}) =>
     fetch(`${API_BASE}${path}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
     }).then((r) => handleResponse(r, `PUT ${path}`)),
 
@@ -63,6 +94,7 @@ export const api = {
     onDone?: () => void,
     onError?: (err: Error) => void,
     method: "POST" | "GET" = "POST",
+    headers?: Record<string, string>,
   ): AbortController => {
     const ctrl = new AbortController();
     (async () => {
@@ -71,12 +103,27 @@ export const api = {
           method,
           signal: ctrl.signal,
         };
+        const hdrs: Record<string, string> = { ...(headers || {}) };
         if (method === "POST") {
-          fetchOpts.headers = { "Content-Type": "application/json" };
+          hdrs["Content-Type"] = "application/json";
           fetchOpts.body = JSON.stringify(body);
         }
+        fetchOpts.headers = hdrs;
         const r = await fetch(`${API_BASE}${path}`, fetchOpts);
-        if (!r.ok) throw new Error(`SSE ${path}: ${r.status}`);
+        if (!r.ok) {
+          // v0.2: 428 → 风险确认请求
+          if (r.status === 428) {
+            try {
+              const data = await r.json();
+              if (data?.detail?.code === "REQUIRES_CONFIRMATION") {
+                throw new RiskConfirmationRequiredError(data.detail);
+              }
+            } catch (e) {
+              if (e instanceof RiskConfirmationRequiredError) throw e;
+            }
+          }
+          throw new Error(`SSE ${path}: ${r.status}`);
+        }
         const reader = r.body!.getReader();
         const decoder = new TextDecoder();
         let buf = "";

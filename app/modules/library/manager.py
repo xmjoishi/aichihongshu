@@ -89,6 +89,7 @@ def add_item(
     title: Optional[str] = None,
     analysis: Optional[dict] = None,
     copy_to_assets: bool = True,
+    account_pool_id: Optional[int] = None,
 ) -> Item:
     """
     添加物品到图库。
@@ -127,8 +128,8 @@ def add_item(
     try:
         cur = conn.execute(
             """INSERT INTO items
-               (title, image_path, style, material, scene, color, tags, analysis_raw)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (title, image_path, style, material, scene, color, tags, analysis_raw, account_pool_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 item_title,
                 stored_path,
@@ -138,6 +139,7 @@ def add_item(
                 a.get("color"),
                 json.dumps(a.get("tags", []), ensure_ascii=False),
                 json.dumps(a, ensure_ascii=False) if a else None,
+                account_pool_id,
             ),
         )
         conn.commit()
@@ -148,17 +150,24 @@ def add_item(
     return get_item(item_id)
 
 
-def get_item(item_id: int) -> Optional[Item]:
+def get_item(item_id: int, account_pool_id: Optional[int] = None) -> Optional[Item]:
     conn = get_db()
     try:
-        row = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        if account_pool_id is None:
+            row = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM items WHERE id=? AND account_pool_id=?",
+                (item_id, account_pool_id),
+            ).fetchone()
         return _row_to_item(row) if row else None
     finally:
         conn.close()
 
 
 def list_items(tag: Optional[str] = None, style: Optional[str] = None,
-               offset: int = 0, limit: int = 50) -> List[Item]:
+               offset: int = 0, limit: int = 50,
+               account_pool_id: Optional[int] = None) -> List[Item]:
     conn = get_db()
     try:
         sql = "SELECT * FROM items WHERE deleted_at IS NULL"
@@ -169,6 +178,9 @@ def list_items(tag: Optional[str] = None, style: Optional[str] = None,
         if style:
             sql += " AND style LIKE ?"
             params.append(f"%{style}%")
+        if account_pool_id is not None:
+            sql += " AND account_pool_id=?"
+            params.append(account_pool_id)
         sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         rows = conn.execute(sql, params).fetchall()
@@ -177,8 +189,8 @@ def list_items(tag: Optional[str] = None, style: Optional[str] = None,
         conn.close()
 
 
-def add_tag(item_id: int, tag: str) -> Item:
-    item = get_item(item_id)
+def add_tag(item_id: int, tag: str, account_pool_id: Optional[int] = None) -> Item:
+    item = get_item(item_id, account_pool_id=account_pool_id)
     if not item:
         raise ValueError(f"物品 ID {item_id} 不存在")
     if tag not in item.tags:
@@ -192,11 +204,11 @@ def add_tag(item_id: int, tag: str) -> Item:
         conn.commit()
     finally:
         conn.close()
-    return get_item(item_id)
+    return get_item(item_id, account_pool_id=account_pool_id)
 
 
-def remove_tag(item_id: int, tag: str) -> Item:
-    item = get_item(item_id)
+def remove_tag(item_id: int, tag: str, account_pool_id: Optional[int] = None) -> Item:
+    item = get_item(item_id, account_pool_id=account_pool_id)
     if not item:
         raise ValueError(f"物品 ID {item_id} 不存在")
     item.tags = [t for t in item.tags if t != tag]
@@ -209,12 +221,12 @@ def remove_tag(item_id: int, tag: str) -> Item:
         conn.commit()
     finally:
         conn.close()
-    return get_item(item_id)
+    return get_item(item_id, account_pool_id=account_pool_id)
 
 
-def delete_item(item_id: int, delete_file: bool = False) -> bool:
+def delete_item(item_id: int, delete_file: bool = False, account_pool_id: Optional[int] = None) -> bool:
     """软删除：设置 deleted_at，不删除数据库记录和磁盘文件"""
-    item = get_item(item_id)
+    item = get_item(item_id, account_pool_id=account_pool_id)
     if not item:
         return False
     conn = get_db()
@@ -229,39 +241,57 @@ def delete_item(item_id: int, delete_file: bool = False) -> bool:
     return True
 
 
-def list_trash() -> List[Item]:
+def list_trash(account_pool_id: Optional[int] = None) -> List[Item]:
     """查询回收站中的物品（已软删除）"""
     conn = get_db()
     try:
-        rows = conn.execute(
-            "SELECT * FROM items WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
-        ).fetchall()
+        if account_pool_id is None:
+            rows = conn.execute(
+                "SELECT * FROM items WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM items WHERE deleted_at IS NOT NULL AND account_pool_id=? ORDER BY deleted_at DESC",
+                (account_pool_id,),
+            ).fetchall()
         return [_row_to_item(r) for r in rows]
     finally:
         conn.close()
 
 
-def restore_item(item_id: int) -> bool:
+def restore_item(item_id: int, account_pool_id: Optional[int] = None) -> bool:
     """从回收站恢复物品"""
     conn = get_db()
     try:
-        cur = conn.execute(
-            "UPDATE items SET deleted_at=NULL, updated_at=datetime('now','localtime') WHERE id=? AND deleted_at IS NOT NULL",
-            (item_id,),
-        )
+        if account_pool_id is None:
+            cur = conn.execute(
+                "UPDATE items SET deleted_at=NULL, updated_at=datetime('now','localtime') WHERE id=? AND deleted_at IS NOT NULL",
+                (item_id,),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE items SET deleted_at=NULL, updated_at=datetime('now','localtime') WHERE id=? AND account_pool_id=? AND deleted_at IS NOT NULL",
+                (item_id, account_pool_id),
+            )
         conn.commit()
         return cur.rowcount > 0
     finally:
         conn.close()
 
 
-def purge_item(item_id: int) -> bool:
+def purge_item(item_id: int, account_pool_id: Optional[int] = None) -> bool:
     """物理删除单个回收站物品（删除文件 + 删除DB记录）"""
     conn = get_db()
     try:
-        row = conn.execute(
-            "SELECT * FROM items WHERE id=? AND deleted_at IS NOT NULL", (item_id,)
-        ).fetchone()
+        if account_pool_id is None:
+            row = conn.execute(
+                "SELECT * FROM items WHERE id=? AND deleted_at IS NOT NULL", (item_id,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM items WHERE id=? AND account_pool_id=? AND deleted_at IS NOT NULL",
+                (item_id, account_pool_id),
+            ).fetchone()
         if not row:
             return False
         item = _row_to_item(row)
@@ -275,13 +305,19 @@ def purge_item(item_id: int) -> bool:
         conn.close()
 
 
-def purge_all_trash() -> int:
+def purge_all_trash(account_pool_id: Optional[int] = None) -> int:
     """清空回收站：物理删除所有已软删除的物品，返回删除数量"""
     conn = get_db()
     try:
-        rows = conn.execute(
-            "SELECT * FROM items WHERE deleted_at IS NOT NULL"
-        ).fetchall()
+        if account_pool_id is None:
+            rows = conn.execute(
+                "SELECT * FROM items WHERE deleted_at IS NOT NULL"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM items WHERE deleted_at IS NOT NULL AND account_pool_id=?",
+                (account_pool_id,),
+            ).fetchall()
         count = 0
         for row in rows:
             item = _row_to_item(row)

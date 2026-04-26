@@ -18,8 +18,13 @@ from pathlib import Path
 from datetime import datetime
 
 # 把 MediaCrawler 加入 sys.path
-MEDIA_CRAWLER_DIR = Path(__file__).parent.parent / "tools" / "MediaCrawler"
+PROJECT_ROOT = Path(__file__).parent.parent
+MEDIA_CRAWLER_DIR = PROJECT_ROOT / "tools" / "MediaCrawler"
 sys.path.insert(0, str(MEDIA_CRAWLER_DIR))
+
+# v0.2: 多账号 user_data_dir 桥接
+sys.path.insert(0, str(PROJECT_ROOT))
+from crawler._user_data_dir import resolve_active_user_data_dir, link_to_media_crawler  # noqa: E402
 
 # 覆盖 MediaCrawler 配置
 os.chdir(MEDIA_CRAWLER_DIR)  # MediaCrawler 需要从自身目录运行
@@ -45,7 +50,13 @@ def patch_config(keywords: str, max_count: int, headless: bool):
         base_const.MAX_SCROLL_COUNT = max(1, max_count // 20)
 
 
-async def run_crawl(keywords: str, max_count: int, headless: bool, output_dir: Path):
+async def run_crawl(keywords: str, max_count: int, headless: bool, output_dir: Path,
+                    user_data_dir: Path | None = None):
+    # v0.2: 桥接激活账号 user_data_dir
+    active_dir = user_data_dir or resolve_active_user_data_dir()
+    link_to_media_crawler(active_dir, platform="xhs")
+    print(f"[xhs_search] 使用账号目录：{active_dir}")
+
     patch_config(keywords, max_count, headless)
 
     from main import main as mc_main
@@ -103,18 +114,22 @@ def main():
     parser.add_argument("--count", type=int, default=20, help="目标抓取数量（约数）")
     parser.add_argument("--headless", action="store_true", help="无头模式（不弹浏览器窗口）")
     parser.add_argument("--output-dir", default="data/crawl", help="结果输出目录（相对项目根目录）")
+    parser.add_argument("--user-data-dir", default=None,
+                        help="浏览器 user_data_dir 路径（v0.2 多账号），默认读激活账号")
     args = parser.parse_args()
 
     # 输出目录相对项目根
     project_root = Path(__file__).parent.parent
     output_dir = project_root / args.output_dir
+    user_data_dir = Path(args.user_data_dir) if args.user_data_dir else None
 
     print(f"[xhs_search] 关键词：{args.keywords}")
     print(f"[xhs_search] 目标数量：{args.count}")
     print(f"[xhs_search] 输出目录：{output_dir}")
     print(f"[xhs_search] 首次运行需扫码登录小红书（登录态会缓存，后续无需重复）\n")
 
-    results = asyncio.run(run_crawl(args.keywords, args.count, args.headless, output_dir))
+    results = asyncio.run(run_crawl(args.keywords, args.count, args.headless, output_dir,
+                                     user_data_dir=user_data_dir))
 
     if results:
         save_results(results, output_dir, args.keywords)

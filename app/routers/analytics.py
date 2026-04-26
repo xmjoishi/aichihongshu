@@ -2,29 +2,46 @@
 """数据看板 REST API"""
 
 import json
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.db.connection import get_db
+from app.services import account_pool
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
 
+def _active_pool_id() -> int:
+    aid = account_pool.get_active_id()
+    if aid is None:
+        raise HTTPException(400, "尚未激活运营账号，请先在顶栏切换")
+    return aid
+
+
 @router.get("/summary")
 def api_summary():
-    """全局数据汇总"""
+    """全局数据汇总 — 当前激活账号"""
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
-        items_count = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
-        notes_total = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+        items_count = conn.execute(
+            "SELECT COUNT(*) FROM items WHERE account_pool_id=?", (pool_id,)
+        ).fetchone()[0]
+        notes_total = conn.execute(
+            "SELECT COUNT(*) FROM notes WHERE account_pool_id=?", (pool_id,)
+        ).fetchone()[0]
         notes_by_status = {
             r[0]: r[1]
             for r in conn.execute(
-                "SELECT status, COUNT(*) FROM notes GROUP BY status"
+                "SELECT status, COUNT(*) FROM notes WHERE account_pool_id=? GROUP BY status",
+                (pool_id,),
             ).fetchall()
         }
         published_stats = conn.execute(
-            "SELECT AVG(likes), AVG(comments), AVG(collects) FROM notes WHERE status='published'"
+            "SELECT AVG(likes), AVG(comments), AVG(collects) FROM notes "
+            "WHERE status='published' AND account_pool_id=?",
+            (pool_id,),
         ).fetchone()
+
         accounts_count = conn.execute(
             "SELECT COUNT(*) FROM reference_accounts"
         ).fetchone()[0]
@@ -32,7 +49,8 @@ def api_summary():
         profile_row = conn.execute(
             """SELECT followers, total_notes, avg_likes, avg_comments, avg_collects,
                       persona_name, niche, display_name
-               FROM my_profile WHERE id=1"""
+               FROM my_profile WHERE account_pool_id=?""",
+            (pool_id,),
         ).fetchone()
         profile = dict(profile_row) if profile_row else {}
 
@@ -40,19 +58,24 @@ def api_summary():
             """SELECT n.id, n.title, n.likes, n.comments, n.collects,
                       i.title as item_title, n.note_url
                FROM notes n LEFT JOIN items i ON n.item_id=i.id
-               WHERE n.status='published'
-               ORDER BY n.likes DESC LIMIT 10"""
+               WHERE n.status='published' AND n.account_pool_id=?
+               ORDER BY n.likes DESC LIMIT 10""",
+            (pool_id,),
         ).fetchall()
 
         # 今日建议行动所需数据
         # 有图片但尚未生成任何笔记的图库物品数
         items_without_notes = conn.execute(
             """SELECT COUNT(*) FROM items i
-               WHERE NOT EXISTS (SELECT 1 FROM notes n WHERE n.item_id=i.id)"""
+               WHERE i.account_pool_id=?
+                 AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.item_id=i.id AND n.account_pool_id=?)""",
+            (pool_id, pool_id),
         ).fetchone()[0]
         # 距上次发布多少天
         last_published = conn.execute(
-            "SELECT MAX(published_at) FROM notes WHERE status='published' AND published_at IS NOT NULL"
+            "SELECT MAX(published_at) FROM notes WHERE status='published' "
+            "AND published_at IS NOT NULL AND account_pool_id=?",
+            (pool_id,),
         ).fetchone()[0]
         days_since_publish = None
         if last_published:
@@ -91,10 +114,11 @@ def api_summary():
 
 @router.get("/notes")
 def api_analytics_notes(sort: str = "likes"):
-    """已发布笔记列表，按互动数据排序（sort=likes/collects/comments）"""
+    """已发布笔记列表，按互动数据排序（sort=likes/collects/comments）— 当前激活账号"""
     allowed = {"likes", "collects", "comments"}
     if sort not in allowed:
         sort = "likes"
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
         rows = conn.execute(
@@ -102,8 +126,9 @@ def api_analytics_notes(sort: str = "likes"):
                        n.published_at, n.note_url, n.cover_desc,
                        i.image_path as cover_image
                 FROM notes n LEFT JOIN items i ON n.item_id = i.id
-                WHERE n.status = 'published'
-                ORDER BY n.{sort} DESC"""
+                WHERE n.status = 'published' AND n.account_pool_id=?
+                ORDER BY n.{sort} DESC""",
+            (pool_id,),
         ).fetchall()
         result = []
         for r in rows:
@@ -118,12 +143,15 @@ def api_analytics_notes(sort: str = "likes"):
 
 @router.get("/insights")
 def api_analytics_insights():
-    """内容规律洞察：标题字数分布、发布时段、标签词频、与榜样账号对比"""
+    """内容规律洞察：标题字数分布、发布时段、标签词频、与榜样账号对比 — 当前激活账号"""
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
         # 标题字数 vs 平均点赞（分桶）
         title_rows = conn.execute(
-            """SELECT title, likes FROM notes WHERE status='published' AND title IS NOT NULL"""
+            """SELECT title, likes FROM notes
+               WHERE status='published' AND title IS NOT NULL AND account_pool_id=?""",
+            (pool_id,),
         ).fetchall()
         buckets: dict = {"<10": [], "10-20": [], "20-30": [], "30+": []}
         for r in title_rows:
@@ -146,8 +174,9 @@ def api_analytics_insights():
             """SELECT strftime('%H', published_at) as hour,
                       AVG(likes) as avg_likes, COUNT(*) as count
                FROM notes
-               WHERE status='published' AND published_at IS NOT NULL
-               GROUP BY hour ORDER BY hour"""
+               WHERE status='published' AND published_at IS NOT NULL AND account_pool_id=?
+               GROUP BY hour ORDER BY hour""",
+            (pool_id,),
         ).fetchall()
         hour_dist = [
             {"hour": int(r[0]), "avg_likes": round(r[1] or 0, 1), "count": r[2]}
@@ -156,7 +185,9 @@ def api_analytics_insights():
 
         # 标签词频
         tag_rows = conn.execute(
-            """SELECT tags, likes FROM notes WHERE status='published' AND tags IS NOT NULL"""
+            """SELECT tags, likes FROM notes
+               WHERE status='published' AND tags IS NOT NULL AND account_pool_id=?""",
+            (pool_id,),
         ).fetchall()
         all_tags: dict = {}
         for r in tag_rows:
@@ -177,7 +208,9 @@ def api_analytics_insights():
 
         # 与榜样账号均值对比
         my_stats = conn.execute(
-            "SELECT AVG(likes), AVG(comments), AVG(collects) FROM notes WHERE status='published'"
+            "SELECT AVG(likes), AVG(comments), AVG(collects) FROM notes "
+            "WHERE status='published' AND account_pool_id=?",
+            (pool_id,),
         ).fetchone()
         ref_stats = conn.execute(
             "SELECT AVG(avg_likes), AVG(avg_comments), AVG(avg_collects) FROM reference_accounts"
@@ -206,32 +239,38 @@ def api_analytics_insights():
 
 @router.get("/notes-trend")
 def api_notes_trend(granularity: str = "auto"):
-    """笔记发布趋势（近90天，按天或周聚合）
+    """笔记发布趋势（近90天，按天或周聚合）— 当前激活账号
     granularity: auto（自动判断）/ day / week
     优先使用 published_at，fallback 到 created_at
     """
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
         # 统计有多少笔记有 published_at
         has_published = conn.execute(
-            "SELECT COUNT(*) FROM notes WHERE status='published' AND published_at IS NOT NULL"
+            "SELECT COUNT(*) FROM notes WHERE status='published' "
+            "AND published_at IS NOT NULL AND account_pool_id=?",
+            (pool_id,),
         ).fetchone()[0]
 
         if has_published >= 3:
             # 有足够发布时间数据，用 published_at
             date_expr = "date(published_at)"
-            where_clause = "status='published' AND published_at IS NOT NULL AND published_at >= date('now', '-90 days')"
+            where_clause = ("status='published' AND published_at IS NOT NULL "
+                            "AND published_at >= date('now', '-90 days') "
+                            "AND account_pool_id=?")
         else:
             # fallback：用 created_at（导入时间）
             date_expr = "date(created_at)"
-            where_clause = "created_at >= date('now', '-90 days')"
+            where_clause = "created_at >= date('now', '-90 days') AND account_pool_id=?"
 
         rows = conn.execute(
             f"""SELECT {date_expr} as day, COUNT(*) as count,
                        COALESCE(SUM(likes),0) as total_likes
                FROM notes
                WHERE {where_clause}
-               GROUP BY day ORDER BY day"""
+               GROUP BY day ORDER BY day""",
+            (pool_id,),
         ).fetchall()
 
         items = [{"day": r[0], "count": r[1], "total_likes": r[2]} for r in rows if r[0]]
@@ -261,12 +300,15 @@ def api_notes_trend(granularity: str = "auto"):
 
 @router.get("/topics")
 def api_topics(limit: int = 30):
-    """从已发布笔记的标签和标题中提取热词，供灵感页话题联想使用"""
+    """从已发布笔记的标签和标题中提取热词，供灵感页话题联想使用 — 当前激活账号"""
+    pool_id = _active_pool_id()
     conn = get_db()
     try:
         # 标签词频（已发布笔记）
         tag_rows = conn.execute(
-            "SELECT tags FROM notes WHERE status='published' AND tags IS NOT NULL"
+            "SELECT tags FROM notes WHERE status='published' AND tags IS NOT NULL "
+            "AND account_pool_id=?",
+            (pool_id,),
         ).fetchall()
         tag_count: dict = {}
         for r in tag_rows:

@@ -28,9 +28,13 @@ for _p in _mc_site:
     if _p not in sys.path:
         sys.path.insert(1, _p)
 
-os.chdir(MEDIA_CRAWLER_DIR)
-
 PROJECT_ROOT = Path(__file__).parent.parent
+
+# v0.2: 多账号 user_data_dir 桥接
+sys.path.insert(0, str(PROJECT_ROOT))
+from crawler._user_data_dir import resolve_active_user_data_dir, link_to_media_crawler  # noqa: E402
+
+os.chdir(MEDIA_CRAWLER_DIR)
 
 
 def _is_cdp_port_open(port: int = 9222, timeout: float = 1.0) -> bool:
@@ -80,8 +84,13 @@ def patch_config(creator_url: str):
         print("[xhs_creator] 爬虫浏览器未开启，使用 Playwright Chromium 模式（首次需扫码，登录态会缓存）")
 
 
-async def run_crawl(creator_url: str) -> tuple[list, dict | None]:
+async def run_crawl(creator_url: str, user_data_dir: Path | None = None) -> tuple[list, dict | None]:
     """运行爬虫，返回 (笔记列表, creator_info 或 None)"""
+    # v0.2: 桥接激活账号 user_data_dir（仅 Playwright 模式有效，CDP 模式由用户自己开浏览器）
+    active_dir = user_data_dir or resolve_active_user_data_dir()
+    link_to_media_crawler(active_dir, platform="xhs")
+    print(f"[xhs_creator] 使用账号目录：{active_dir}")
+
     import re as _re
     m = _re.search(r"/profile/([a-f0-9]+)", creator_url)
     account_id = m.group(1) if m else ""
@@ -250,8 +259,11 @@ def calc_stats(notes: list) -> dict:
     }
 
 
-def save_my_profile_crawl_data(creator_info: dict, notes: list | None = None):
-    """将爬虫抓取的账号主页数据写入 my_profile 表，并可选同步笔记数据到 notes 表"""
+def save_my_profile_crawl_data(creator_info: dict, notes: list | None = None, account_pool_id: int | None = None):
+    """将爬虫抓取的账号主页数据写入 my_profile 表，并可选同步笔记数据到 notes 表
+
+    account_pool_id：v0.3 多账号隔离。未指定时，回退到当前激活账号；都没有则报错。
+    """
     sys.path.insert(0, str(PROJECT_ROOT))
     try:
         from dotenv import load_dotenv
@@ -262,6 +274,12 @@ def save_my_profile_crawl_data(creator_info: dict, notes: list | None = None):
     from app.db.connection import get_db, init_db
     init_db()
 
+    if account_pool_id is None:
+        from app.services import account_pool as _ap
+        account_pool_id = _ap.get_active_id()
+        if account_pool_id is None:
+            raise RuntimeError("尚未激活运营账号，请先在 GUI 顶栏激活")
+
     conn = get_db()
     try:
         tags = creator_info.get("tags", [])
@@ -269,7 +287,8 @@ def save_my_profile_crawl_data(creator_info: dict, notes: list | None = None):
 
         # display_name：如果当前值是 account_id（未设置真实名字）则用昵称覆盖
         current = conn.execute(
-            "SELECT account_id, display_name FROM my_profile WHERE id=1"
+            "SELECT account_id, display_name FROM my_profile WHERE account_pool_id=?",
+            (account_pool_id,),
         ).fetchone()
         if current:
             cur_account_id = current["account_id"] or ""
@@ -290,7 +309,7 @@ def save_my_profile_crawl_data(creator_info: dict, notes: list | None = None):
                 xhs_tags     = ?,
                 crawled_at   = datetime('now','localtime'),
                 updated_at   = datetime('now','localtime')
-               WHERE id = 1
+               WHERE account_pool_id = ?
             """,
             (
                 1 if use_nickname else 0,
@@ -302,6 +321,7 @@ def save_my_profile_crawl_data(creator_info: dict, notes: list | None = None):
                 creator_info.get("fans", 0),             # followers
                 creator_info.get("ip_location"),         # ip_location
                 json.dumps(tags, ensure_ascii=False),    # xhs_tags
+                account_pool_id,
             ),
         )
         conn.commit()
@@ -310,7 +330,7 @@ def save_my_profile_crawl_data(creator_info: dict, notes: list | None = None):
 
         # 同步笔记数据到 notes 表，并缓存统计数据
         if notes:
-            _sync_notes_to_db(conn, notes, creator_info)
+            _sync_notes_to_db(conn, notes, creator_info, account_pool_id=account_pool_id)
             stats = _calc_notes_stats(notes)
             conn.execute(
                 """UPDATE my_profile SET
@@ -321,7 +341,7 @@ def save_my_profile_crawl_data(creator_info: dict, notes: list | None = None):
                     avg_comments   = ?,
                     avg_collects   = ?,
                     updated_at     = datetime('now','localtime')
-                   WHERE id = 1
+                   WHERE account_pool_id = ?
                 """,
                 (
                     stats["note_count"],
@@ -330,6 +350,7 @@ def save_my_profile_crawl_data(creator_info: dict, notes: list | None = None):
                     stats["avg_likes"],
                     stats["avg_comments"],
                     stats["avg_collects"],
+                    account_pool_id,
                 ),
             )
             conn.commit()
@@ -339,7 +360,7 @@ def save_my_profile_crawl_data(creator_info: dict, notes: list | None = None):
         conn.close()
 
 
-def _sync_notes_to_db(conn, notes: list, creator_info: dict):
+def _sync_notes_to_db(conn, notes: list, creator_info: dict, account_pool_id: int | None = None):
     """将爬虫抓取的笔记 upsert 到 notes 表（按 note_url 去重，status='published'）"""
     def safe_int(v):
         try:
@@ -388,13 +409,14 @@ def _sync_notes_to_db(conn, notes: list, creator_info: dict):
             conn.execute(
                 """INSERT INTO notes
                    (title, body, tags, status, note_url, likes, comments, collects,
-                    published_at, created_at, updated_at)
+                    published_at, account_pool_id, created_at, updated_at)
                    VALUES (?, ?, ?, 'published', ?, ?, ?, ?,
-                           ?, datetime('now','localtime'), datetime('now','localtime'))""",
+                           ?, ?, datetime('now','localtime'), datetime('now','localtime'))""",
                 (
                     title, body,
                     json.dumps(tags, ensure_ascii=False),
                     note_url, likes, comments, collects, published_at,
+                    account_pool_id,
                 ),
             )
         synced += 1
@@ -484,6 +506,10 @@ def main():
     parser.add_argument("--save-db", action="store_true", help="是否写入数据库")
     parser.add_argument("--my-profile", action="store_true", help="将爬取结果同步到 my_profile 表（用于刷新我的账号数据）")
     parser.add_argument("--output-dir", default="data/crawl", help="原始数据输出目录")
+    parser.add_argument("--user-data-dir", default=None,
+                        help="浏览器 user_data_dir（v0.2 多账号），默认读激活账号")
+    parser.add_argument("--account-pool-id", type=int, default=None,
+                        help="v0.3 多账号隔离：指定将抓取结果写入哪个账号的 my_profile，默认读激活账号")
     args = parser.parse_args()
 
     # 从 URL 解析 account_id
@@ -498,7 +524,10 @@ def main():
     print(f"[xhs_creator] 账号：{args.name or account_id} ({account_id})")
     print(f"[xhs_creator] 首次运行需扫码登录\n")
 
-    notes, creator_info = asyncio.run(run_crawl(args.url))
+    notes, creator_info = asyncio.run(run_crawl(
+        args.url,
+        user_data_dir=Path(args.user_data_dir) if args.user_data_dir else None,
+    ))
     if not notes and not creator_info:
         print("[xhs_creator] 未获取到数据")
         return
@@ -528,7 +557,7 @@ def main():
 
     if args.my_profile:
         if creator_info:
-            save_my_profile_crawl_data(creator_info, notes=notes or [])
+            save_my_profile_crawl_data(creator_info, notes=notes or [], account_pool_id=args.account_pool_id)
             # 若 --save-db 已输出过 RESULT_JSON，不重复输出
             if not args.save_db:
                 print(f"RESULT_JSON:{json.dumps(creator_info, ensure_ascii=False)}")

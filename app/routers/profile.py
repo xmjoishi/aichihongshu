@@ -1,27 +1,66 @@
 # -*- coding: utf-8 -*-
-"""账号人设 REST API"""
+"""账号人设 REST API（v0.3 多账号隔离）
+
+每个 operation 账号有一行独立的 my_profile，按 account_pool_id 关联。
+所有读/写都基于「当前激活账号」自动定位到对应人设行。
+assistant 账号不会成为激活账号（service 层已限制）。
+"""
 
 import json
 from typing import Optional
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
 from app.db.connection import get_db
+from app.services import account_pool
+from app.services.protection import require_protection
 
 router = APIRouter(prefix="/api/profile", tags=["profile"])
 
-# 刷新任务状态（简单内存状态，进程重启后重置）
-_refresh_status: dict = {"running": False, "last_error": None}
+# 刷新任务状态（按 account_pool_id 维度记录）
+_refresh_status: dict[int, dict] = {}
 
 
-def _get_profile() -> Optional[dict]:
+def _active_pool_id() -> int:
+    """获取当前激活的 operation 账号 id；未激活则报错。"""
+    aid = account_pool.get_active_id()
+    if aid is None:
+        raise HTTPException(400, "尚未激活任何账号，请先在顶栏切换运营账号")
+    return aid
+
+
+def _ensure_profile_row(pool_id: int) -> None:
+    """保证该 account_pool_id 对应的 my_profile 行存在；不存在则建空行。"""
     conn = get_db()
     try:
-        row = conn.execute("SELECT * FROM my_profile WHERE id=1").fetchone()
+        row = conn.execute(
+            "SELECT id FROM my_profile WHERE account_pool_id=?", (pool_id,)
+        ).fetchone()
+        if row:
+            return
+        # 取账号 alias 作为兜底 display_name
+        acc = conn.execute(
+            "SELECT alias FROM account_pool WHERE id=?", (pool_id,)
+        ).fetchone()
+        display_name = acc["alias"] if acc else None
+        conn.execute(
+            "INSERT INTO my_profile (account_pool_id, display_name) VALUES (?, ?)",
+            (pool_id, display_name),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _get_profile(pool_id: int) -> Optional[dict]:
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM my_profile WHERE account_pool_id=?", (pool_id,)
+        ).fetchone()
         if not row:
             return None
         d = dict(row)
-        # 解析 JSON 字段
         for field in ("content_pillars", "persona_taboos", "preferred_styles",
                       "preferred_scenes", "hashtag_pool", "xhs_tags"):
             if isinstance(d.get(field), str):
@@ -34,12 +73,11 @@ def _get_profile() -> Optional[dict]:
         conn.close()
 
 
-@router.get("/")
+@router.get("")
 def api_get_profile():
-    profile = _get_profile()
-    if not profile:
-        raise HTTPException(404, "尚未初始化账号人设，请先运行 profile init")
-    return profile
+    pool_id = _active_pool_id()
+    _ensure_profile_row(pool_id)
+    return _get_profile(pool_id)
 
 
 class ProfileUpdate(BaseModel):
@@ -57,90 +95,92 @@ class ProfileUpdate(BaseModel):
     preferred_scenes: Optional[list[str]] = None
     hashtag_pool: Optional[list[str]] = None
     posting_rhythm: Optional[str] = None
-    # 小红书主页原始字段（爬虫写入，也允许手动覆盖）
     avatar_url: Optional[str] = None
     xhs_bio: Optional[str] = None
     xhs_follows: Optional[int] = None
     ip_location: Optional[str] = None
     xhs_tags: Optional[list[str]] = None
+    # v0.2 全局风险免责声明（不绑定具体账号，但仍存于 my_profile）
+    risk_warning_ack: Optional[int] = None
 
 
-@router.patch("/")
+@router.patch("")
 def api_update_profile(body: ProfileUpdate):
+    pool_id = _active_pool_id()
+    _ensure_profile_row(pool_id)
+
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(400, "没有可更新的字段")
 
+    set_clauses = []
+    params = []
+    for key, val in updates.items():
+        set_clauses.append(f"{key}=?")
+        params.append(json.dumps(val, ensure_ascii=False) if isinstance(val, list) else val)
+
+    if updates.get("risk_warning_ack") == 1:
+        set_clauses.append("risk_warning_ack_at=datetime('now','localtime')")
+
+    set_clauses.append("updated_at=datetime('now','localtime')")
+    params.append(pool_id)
+
     conn = get_db()
     try:
-        row = conn.execute("SELECT id FROM my_profile WHERE id=1").fetchone()
-        if not row:
-            raise HTTPException(404, "尚未初始化账号人设")
-
-        set_clauses = []
-        params = []
-        for key, val in updates.items():
-            set_clauses.append(f"{key}=?")
-            params.append(json.dumps(val, ensure_ascii=False) if isinstance(val, list) else val)
-
-        set_clauses.append("updated_at=datetime('now','localtime')")
-        params.append(1)
-
         conn.execute(
-            f"UPDATE my_profile SET {', '.join(set_clauses)} WHERE id=?",
+            f"UPDATE my_profile SET {', '.join(set_clauses)} WHERE account_pool_id=?",
             params,
         )
         conn.commit()
     finally:
         conn.close()
 
-    return _get_profile()
+    return _get_profile(pool_id)
 
 
 @router.get("/refresh-status")
 def api_refresh_status():
-    """查询账号主页数据刷新任务的状态"""
-    return _refresh_status
+    """查询当前激活账号的主页刷新任务状态"""
+    pool_id = _active_pool_id()
+    return _refresh_status.get(pool_id, {"running": False, "last_error": None})
 
 
-@router.post("/refresh")
+@router.post("/refresh", dependencies=[Depends(require_protection("profile_refresh"))])
 def api_refresh_profile(background_tasks: BackgroundTasks):
-    """触发爬虫重新抓取账号主页数据（头像/粉丝数/bio/IP 等）。
-    要求 my_profile 中已存有 account_id。
-    任务异步执行，可通过 GET /api/profile/refresh-status 查询进度。
-    """
-    if _refresh_status["running"]:
+    """触发爬虫重新抓取当前激活账号的主页数据。"""
+    pool_id = _active_pool_id()
+    _ensure_profile_row(pool_id)
+
+    status = _refresh_status.setdefault(pool_id, {"running": False, "last_error": None})
+    if status["running"]:
         raise HTTPException(409, "已有刷新任务正在运行，请稍候")
 
-    profile = _get_profile()
+    profile = _get_profile(pool_id)
     if not profile:
         raise HTTPException(404, "尚未初始化账号人设")
     account_id = profile.get("account_id")
     if not account_id:
         raise HTTPException(400, "人设中未设置 account_id，无法触发爬虫刷新。"
-                                 "请先运行 profile init --url 初始化账号。")
+                                 "请先在 profile 页填入小红书账号 ID。")
 
-    background_tasks.add_task(_do_refresh, account_id)
+    background_tasks.add_task(_do_refresh, pool_id, account_id)
     return {"message": "刷新任务已启动", "account_id": account_id}
 
 
-def _do_refresh(account_id: str):
-    """后台任务：通过 subprocess 调用爬虫刷新账号主页数据（使用 MediaCrawler 独立 venv）"""
+def _do_refresh(pool_id: int, account_id: str):
+    """后台任务：subprocess 调爬虫刷新主页（用 MediaCrawler 独立 venv）"""
     import subprocess
-    import sys
     from pathlib import Path
 
-    _refresh_status["running"] = True
-    _refresh_status["last_error"] = None
+    status = _refresh_status.setdefault(pool_id, {"running": False, "last_error": None})
+    status["running"] = True
+    status["last_error"] = None
 
     try:
         project_root = Path(__file__).parent.parent.parent
         media_crawler_dir = project_root / "tools" / "MediaCrawler"
-
-        # 构造账号 URL
         creator_url = f"https://www.xiaohongshu.com/user/profile/{account_id}"
 
-        # 用 MediaCrawler 自己的 uv 环境运行脚本（包含 aiofiles 等依赖）
         cmd = [
             "uv", "run",
             "--project", str(media_crawler_dir),
@@ -148,9 +188,11 @@ def _do_refresh(account_id: str):
             str(project_root / "crawler" / "xhs_creator.py"),
             "--url", creator_url,
             "--my-profile",
+            "--account-pool-id", str(pool_id),
+            "--user-data-dir", account_pool.get_active_user_data_dir(),
         ]
 
-        print(f"[profile/refresh] 运行爬虫：{' '.join(cmd)}")
+        print(f"[profile/refresh pool={pool_id}] 运行爬虫：{' '.join(cmd)}")
         result = subprocess.run(
             cmd,
             cwd=str(project_root),
@@ -159,7 +201,6 @@ def _do_refresh(account_id: str):
             timeout=120,
         )
 
-        # 打印爬虫输出，方便调试
         if result.stdout:
             for line in result.stdout.splitlines():
                 print(f"[xhs_creator] {line}")
@@ -168,10 +209,9 @@ def _do_refresh(account_id: str):
                 print(f"[xhs_creator:err] {line}")
 
         if result.returncode != 0:
-            _refresh_status["last_error"] = f"爬虫进程退出码 {result.returncode}"
+            status["last_error"] = f"爬虫进程退出码 {result.returncode}"
             return
 
-        # 检查是否有 RESULT_JSON 输出
         creator_info = None
         for line in result.stdout.splitlines():
             if line.startswith("RESULT_JSON:"):
@@ -181,13 +221,12 @@ def _do_refresh(account_id: str):
                 break
 
         if not creator_info:
-            _refresh_status["last_error"] = "爬虫未返回账号主页信息，可能需要重新扫码登录"
+            status["last_error"] = "爬虫未返回账号主页信息，可能需要重新扫码登录"
 
     except subprocess.TimeoutExpired:
-        _refresh_status["last_error"] = "爬虫超时（120s），请检查网络或重新扫码"
+        status["last_error"] = "爬虫超时（120s），请检查网络或重新扫码"
     except Exception as e:
-        _refresh_status["last_error"] = str(e)
-        print(f"[profile/refresh] 刷新失败：{e}")
+        status["last_error"] = str(e)
+        print(f"[profile/refresh pool={pool_id}] 刷新失败：{e}")
     finally:
-        _refresh_status["running"] = False
-
+        status["running"] = False

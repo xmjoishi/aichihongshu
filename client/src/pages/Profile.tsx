@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, riskAckHeader } from "../lib/api";
 import { Profile as ProfileType } from "../lib/types";
 import { Spinner } from "../components/ui";
 import {
@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import AIPanel from "../components/AIPanel";
 import { useToast } from "../components/Toast";
+import { useRiskConfirm } from "../components/useRiskConfirm";
 
 // ── 工具函数 ──────────────────────────────────────────────────────
 function toArray(s: string): string[] {
@@ -268,6 +269,7 @@ function Tabs({ active, onChange }: { active: TabId; onChange: (t: TabId) => voi
 export default function ProfilePage() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const { confirmAndRetry, dialog: riskDialog } = useRiskConfirm();
   const [activeTab, setActiveTab] = useState<TabId>("account");
   const [editing, setEditing] = useState(false);
   const [showAI, setShowAI] = useState(false);
@@ -276,7 +278,12 @@ export default function ProfilePage() {
 
   const { data: profile, isLoading } = useQuery<ProfileType>({
     queryKey: ["profile"],
-    queryFn: () => api.get("/api/profile/"),
+    queryFn: () => api.get("/api/profile"),
+  });
+
+  const { data: activeStatus } = useQuery<{ active?: { alias?: string; display_name?: string } | null }>({
+    queryKey: ["account-pool", "protection"],
+    queryFn: () => api.get("/api/account-pool/protection/status"),
   });
 
   // 刷新爬虫轮询
@@ -306,7 +313,7 @@ export default function ProfilePage() {
 
   async function handleRefresh() {
     try {
-      await api.post("/api/profile/refresh", {});
+      await confirmAndRetry((ack) => api.post("/api/profile/refresh", {}, riskAckHeader(ack)));
       setRefreshing(true);
       toast("正在抓取小红书主页数据，请稍候...", "info");
     } catch (e: unknown) {
@@ -322,7 +329,7 @@ export default function ProfilePage() {
   const saveMutation = useMutation({
     mutationFn: () => {
       if (!form) throw new Error("no form");
-      return api.patch("/api/profile/", {
+      return api.patch("/api/profile", {
         account_id: form.account_id || undefined,
         display_name: form.display_name || undefined,
         niche: form.niche || undefined,
@@ -372,11 +379,15 @@ export default function ProfilePage() {
 
   // ══ 只读视图 ══════════════════════════════════════════════════
   if (!editing) {
+    const activeName = activeStatus?.active?.display_name || activeStatus?.active?.alias || "未激活";
     return (
       <div className="flex flex-col h-full">
         {/* 顶部标题栏 */}
         <div className="flex items-center px-6 py-4 border-b border-zinc-100 bg-white shrink-0">
           <h1 className="text-lg font-semibold text-zinc-900">我的账号</h1>
+          <span className="ml-3 text-xs px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600">
+            当前账号：{activeName}
+          </span>
           <span className="text-xs text-zinc-400 ml-3">更新 {profile.updated_at?.slice(0, 10)}</span>
           <button
             onClick={() => setEditing(true)}
@@ -436,6 +447,7 @@ export default function ProfilePage() {
 
   return (
     <div className="flex h-full">
+      {riskDialog}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* 工具栏 */}
         <div className="flex items-center gap-2 px-6 py-3 border-b border-zinc-100 bg-white shrink-0">

@@ -31,3 +31,6 @@ venv/
 # macOS
 .DS_Store
 data/publish_staging/
+
+# 多账号浏览器登录态（含 Chromium user_data_dir，体积大、含敏感 cookie）
+data/browser_profiles/

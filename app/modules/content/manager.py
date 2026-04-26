@@ -21,6 +21,7 @@ def create_note(
     tags: Optional[List[str]] = None,
     cover_desc: Optional[str] = None,
     prompt_used: Optional[str] = None,
+    account_pool_id: Optional[int] = None,
 ) -> Note:
     # item_ids 优先；若未传则从 item_id 推导
     ids: List[int] = item_ids if item_ids else ([item_id] if item_id else [])
@@ -29,8 +30,8 @@ def create_note(
     try:
         cur = conn.execute(
             """INSERT INTO notes
-               (item_id, item_ids, account_ref, title, body, tags, cover_desc, prompt_used)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (item_id, item_ids, account_ref, title, body, tags, cover_desc, prompt_used, account_pool_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 primary_id,
                 json.dumps(ids, ensure_ascii=False),
@@ -40,6 +41,7 @@ def create_note(
                 json.dumps(tags or [], ensure_ascii=False),
                 cover_desc,
                 prompt_used,
+                account_pool_id,
             ),
         )
         conn.commit()
@@ -48,10 +50,16 @@ def create_note(
         conn.close()
 
 
-def get_note(note_id: int) -> Optional[Note]:
+def get_note(note_id: int, account_pool_id: Optional[int] = None) -> Optional[Note]:
     conn = get_db()
     try:
-        row = conn.execute("SELECT * FROM notes WHERE id=?", (note_id,)).fetchone()
+        if account_pool_id is None:
+            row = conn.execute("SELECT * FROM notes WHERE id=?", (note_id,)).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM notes WHERE id=? AND account_pool_id=?",
+                (note_id, account_pool_id),
+            ).fetchone()
         return _row_to_note(row) if row else None
     finally:
         conn.close()
@@ -62,6 +70,7 @@ def list_notes(
     item_id: Optional[int] = None,
     search: Optional[str] = None,
     sort: Optional[str] = None,   # "created_desc" | "created_asc" | "updated_desc" | "title_asc"
+    account_pool_id: Optional[int] = None,
 ) -> List[Note]:
     conn = get_db()
     try:
@@ -77,6 +86,9 @@ def list_notes(
             sql += " AND (title LIKE ? OR body LIKE ? OR tags LIKE ?)"
             q = f"%{search}%"
             params.extend([q, q, q])
+        if account_pool_id is not None:
+            sql += " AND account_pool_id=?"
+            params.append(account_pool_id)
         order = {
             "created_asc":    "created_at ASC",
             "updated_desc":   "updated_at DESC",

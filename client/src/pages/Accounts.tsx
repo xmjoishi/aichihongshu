@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, openInBrowser } from "../lib/api";
+import { api, openInBrowser, riskAckHeader, RiskConfirmationRequiredError } from "../lib/api";
 import { ReferenceAccount } from "../lib/types";
 import { Spinner, Empty } from "../components/ui";
 import {
@@ -8,6 +8,7 @@ import {
   ChevronRight, Copy, Check, Pencil, Save, ExternalLink,
 } from "lucide-react";
 import { useToast } from "../components/Toast";
+import { useRiskConfirm } from "../components/useRiskConfirm";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { usePanelResize } from "../hooks/usePanelResize";
@@ -79,6 +80,7 @@ function CrawlerModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
   const [detectedName, setDetectedName] = useState<string | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const { confirmAndRetry, dialog: riskDialog } = useRiskConfirm();
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -90,21 +92,42 @@ function CrawlerModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
     setRunning(true);
     setDone(false);
     setDetectedName(null);
-    ctrlRef.current = api.stream(
-      "/api/crawler/creator",
-      { url: url.trim(), name: name.trim() || undefined, save_db: true },
-      (chunk) => {
-        if (chunk.message) setLogs((prev) => [...prev, chunk.message as string]);
-        if (chunk.done) {
-          setRunning(false);
-          setDone(true);
-          if (chunk.nickname) setDetectedName(chunk.nickname as string);
-          onDone();
-        }
-      },
-      () => { setRunning(false); setDone(true); onDone(); },
-      (err) => { setLogs((prev) => [...prev, `错误: ${err.message}`]); setRunning(false); },
-    );
+
+    // v0.2: stream 启动前用 confirmAndRetry 处理 428 风险确认
+    confirmAndRetry((ack) => {
+      return new Promise<void>((resolve, reject) => {
+        ctrlRef.current = api.stream(
+          "/api/crawler/creator",
+          { url: url.trim(), name: name.trim() || undefined, save_db: true },
+          (chunk) => {
+            if (chunk.message) setLogs((prev) => [...prev, chunk.message as string]);
+            if (chunk.done) {
+              setRunning(false);
+              setDone(true);
+              if (chunk.nickname) setDetectedName(chunk.nickname as string);
+              onDone();
+            }
+          },
+          () => { setRunning(false); setDone(true); onDone(); resolve(); },
+          (err) => {
+            // 428 风险确认错误 → reject 让外层弹窗
+            if (err instanceof RiskConfirmationRequiredError) {
+              setRunning(false);
+              reject(err);
+              return;
+            }
+            setLogs((prev) => [...prev, `错误: ${err.message}`]);
+            setRunning(false);
+            resolve();
+          },
+          "POST",
+          riskAckHeader(ack),
+        );
+      });
+    }).catch((e) => {
+      setLogs((prev) => [...prev, `已取消: ${(e as Error).message}`]);
+      setRunning(false);
+    });
   }
 
   function abort() { ctrlRef.current?.abort(); setRunning(false); }
@@ -113,6 +136,7 @@ function CrawlerModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+      {riskDialog}
       <div className="bg-white rounded-2xl w-full max-w-md shadow-xl">
         <div className="flex items-center justify-between p-4 border-b border-zinc-100">
           <span className="font-semibold text-zinc-800 text-sm">导入榜样账号</span>

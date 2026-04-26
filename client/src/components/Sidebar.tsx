@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 import {
   LayoutGrid, FileText, Users, User, BarChart2, Settings, TrendingUp, Sparkles,
+  ShieldCheck,
 } from "lucide-react";
 
 const nav = [
@@ -10,6 +11,7 @@ const nav = [
   { to: "/inspire", icon: Sparkles, label: "灵感" },
   { to: "/data", icon: TrendingUp, label: "数据" },
   { to: "/accounts", icon: Users, label: "榜样" },
+  { to: "/accounts/pool", icon: ShieldCheck, label: "账号池" },
   { to: "/profile", icon: User, label: "账号" },
 ];
 
@@ -25,7 +27,7 @@ export default function Sidebar() {
         <NavLink
           key={to}
           to={to}
-          end={to === "/"}
+          end={to === "/" || to === "/accounts"}
           className={({ isActive }) =>
             `flex flex-col items-center gap-0.5 w-12 py-2 rounded-xl transition-colors
              ${isActive

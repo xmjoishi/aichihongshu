@@ -2,13 +2,14 @@ import { useState, useEffect, useRef } from "react";
 import { usePanelResize } from "../hooks/usePanelResize";
 import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
-import { api, API_BASE, openInBrowser, openInSystemBrowser } from "../lib/api";
+import { api, API_BASE, openInBrowser, openInSystemBrowser, riskAckHeader } from "../lib/api";
 import { NOTE_TYPE_GROUPS, getNoteTypeBadge, type NoteType } from "../lib/noteTypes";
 import { Note, Item } from "../lib/types";
 import { Spinner, Empty, StatusBadge } from "../components/ui";
 import { Save, Copy, ChevronRight, Sparkles, ImagePlus, Hash, FileText, Trash2, X, Search, Send, Check, ExternalLink, Rocket, Loader2, FolderOpen, Images } from "lucide-react";
 import AIPanel from "../components/AIPanel";
 import { useToast } from "../components/Toast";
+import { useRiskConfirm } from "../components/useRiskConfirm";
 import { useHDRSetting } from "../hooks/useHDRSetting";
 import { useDebounce } from "../hooks/useDebounce";
 import BodyEditor from "../components/BodyEditor";
@@ -263,6 +264,7 @@ export function NoteList() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { toast } = useToast();
+  const { confirmAndRetry, dialog: riskDialog } = useRiskConfirm();
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("created_desc");
@@ -339,8 +341,10 @@ export function NoteList() {
       }
 
       toast("已登录，正在启动自动发布，浏览器将自动打开…", "info");
-      // 启动后台任务，立即返回 job_id
-      const { job_id } = await api.post(`/api/content/${note.id}/publish-auto`, {});
+      // 启动后台任务，立即返回 job_id（带 v0.2 主号保护二次确认）
+      const { job_id } = await confirmAndRetry((ack) =>
+        api.post(`/api/content/${note.id}/publish-auto`, {}, riskAckHeader(ack)),
+      );
 
       // 轮询任务状态（最多等 5 分钟，每 3 秒一次）
       const maxTries = 100;
@@ -382,6 +386,7 @@ export function NoteList() {
 
   return (
     <div className="flex flex-col h-full">
+      {riskDialog}
       {publishingNote && (
         <PublishModal
           note={publishingNote}
@@ -1280,7 +1285,7 @@ function NoteImagePanel({ itemIds, title, body, tags }: {
   // 拉取账号人设（头像 + 名称）
   const { data: profile } = useQuery({
     queryKey: ["profile"],
-    queryFn: () => api.get("/api/profile/") as Promise<{ display_name?: string; avatar_url?: string }>,
+    queryFn: () => api.get("/api/profile") as Promise<{ display_name?: string; avatar_url?: string }>,
     staleTime: 5 * 60 * 1000,
   });
   const displayName = profile?.display_name || "账号名称";

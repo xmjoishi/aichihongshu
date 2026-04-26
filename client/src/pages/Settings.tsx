@@ -3,7 +3,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Save, KeyRound, RefreshCw, Monitor, ChevronRight, User,
   Trash2, RotateCcw, X, Plus, Pencil, Check, GripVertical,
-  Globe, CircleStop,
 } from "lucide-react";
 import { api, API_BASE } from "../lib/api";
 import { useToast } from "../components/Toast";
@@ -191,9 +190,6 @@ function GeneralTab() {
         </Field>
       </Section>
 
-      {/* ── 爬虫浏览器 */}
-      <BrowserSection />
-
       {/* ── 账号人设跳转 */}
       <Section title="账号人设">
         <p className="text-xs text-zinc-400 -mt-1">
@@ -215,70 +211,6 @@ function GeneralTab() {
         </button>
       </Section>
     </>
-  );
-}
-
-// ── 爬虫浏览器 Section ────────────────────────────────────────────
-function BrowserSection() {
-  const { toast } = useToast();
-
-  const { data: status, refetch } = useQuery<{ running: boolean; pid?: number }>({
-    queryKey: ["browser-status"],
-    queryFn: () => api.get("/api/crawler/browser"),
-    refetchInterval: 3000,   // 每 3 秒轮询一次，感知浏览器被手动关闭
-  });
-
-  const open = useMutation({
-    mutationFn: () => api.post("/api/crawler/browser", {}),
-    onSuccess: () => { refetch(); toast("浏览器已启动", "success"); },
-    onError: (e: Error) => toast(e.message, "error"),
-  });
-
-  const close = useMutation({
-    mutationFn: () => api.delete("/api/crawler/browser"),
-    onSuccess: () => { refetch(); toast("浏览器已关闭", "success"); },
-    onError: (e: Error) => toast(e.message, "error"),
-  });
-
-  const running = status?.running ?? false;
-
-  return (
-    <Section title="爬虫浏览器">
-      <p className="text-xs text-zinc-400 -mt-1">
-        使用与爬虫相同的 Playwright Chromium 打开小红书，登录态共享，不影响系统其他浏览器。
-      </p>
-      <div className="flex items-center gap-3">
-        {running ? (
-          <>
-            <span className="flex items-center gap-1.5 text-xs text-green-600 bg-green-50 border border-green-200 px-2.5 py-1 rounded-full">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-              运行中 {status?.pid ? `(PID ${status.pid})` : ""}
-            </span>
-            <button
-              onClick={() => close.mutate()}
-              disabled={close.isPending}
-              className="flex items-center gap-1.5 text-sm border border-zinc-200 text-zinc-600 px-3 py-1.5 rounded-lg hover:bg-zinc-50 disabled:opacity-50"
-            >
-              <CircleStop size={13} />
-              关闭浏览器
-            </button>
-          </>
-        ) : (
-          <button
-            onClick={() => open.mutate()}
-            disabled={open.isPending}
-            className="flex items-center gap-1.5 text-sm bg-[#ff2442] text-white px-4 py-1.5 rounded-lg hover:bg-[#e01f3a] disabled:opacity-50"
-          >
-            {open.isPending ? <RefreshCw size={13} className="animate-spin" /> : <Globe size={13} />}
-            打开爬虫浏览器
-          </button>
-        )}
-      </div>
-      <div className="text-xs text-zinc-400 space-y-1">
-        <p>登录态缓存在 <code className="bg-zinc-100 px-1 rounded text-zinc-600">browser_data/xhs_user_data_dir</code>，扫码一次后长期有效。</p>
-        <p className="text-amber-600">⚠️ 导入账号时需要 xsec_token：在此浏览器里<strong>搜索</strong>目标账号名 → 从搜索结果点进主页 → 地址栏会自动带上 token → 再复制 URL。</p>
-      </div>
-    </Section>
   );
 }
 

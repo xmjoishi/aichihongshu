@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -17,11 +17,20 @@ from app.modules.content.manager import (
     update_note_content, update_note_status, delete_note, export_note_markdown,
 )
 from app.modules.library.manager import get_item
+from app.services import account_pool
+from app.services.protection import require_protection
 
 router = APIRouter(prefix="/api/content", tags=["content"])
 
 # 内存中存储自动发布任务状态（进程重启后清空，轻量实现）
 _publish_jobs: dict = {}
+
+
+def _active_pool_id() -> int:
+    aid = account_pool.get_active_id()
+    if aid is None:
+        raise HTTPException(400, "尚未激活运营账号，请先在顶栏切换")
+    return aid
 
 
 class NoteCreate(BaseModel):
@@ -68,7 +77,13 @@ def api_list_notes(
     search: Optional[str] = Query(None),
     sort: Optional[str] = Query(None),
 ):
-    return list_notes(status=status, item_id=item_id, search=search, sort=sort)
+    return list_notes(
+        status=status,
+        item_id=item_id,
+        search=search,
+        sort=sort,
+        account_pool_id=_active_pool_id(),
+    )
 
 
 @router.get("/xhs-login-status")
@@ -87,7 +102,8 @@ def api_xhs_login_status():
 
     try:
         result = subprocess.run(
-            [python_exe, str(publish_script), "--check-login"],
+            [python_exe, str(publish_script), "--check-login",
+             "--user-data-dir", account_pool.get_active_user_data_dir()],
             capture_output=True, text=True, timeout=30,
             cwd=str(project_root),
         )
@@ -99,7 +115,7 @@ def api_xhs_login_status():
 
 @router.get("/{note_id}", response_model=Note)
 def api_get_note(note_id: int):
-    note = get_note(note_id)
+    note = get_note(note_id, account_pool_id=_active_pool_id())
     if not note:
         raise HTTPException(404, f"笔记 {note_id} 不存在")
     return note
@@ -107,12 +123,13 @@ def api_get_note(note_id: int):
 
 @router.post("/", response_model=Note)
 def api_create_note(body: NoteCreate):
-    return create_note(**body.model_dump())
+    return create_note(**body.model_dump(), account_pool_id=_active_pool_id())
 
 
 @router.patch("/{note_id}", response_model=Note)
 def api_update_note(note_id: int, body: NoteUpdate):
-    note = get_note(note_id)
+    pool_id = _active_pool_id()
+    note = get_note(note_id, account_pool_id=pool_id)
     if not note:
         raise HTTPException(404, f"笔记 {note_id} 不存在")
     return update_note_content(note_id, **body.model_dump(exclude_none=True))
@@ -120,7 +137,8 @@ def api_update_note(note_id: int, body: NoteUpdate):
 
 @router.patch("/{note_id}/status", response_model=Note)
 def api_update_status(note_id: int, body: StatusUpdate):
-    note = get_note(note_id)
+    pool_id = _active_pool_id()
+    note = get_note(note_id, account_pool_id=pool_id)
     if not note:
         raise HTTPException(404, f"笔记 {note_id} 不存在")
     if body.status not in ("draft", "ready", "published"):
@@ -131,7 +149,8 @@ def api_update_status(note_id: int, body: StatusUpdate):
 @router.patch("/{note_id}/stats", response_model=Note)
 def api_update_stats(note_id: int, body: StatsUpdate):
     """更新笔记互动数据（likes / comments / collects）"""
-    note = get_note(note_id)
+    pool_id = _active_pool_id()
+    note = get_note(note_id, account_pool_id=pool_id)
     if not note:
         raise HTTPException(404, f"笔记 {note_id} 不存在")
     conn = get_db()
@@ -146,31 +165,33 @@ def api_update_stats(note_id: int, body: StatsUpdate):
         if fields:
             set_clause = ", ".join(f"{k}=?" for k in fields)
             conn.execute(
-                f"UPDATE notes SET {set_clause}, updated_at=datetime('now') WHERE id=?",
-                (*fields.values(), note_id),
+                f"UPDATE notes SET {set_clause}, updated_at=datetime('now') WHERE id=? AND account_pool_id=?",
+                (*fields.values(), note_id, pool_id),
             )
             conn.commit()
     finally:
         conn.close()
-    return get_note(note_id)
+    return get_note(note_id, account_pool_id=pool_id)
 
 
 @router.delete("/{note_id}")
 def api_delete_note(note_id: int):
-    ok = delete_note(note_id)
-    if not ok:
+    note = get_note(note_id, account_pool_id=_active_pool_id())
+    if not note:
         raise HTTPException(404, f"笔记 {note_id} 不存在")
+    ok = delete_note(note_id)
     return {"ok": True}
 
 
 @router.get("/{note_id}/export")
 def api_export_note(note_id: int):
-    note = get_note(note_id)
+    pool_id = _active_pool_id()
+    note = get_note(note_id, account_pool_id=pool_id)
     if not note:
         raise HTTPException(404, f"笔记 {note_id} 不存在")
     item_title = ""
     if note.item_id:
-        item = get_item(note.item_id)
+        item = get_item(note.item_id, account_pool_id=pool_id)
         item_title = item.title if item else ""
     md = export_note_markdown(note, item_title=item_title)
     return {"markdown": md}
@@ -191,7 +212,8 @@ def api_stage_images(note_id: int):
     """把笔记关联的图库图片复制到 data/publish_staging/{note_id}/，方便手动上传到小红书。
     返回暂存目录路径和文件列表。
     """
-    note = get_note(note_id)
+    pool_id = _active_pool_id()
+    note = get_note(note_id, account_pool_id=pool_id)
     if not note:
         raise HTTPException(404, f"笔记 {note_id} 不存在")
 
@@ -212,7 +234,7 @@ def api_stage_images(note_id: int):
 
     files: list[dict] = []
     for idx, iid in enumerate(item_ids, 1):
-        item = get_item(iid)
+        item = get_item(iid, account_pool_id=pool_id)
         if not item or not item.image_path:
             continue
         src = assets_dir / item.image_path
@@ -275,19 +297,24 @@ def api_open_stage_dir(note_id: int):
     return {"ok": True, "path": str(stage)}
 
 
-
+@router.post("/draft")
+def api_draft(body: DraftRequest):
     """生成笔记创作 Prompt（供 AI 使用）"""
     from app.modules.content.prompt_builder import build_draft_prompt
     from app.routers.knowledge import build_knowledge_ctx
     from app.db.connection import get_db
 
-    item = get_item(body.item_id)
+    pool_id = _active_pool_id()
+    item = get_item(body.item_id, account_pool_id=pool_id)
     if not item:
         raise HTTPException(404, f"物品 {body.item_id} 不存在")
 
     conn = get_db()
     try:
-        profile_row = conn.execute("SELECT * FROM my_profile WHERE id=1").fetchone()
+        profile_row = conn.execute(
+            "SELECT * FROM my_profile WHERE account_pool_id=?",
+            (pool_id,),
+        ).fetchone()
         profile = dict(profile_row) if profile_row else {}
         account_row = None
         if body.account_id:
@@ -317,6 +344,7 @@ def api_open_stage_dir(note_id: int):
             item_ids=[body.item_id] if body.item_id else [],
             account_ref=body.account_id,
             prompt_used=prompt,
+            account_pool_id=pool_id,
         )
         note_id = note.id
 
@@ -337,16 +365,21 @@ def api_draft_multi(body: MultiDraftRequest):
     if not body.item_ids:
         raise HTTPException(400, "item_ids 不能为空")
 
+    pool_id = _active_pool_id()
+
     items = []
     for item_id in body.item_ids:
-        item = get_item(item_id)
+        item = get_item(item_id, account_pool_id=pool_id)
         if not item:
             raise HTTPException(404, f"物品 {item_id} 不存在")
         items.append(item)
 
     conn = get_db()
     try:
-        profile_row = conn.execute("SELECT * FROM my_profile WHERE id=1").fetchone()
+        profile_row = conn.execute(
+            "SELECT * FROM my_profile WHERE account_pool_id=?",
+            (pool_id,),
+        ).fetchone()
         profile = dict(profile_row) if profile_row else {}
         account = None
         if body.account_id:
@@ -366,6 +399,7 @@ def api_draft_multi(body: MultiDraftRequest):
         item_ids=[item.id for item in items],
         account_ref=body.account_id,
         prompt_used=prompt,
+        account_pool_id=pool_id,
     )
     return {
         "note_id": note.id,
@@ -473,14 +507,17 @@ def api_draft_generate(body: GenerateDraftRequest):
 
     items = []
     for iid in ids:
-        item = get_item(iid)
+        item = get_item(iid, account_pool_id=pool_id)
         if not item:
             raise HTTPException(404, f"物品 {iid} 不存在")
         items.append(item)
 
     conn = get_db()
     try:
-        profile_row = conn.execute("SELECT * FROM my_profile WHERE id=1").fetchone()
+        profile_row = conn.execute(
+            "SELECT * FROM my_profile WHERE account_pool_id=?",
+            (pool_id,),
+        ).fetchone()
         profile = dict(profile_row) if profile_row else {}
         account = None
         if body.account_id:
@@ -513,6 +550,7 @@ def api_draft_generate(body: GenerateDraftRequest):
         item_ids=ids,
         account_ref=body.account_id,
         prompt_used=prompt,
+        account_pool_id=pool_id,
     )
     update_note_content(
         note.id,
@@ -529,7 +567,8 @@ def api_draft_generate(body: GenerateDraftRequest):
     }
 
 
-@router.post("/{note_id}/publish-auto")
+@router.post("/{note_id}/publish-auto",
+             dependencies=[Depends(require_protection("publish_auto"))])
 def api_publish_auto(note_id: int):
     """
     在后台启动 Playwright 脚本将笔记自动发布到小红书。
@@ -539,7 +578,7 @@ def api_publish_auto(note_id: int):
     from pathlib import Path
     import uuid, time
 
-    note = get_note(note_id)
+    note = get_note(note_id, account_pool_id=_active_pool_id())
     if not note:
         raise HTTPException(404, f"笔记 {note_id} 不存在")
     if not note.title:
@@ -553,10 +592,14 @@ def api_publish_auto(note_id: int):
     job_id = str(uuid.uuid4())[:8]
     _publish_jobs[job_id] = {"status": "running", "note_id": note_id, "started_at": time.time()}
 
+    # v0.2: 透传当前激活账号的 user_data_dir
+    user_data_dir = account_pool.get_active_user_data_dir()
+
     def _run():
         try:
             result = subprocess.run(
-                [python_exe, str(publish_script), "--note-id", str(note_id)],
+                [python_exe, str(publish_script), "--note-id", str(note_id),
+                 "--user-data-dir", user_data_dir],
                 capture_output=True,
                 text=True,
                 timeout=300,
