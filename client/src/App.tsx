@@ -7,6 +7,7 @@ import Accounts from "./pages/Accounts";
 import ProfilePage from "./pages/Profile";
 import Settings from "./pages/Settings";
 import Data from "./pages/Data";
+import Inspire from "./pages/Inspire";
 import { ToastProvider } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
@@ -16,7 +17,7 @@ export default function App() {
       <ErrorBoundary>
         <div className="flex h-screen overflow-hidden bg-[#fafafa]">
           <Sidebar />
-          <main className="flex-1 overflow-hidden">
+          <main className="flex h-full flex-1 flex-col overflow-hidden">
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/library" element={<Library />} />
@@ -27,6 +28,7 @@ export default function App() {
               <Route path="/accounts" element={<Accounts />} />
               <Route path="/profile" element={<ProfilePage />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/inspire" element={<Inspire />} />
             </Routes>
           </main>
         </div>

@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>爱吃红薯｜小红书家居运营 AI 助手</title>
+  <meta name="description" content="爱吃红薯（AI吃红书）：小红书家居/软装/装修垂类 AI 运营助手，覆盖看板、图库、笔记、灵感、数据、榜样、账号、设置全流程。">
+  <style>
+    :root {
+      --xhs-red: #ff2442;
+      --xhs-red-deep: #e31134;
+      --cream: #fff8f2;
+      --pink: #ffe6ea;
+      --ink: #2c2c2c;
+      --muted: #6f6f79;
+      --card: #ffffff;
+      --line: #ffd1d8;
+      --ok: #14b86a;
+      --warn: #f59e0b;
+      --shadow: 0 14px 38px rgba(255, 36, 66, 0.14);
+      --radius-xl: 24px;
+      --radius-lg: 16px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(1100px 500px at -10% -10%, #ffdfe5 0%, rgba(255, 223, 229, 0) 60%),
+        radial-gradient(900px 460px at 105% 15%, #ffd8dd 0%, rgba(255, 216, 221, 0) 55%),
+        linear-gradient(180deg, #fff1f4 0%, var(--cream) 45%, #ffffff 100%);
+      line-height: 1.6;
+    }
+
+    .wrap {
+      width: min(1120px, 92vw);
+      margin: 0 auto;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      background: #fff;
+      border: 1px solid #ffd7de;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--xhs-red-deep);
+      box-shadow: 0 6px 20px rgba(255, 36, 66, 0.1);
+    }
+
+    header {
+      padding: 34px 0 10px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 800;
+      font-size: 22px;
+      letter-spacing: 0.2px;
+    }
+
+    .logo-mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      color: #fff;
+      background: linear-gradient(135deg, var(--xhs-red), #ff5b74);
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .hero-left,
+    .hero-right {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-left {
+      padding: 34px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-left::after {
+      content: "";
+      position: absolute;
+      right: -80px;
+      top: -80px;
+      width: 220px;
+      height: 220px;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(255, 36, 66, 0.2), rgba(255, 36, 66, 0));
+      pointer-events: none;
+    }
+
+    h1 {
+      margin: 14px 0 12px;
+      font-size: clamp(34px, 5vw, 54px);
+      line-height: 1.12;
+      letter-spacing: -1px;
+    }
+
+    h1 .accent {
+      color: var(--xhs-red);
+      text-shadow: 0 5px 22px rgba(255, 36, 66, 0.22);
+    }
+
+    .subtitle {
+      font-size: 17px;
+      color: #4b4b56;
+      margin: 0 0 22px;
+      max-width: 90%;
+    }
+
+    .cta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 11px 16px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 700;
+      text-decoration: none;
+      border: 1px solid transparent;
+      transition: transform .18s ease, box-shadow .18s ease;
+    }
+
+    .btn:hover { transform: translateY(-1px); }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--xhs-red), #ff6c82);
+      color: #fff;
+      box-shadow: 0 10px 24px rgba(255, 36, 66, 0.28);
+    }
+
+    .btn-ghost {
+      background: #fff;
+      color: var(--xhs-red-deep);
+      border-color: #ffc6cf;
+    }
+
+    .hero-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .tag {
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      color: #a3273a;
+      background: #fff4f6;
+      border: 1px solid #ffd1d8;
+    }
+
+    .hero-right {
+      padding: 20px;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+      background:
+        linear-gradient(180deg, rgba(255, 36, 66, 0.07), rgba(255, 36, 66, 0.02)),
+        #fff;
+    }
+
+    .metric {
+      border-radius: 14px;
+      border: 1px solid #ffd9df;
+      background: #fff;
+      padding: 14px;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 22px;
+      color: var(--xhs-red-deep);
+      margin-bottom: 3px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    section {
+      padding: 56px 0 0;
+    }
+
+    .section-title {
+      margin: 0 0 8px;
+      font-size: clamp(24px, 3vw, 34px);
+      line-height: 1.2;
+      letter-spacing: -0.3px;
+    }
+
+    .section-sub {
+      margin: 0 0 22px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .menu-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .menu-item {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      min-height: 150px;
+      box-shadow: 0 8px 20px rgba(255, 36, 66, 0.08);
+      transition: transform .18s ease;
+    }
+
+    .menu-item:hover { transform: translateY(-2px); }
+
+    .menu-item .icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      background: #fff1f4;
+      border: 1px solid #ffd1d8;
+      margin-bottom: 8px;
+      font-size: 16px;
+    }
+
+    .menu-item h3 {
+      margin: 0 0 6px;
+      font-size: 16px;
+    }
+
+    .menu-item p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .ai-flow {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .flow-step {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      text-align: center;
+      font-size: 13px;
+      color: #474752;
+      position: relative;
+    }
+
+    .flow-step b {
+      display: block;
+      color: var(--xhs-red-deep);
+      margin-bottom: 4px;
+    }
+
+    .flow-step:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      right: -9px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #ff8194;
+      font-weight: 800;
+    }
+
+    .ai-panels {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .panel {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      box-shadow: 0 8px 18px rgba(255, 36, 66, 0.07);
+    }
+
+    .panel h3 {
+      margin: 0 0 7px;
+      font-size: 16px;
+    }
+
+    .panel ul {
+      margin: 0;
+      padding-left: 18px;
+      color: #4d4d59;
+      font-size: 13px;
+    }
+
+    .panel li { margin: 4px 0; }
+
+    .panel.good { border-color: #b9efd4; background: #f4fff9; }
+    .panel.warn { border-color: #ffe1a4; background: #fffaf0; }
+
+    .stack {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stack-card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      padding: 18px;
+    }
+
+    .stack-card pre {
+      margin: 0;
+      padding: 12px;
+      border-radius: 10px;
+      background: #fff5f7;
+      border: 1px solid #ffd7de;
+      font-size: 12px;
+      overflow: auto;
+      color: #5e2b33;
+      line-height: 1.45;
+    }
+
+    .footer-cta {
+      margin: 56px 0 70px;
+      padding: 26px;
+      border-radius: var(--radius-xl);
+      color: #fff;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0) 38%),
+        linear-gradient(135deg, var(--xhs-red), #ff6a81);
+      box-shadow: 0 18px 34px rgba(255, 36, 66, 0.28);
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
+    .footer-cta h3 {
+      margin: 0 0 4px;
+      font-size: clamp(22px, 3vw, 30px);
+      line-height: 1.2;
+    }
+
+    .footer-cta p {
+      margin: 0;
+      opacity: 0.95;
+      font-size: 14px;
+    }
+
+    .mini-btn {
+      padding: 10px 14px;
+      border-radius: 11px;
+      font-weight: 700;
+      text-decoration: none;
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.52);
+      background: rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(4px);
+    }
+
+    .meta {
+      text-align: center;
+      color: #8d8d98;
+      font-size: 12px;
+      padding-bottom: 30px;
+    }
+
+    @media (max-width: 1024px) {
+      .hero { grid-template-columns: 1fr; }
+      .menu-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .ai-flow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .flow-step:nth-child(3)::after { content: ""; }
+      .ai-panels { grid-template-columns: 1fr; }
+      .stack { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 640px) {
+      .hero-left { padding: 22px; }
+      .subtitle { max-width: 100%; font-size: 15px; }
+      .menu-grid { grid-template-columns: 1fr; }
+      .ai-flow { grid-template-columns: 1fr; }
+      .flow-step::after { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="wrap">
+    <div class="brand">
+      <div class="logo">
+        <span class="logo-mark">🍠</span>
+        <span>爱吃红薯 <small style="font-weight:600;color:#8a8a94;font-size:14px;">（AI吃红书）</small></span>
+      </div>
+      <span class="pill">小红书家居运营 AI 助手</span>
+    </div>
+
+    <div class="hero">
+      <article class="hero-left">
+        <span class="pill">拍图 → 出稿 → 发布，一条龙</span>
+        <h1>
+          把小红书运营，<br>
+          交给 <span class="accent">AI 流水线</span>
+        </h1>
+        <p class="subtitle">
+          结合家居垂类场景，围绕 <b>看板 / 图库 / 笔记 / 灵感 / 数据 / 榜样 / 账号 / 设置</b> 八大菜单，
+          让你从一张图片开始，快速完成内容生产与自动发布。
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="../README.md">📘 查看文档</a>
+          <a class="btn btn-ghost" href="../client">🖥 打开客户端目录</a>
+          <a class="btn btn-ghost" href="../app">⚙️ 查看后端代码</a>
+        </div>
+        <div class="hero-tags">
+          <span class="tag"># 小红书运营</span>
+          <span class="tag"># 家居软装</span>
+          <span class="tag"># MiniMax VLM</span>
+          <span class="tag"># MCP Agent</span>
+          <span class="tag"># Playwright 自动发布</span>
+        </div>
+      </article>
+
+      <aside class="hero-right">
+        <div class="metric">
+          <strong>8 大菜单</strong>
+          <span>看板 / 图库 / 笔记 / 灵感 / 数据 / 榜样 / 账号 / 设置</span>
+        </div>
+        <div class="metric">
+          <strong>3 端同源</strong>
+          <span>Tauri GUI · CLI · MCP Server</span>
+        </div>
+        <div class="metric">
+          <strong>14 个 MCP Tools</strong>
+          <span>让 OpenCode / Claude 直接操控业务流程</span>
+        </div>
+        <div class="metric">
+          <strong>1 条核心链路</strong>
+          <span>账号人设 → 素材分析 → AI 生成 → 自动发布 → 数据复盘</span>
+        </div>
+      </aside>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section>
+      <h2 class="section-title">菜单即工作流</h2>
+      <p class="section-sub">不是拼功能，而是把小红书家居账号的日常动作拆成连续的生产流程。</p>
+
+      <div class="menu-grid">
+        <div class="menu-item">
+          <div class="icon">📊</div>
+          <h3>看板</h3>
+          <p>展示关键提醒：未出稿、久未发布、草稿积压，先做什么一眼可见。</p>
+        </div>
+        <div class="menu-item">
+          <div class="icon">🖼</div>
+          <h3>图库</h3>
+          <p>导入图片后自动识别内容，支持多选合并生成草稿，素材秒变可写对象。</p>
+        </div>
+        <div class="menu-item">
+          <div class="icon">✍️</div>
+          <h3>笔记</h3>
+          <p>AI 助手内嵌编辑器，支持标题生成、正文改写、续写、标签整理与自动保存。</p>
+        </div>
+        <div class="menu-item">
+          <div class="icon">✨</div>
+          <h3>灵感</h3>
+          <p>灵感梦工厂根据历史数据和人设风格，生成可直接保存的成稿候选。</p>
+        </div>
+        <div class="menu-item">
+          <div class="icon">📈</div>
+          <h3>数据</h3>
+          <p>趋势图 + AI 数据对话，帮助定位哪些标题结构和发布时间更容易起量。</p>
+        </div>
+        <div class="menu-item">
+          <div class="icon">⭐</div>
+          <h3>榜样</h3>
+          <p>录入对标账号并做 AI 风格分析，提炼可学习的语气、结构和选题方向。</p>
+        </div>
+        <div class="menu-item">
+          <div class="icon">👤</div>
+          <h3>账号</h3>
+          <p>固化你的人设语气、禁忌词和标签池，让每次生成更像你，而不是像模板。</p>
+        </div>
+        <div class="menu-item">
+          <div class="icon">⚙️</div>
+          <h3>设置</h3>
+          <p>配置 MiniMax Key 与 AI 快捷操作，让团队创作习惯沉淀为可复用指令。</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="section-title">AI 功能特色（真正提效的部分）</h2>
+      <p class="section-sub">围绕创作卡点设计，不做花架子：从看图理解到结构化输出，再到自动发布。</p>
+
+      <div class="ai-flow">
+        <div class="flow-step"><b>01 图像理解</b>MiniMax VLM 识图分析</div>
+        <div class="flow-step"><b>02 语气注入</b>读取账号人设与禁忌词</div>
+        <div class="flow-step"><b>03 结构生成</b>标题/正文/标签分区输出</div>
+        <div class="flow-step"><b>04 发布执行</b>Playwright 自动发布</div>
+        <div class="flow-step"><b>05 数据复盘</b>趋势 + AI 对话优化</div>
+      </div>
+
+      <div class="ai-panels">
+        <article class="panel good">
+          <h3>🧠 AI 助手面板</h3>
+          <ul>
+            <li>支持「生成标题 / 改写开头 / 续写正文」快捷操作</li>
+            <li>结构化提取候选标题与标签，应用到编辑器更快</li>
+            <li>生成中可停止，结果可重生，适合迭代调风格</li>
+          </ul>
+        </article>
+
+        <article class="panel">
+          <h3>🔮 灵感梦工厂</h3>
+          <ul>
+            <li>基于历史内容表现自动给出标题方向</li>
+            <li>生成稿不污染正式列表，确认后再保存为草稿</li>
+            <li>适合选题焦虑时快速拉出多版本候选</li>
+          </ul>
+        </article>
+
+        <article class="panel warn">
+          <h3>📉 数据 AI 对话</h3>
+          <ul>
+            <li>把真实发布数据变成可对话的创作建议</li>
+            <li>找出高表现标题长度、标签组合、发布时间窗</li>
+            <li>让内容优化从拍脑袋变成可解释的策略迭代</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="section-title">技术栈与接入方式</h2>
+      <p class="section-sub">前后端分离 + 桌面端 + Agent 协议，既能手动使用，也能自动化运行。</p>
+
+      <div class="stack">
+        <article class="stack-card">
+          <h3 style="margin-top:0">🧩 三端架构</h3>
+          <pre>GUI (Tauri + React)
+CLI (app/cli.py)
+MCP Server (app/mcp/server.py)
+   │
+FastAPI (app/server.py:8765)
+   │
+SQLite (data/app.db) + assets/ + crawler/</pre>
+        </article>
+
+        <article class="stack-card">
+          <h3 style="margin-top:0">🚀 快速启动</h3>
+          <pre>uv sync
+uv run python app/cli.py db init
+
+# 启动后端
+uv run python -m app.server --port 8765
+
+# 启动客户端
+cd client && pnpm tauri dev</pre>
+        </article>
+      </div>
+    </section>
+
+    <section class="footer-cta">
+      <div>
+        <h3>让 AI 替你写小红书，你只管拍好家居图。</h3>
+        <p>爱吃红薯（AI吃红书）｜小红书家居垂类运营助手</p>
+      </div>
+      <a class="mini-btn" href="../README.md">立即查看项目说明</a>
+    </section>
+
+    <p class="meta">© 爱吃红薯 · 非官方小红书工具，仅用于学习与研究用途</p>
+  </main>
+</body>
+</html>

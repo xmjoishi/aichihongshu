@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-FastAPI Server — 小红书家居运营助手后端
+FastAPI Server — 爱吃红薯（AI吃红书）后端
 
 运行模式：
   REST API 模式（供 Tauri 客户端）：

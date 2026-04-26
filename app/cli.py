@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-RN-家居类 运营助手 CLI
+爱吃红薯（AI吃红书） 运营助手 CLI
 用法：python app/cli.py --help
 """
 
@@ -23,7 +23,7 @@ console = Console()
 
 @click.group()
 def cli():
-    """小红书家居运营助手 v0.1"""
+    """爱吃红薯（AI吃红书） v0.1 · 小红书家居垂类运营助手"""
     pass
 
 

@@ -128,3 +128,32 @@ export async function openInSystemBrowser(url: string): Promise<void> {
   if (!url) return;
   await openUrl(url);
 }
+
+// ---- 灵感页接口 ----
+
+export interface InspireParams {
+  topic: string;
+  item_ids: number[];
+  extra_image_desc: string;
+  account_ids: string[];
+  extra_instruction: string;
+}
+
+/**
+ * 灵感生成 SSE 流式请求。
+ */
+export function inspireStream(
+  params: InspireParams,
+  onChunk: (data: Record<string, unknown>) => void,
+  onDone?: () => void,
+  onError?: (err: Error) => void,
+): AbortController {
+  return api.stream("/api/ai/inspire", params, onChunk, onDone, onError);
+}
+
+/**
+ * 获取话题热词候选列表。
+ */
+export function fetchTopics(): Promise<{ topics: { word: string; count: number }[] }> {
+  return api.get("/api/analytics/topics");
+}

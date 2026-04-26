@@ -1,7 +1,7 @@
 [project]
 name = "rn-home"
 version = "0.1.0"
-description = "小红书家居类垂直运营助手"
+description = "爱吃红薯（AI吃红书） · 小红书家居类垂直运营助手"
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.30.0",

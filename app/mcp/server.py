@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MCP Server — 小红书家居运营助手
+MCP Server — 爱吃红薯（AI吃红书）
 供 OpenCode / ClaudeCode 通过 MCP 协议直接调用项目核心功能
 
 启动方式（stdio 模式，配置到 opencode/claude 的 mcp servers）：

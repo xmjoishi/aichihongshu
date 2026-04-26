@@ -257,3 +257,43 @@ def api_notes_trend(granularity: str = "auto"):
         return {"granularity": granularity, "items": items}
     finally:
         conn.close()
+
+
+@router.get("/topics")
+def api_topics(limit: int = 30):
+    """从已发布笔记的标签和标题中提取热词，供灵感页话题联想使用"""
+    conn = get_db()
+    try:
+        # 标签词频（已发布笔记）
+        tag_rows = conn.execute(
+            "SELECT tags FROM notes WHERE status='published' AND tags IS NOT NULL"
+        ).fetchall()
+        tag_count: dict = {}
+        for r in tag_rows:
+            try:
+                tags = json.loads(r[0]) if isinstance(r[0], str) else (r[0] or [])
+            except Exception:
+                tags = []
+            for t in tags:
+                t = t.strip().lstrip("#")
+                if t:
+                    tag_count[t] = tag_count.get(t, 0) + 1
+
+        # 从爬虫抓取记录里补充热词（crawl_logs 的 keywords 字段）
+        try:
+            kw_rows = conn.execute(
+                "SELECT keywords FROM crawl_logs WHERE keywords IS NOT NULL LIMIT 50"
+            ).fetchall()
+            for r in kw_rows:
+                kws = (r[0] or "").split(",")
+                for k in kws:
+                    k = k.strip()
+                    if k:
+                        tag_count[k] = tag_count.get(k, 0) + 1
+        except Exception:
+            pass
+
+        sorted_topics = sorted(tag_count.items(), key=lambda x: x[1], reverse=True)[:limit]
+        return {"topics": [{"word": w, "count": c} for w, c in sorted_topics]}
+    finally:
+        conn.close()
