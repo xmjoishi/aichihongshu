@@ -183,6 +183,23 @@ tail -f /tmp/rn-server.log
 - **功能建议**：使用 [功能请求模板](.github/ISSUE_TEMPLATE/feature_request.md)
 - **代码贡献**：Fork → 新建分支 → 提交 PR，PR 描述请说明改动目的
 
+## 请我喝杯咖啡 ☕
+
+如果这个项目对你有帮助，欢迎请我喝杯咖啡，你的支持是我持续维护的动力！
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="./docs/donate-wechat.jpg" width="200" alt="微信收款码" /><br/>
+      <b>微信支付</b>
+    </td>
+    <td align="center">
+      <img src="./docs/donate-alipay.jpg" width="200" alt="支付宝收款码" /><br/>
+      <b>支付宝</b>
+    </td>
+  </tr>
+</table>
+
 ## License
 
 本仓库自有代码（`app/`、`client/`、`crawler/` 等）采用 [MIT License](./LICENSE)。
