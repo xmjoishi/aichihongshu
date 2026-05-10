@@ -168,8 +168,24 @@ tail -f /tmp/rn-server.log
 
 详见 [CHANGELOG.md](./CHANGELOG.md)。
 
-## 声明
+## 免责声明
 
-本项目中的爬虫工具（MediaCrawler）仅用于学习和研究目的，遵守 NON-COMMERCIAL LEARNING LICENSE。
-禁止商业用途，请遵守小红书平台使用条款。
+- 本项目中集成的爬虫工具（`tools/MediaCrawler` 子模块）**仅用于个人学习和研究目的**，遵守其 [NON-COMMERCIAL LEARNING LICENSE](./tools/MediaCrawler/LICENSE)，**严禁商业用途**。
+- 使用本工具前，请阅读并遵守[小红书用户协议](https://www.xiaohongshu.com/protocal/xhsnote)及相关平台规则。
+- 本项目不对因使用本工具导致的账号封禁、数据丢失或任何其他损失承担责任。
+- 请勿将本工具用于任何违法或违反平台规定的行为。
+
+## 贡献
+
+欢迎 Issue 和 Pull Request！请先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+
+- **Bug 报告**：使用 [Bug 报告模板](.github/ISSUE_TEMPLATE/bug_report.md)
+- **功能建议**：使用 [功能请求模板](.github/ISSUE_TEMPLATE/feature_request.md)
+- **代码贡献**：Fork → 新建分支 → 提交 PR，PR 描述请说明改动目的
+
+## License
+
+本仓库自有代码（`app/`、`client/`、`crawler/` 等）采用 [MIT License](./LICENSE)。
+
+`tools/MediaCrawler` 子模块遵守其自身的 NON-COMMERCIAL LEARNING LICENSE，**禁止商业用途**，详见 [LICENSE](./LICENSE)。
 

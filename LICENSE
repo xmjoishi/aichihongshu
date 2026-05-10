@@ -1,0 +1,35 @@
+MIT License
+
+Copyright (c) 2026 Howard
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 关于 tools/MediaCrawler 子模块
+
+本项目包含 `tools/MediaCrawler` git 子模块，该子模块遵守其自身的
+**NON-COMMERCIAL LEARNING LICENSE（非商业学习许可证）**，
+**禁止任何商业用途**。
+
+使用本项目时，你对 `tools/MediaCrawler` 相关功能（爬虫抓取）的使用
+必须符合该子模块的许可条款。详见 `tools/MediaCrawler/LICENSE`。
+
+上述 MIT 许可仅适用于本仓库自有代码（`app/`、`client/`、`crawler/` 等），
+不延伸覆盖 `tools/MediaCrawler` 子模块。

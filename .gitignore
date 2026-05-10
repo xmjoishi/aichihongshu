@@ -10,6 +10,7 @@ data/*.db
 
 # 环境变量
 .env
+.env.*
 
 # 图库图片（体积大，不入 git）
 assets/*
@@ -25,8 +26,15 @@ tools/MediaCrawler/logs/
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 .venv/
 venv/
+dist/
+build/
+*.egg-info/
+
+# 日志
+*.log
 
 # macOS
 .DS_Store
