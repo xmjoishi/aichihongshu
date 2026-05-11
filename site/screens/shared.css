@@ -43,6 +43,7 @@ a {
   display: grid;
   grid-template-rows: 44px 1fr;
   background: var(--surface);
+  overflow: hidden;
 }
 
 .window-top {
@@ -119,17 +120,22 @@ a {
 .app-shell {
   display: grid;
   grid-template-columns: 68px 1fr;
+  height: 100%;
   min-height: 0;
 }
 
 .sidebar {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  padding: 20px 0 16px;
+  padding: 0;
+  height: 100%;
+  min-height: 0;
   border-right: 1px solid var(--border);
   background: #fff;
+  overflow: hidden;
 }
 
 .sidebar-brand {
@@ -137,7 +143,10 @@ a {
   height: 40px;
   display: grid;
   place-items: center;
-  margin-bottom: 8px;
+  position: absolute;
+  left: 50%;
+  top: 20px;
+  transform: translateX(-50%);
 }
 
 .sidebar-brand img {
@@ -153,15 +162,28 @@ a {
   padding: 0 8px;
 }
 
+.sidebar .nav-group:first-of-type {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 72px;
+  padding: 0;
+}
+
 .nav-spacer {
-  flex: 1;
+  display: none;
 }
 
 .nav-divider {
-  width: 28px;
-  height: 1px;
-  background: var(--border);
-  margin: 6px 0;
+  display: none;
+}
+
+.sidebar .nav-group:last-of-type {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 14px;
+  padding: 0;
 }
 
 .nav-link {
@@ -208,6 +230,8 @@ a {
 
 .main {
   min-width: 0;
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-rows: 52px 1fr;
   background: var(--bg);
@@ -256,6 +280,7 @@ a {
 }
 
 .content {
+  min-height: 0;
   padding: 18px;
   overflow: hidden;
 }

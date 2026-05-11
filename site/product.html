@@ -58,35 +58,107 @@
       </div>
 
       <div class="feature-grid">
-        <article class="feature-card">
+        <article class="feature-card reveal reveal-delay-1">
           <span class="feature-kicker">Persona AI</span>
           <h3>账号初始化时，AI 固化人设</h3>
           <p>把账号 URL、人工编辑的人设信息和禁忌词汇总成创作上下文，让后续所有输出都有统一起点。</p>
         </article>
-        <article class="feature-card">
+        <article class="feature-card reveal reveal-delay-2">
           <span class="feature-kicker">Vision AI</span>
           <h3>图进图库后，AI 先理解图</h3>
           <p>VLM 识别物品、风格和卖点，再给出适合写的角度，让素材进入后续创作流程。</p>
         </article>
-        <article class="feature-card">
+        <article class="feature-card reveal reveal-delay-3">
           <span class="feature-kicker">Planning AI</span>
           <h3>灵感页里，AI 负责组合</h3>
           <p>把人设、图库、榜样账号和要求拼在一起，快速跑出选题候选，而不是把半成品直接塞进草稿区。</p>
         </article>
-        <article class="feature-card">
+        <article class="feature-card reveal reveal-delay-4">
           <span class="feature-kicker">Editor AI</span>
           <h3>草稿页里，AI 负责协同编辑</h3>
           <p>生成标题候选、改写开头、压缩废话、补标签，让写稿是持续编辑而不是一次输出。</p>
         </article>
-        <article class="feature-card">
+        <article class="feature-card reveal reveal-delay-5">
           <span class="feature-kicker">Ops AI</span>
           <h3>发布链路里，AI 配合自动化</h3>
           <p>AI 不直接点击按钮，但会和登录检查、后台任务、发布状态配合，把执行动作变成可追踪流程。</p>
         </article>
-        <article class="feature-card">
+        <article class="feature-card reveal reveal-delay-6">
           <span class="feature-kicker">Insight AI</span>
           <h3>复盘页里，AI 重新组织数据</h3>
           <p>把发布结果转成内容判断，帮助团队知道哪类题、哪种结构和哪种口吻应该继续写。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section shell" aria-labelledby="design-title">
+      <div class="section-head compact">
+        <div>
+          <h2 id="design-title">为什么这样设计，而不是做成聊天框</h2>
+          <p>这里不是功能列表，而是每个节点的设计决策说明。</p>
+        </div>
+      </div>
+
+      <div class="journey-grid">
+        <article class="journey-card reveal reveal-delay-1">
+          <span class="journey-step">决策 01</span>
+          <h3>人设必须在写稿前固化</h3>
+          <p>如果账号人设每次靠人在 prompt 里重复描述，语气就会漂移。产品把人设做成持久上下文，每次写稿自动注入，而不是靠用户记忆。</p>
+          <ul class="journey-list">
+            <li>减少每轮重讲背景的认知负担</li>
+            <li>让禁忌词成为系统级约束，而不是人工自律</li>
+            <li>多人协作时保证语气一致性</li>
+          </ul>
+        </article>
+        <article class="journey-card reveal reveal-delay-2">
+          <span class="journey-step">决策 02</span>
+          <h3>图片必须先被理解，再进入写作</h3>
+          <p>视觉素材无法直接转成文字卖点，中间需要一层 VLM 理解。这一步做在图库导入时，而不是到写稿时临时分析，是为了让素材随时可用。</p>
+          <ul class="journey-list">
+            <li>写稿时不需要重新描述图片内容</li>
+            <li>可写角度和卖点已经沉淀在数据库里</li>
+            <li>图库真正成为可运营资产而不是文件夹</li>
+          </ul>
+        </article>
+        <article class="journey-card reveal reveal-delay-3">
+          <span class="journey-step">决策 03</span>
+          <h3>灵感和草稿必须分区</h3>
+          <p>如果选题试验和正式草稿混在一起，草稿区很快就会被半成品污染。灵感页承担筛选功能，只有通过筛选的方向才进入草稿。</p>
+          <ul class="journey-list">
+            <li>降低选题试错成本</li>
+            <li>保持草稿区干净可执行</li>
+            <li>让 AI 在前期承担更多判断</li>
+          </ul>
+        </article>
+        <article class="journey-card reveal reveal-delay-4">
+          <span class="journey-step">决策 04</span>
+          <h3>AI 在编辑层是助手，不是终稿机</h3>
+          <p>让 AI 一次性交稿会让人失去对内容质量的判断权。产品把 AI 能力嵌进编辑流程，每次只做局部协助，人工保留最终决策权。</p>
+          <ul class="journey-list">
+            <li>标题、开头、标签各自可以单独触发 AI</li>
+            <li>AI 建议可选，不强制替换</li>
+            <li>适合反复打磨，而不是一次性出稿</li>
+          </ul>
+        </article>
+        <article class="journey-card reveal reveal-delay-5">
+          <span class="journey-step">决策 05</span>
+          <h3>发布必须可观察，而不是黑盒执行</h3>
+          <p>自动发布如果不可追踪，出问题时无法排查。产品把发布做成有状态、可轮询、有截图记录的异步任务，而不是简单的"点击发布"。</p>
+          <ul class="journey-list">
+            <li>前端每 3 秒轮询发布状态</li>
+            <li>出错时有截图和日志</li>
+            <li>登录态通过 Playwright 管理，稳定可重用</li>
+          </ul>
+        </article>
+        <article class="journey-card reveal reveal-delay-6">
+          <span class="journey-step">决策 06</span>
+          <h3>复盘结果必须回流，不能停在报表</h3>
+          <p>如果数据复盘只是展示图表，下一篇内容还是靠感觉写。产品把复盘结论做成可以影响下一轮选题和写法的上下文输入，让数据真正驱动创作。</p>
+          <ul class="journey-list">
+            <li>哪类题表现好会影响下一轮推荐</li>
+            <li>复盘结论会进入 Prompt 上下文</li>
+            <li>让运营形成正向迭代循环</li>
+          </ul>
         </article>
       </div>
     </section>
@@ -188,13 +260,14 @@
       </div>
       <div class="hero-actions">
         <a class="button button-primary" href="architecture.html">看架构页</a>
+        <a class="button button-secondary" href="https://github.com/xmjoishi/aichihongshu" target="_blank" rel="noreferrer">GitHub</a>
         <a class="button button-secondary" href="index.html">回首页</a>
       </div>
     </section>
   </main>
 
   <footer class="shell footer">
-    <span>© 爱吃红薯（AI吃红书）｜产品页</span>
+    <span>© 爱吃红薯（AI吃红书）</span>
     <div class="footer-links">
       <a href="index.html">首页</a>
       <a href="product.html">产品</a>
