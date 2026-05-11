@@ -4,7 +4,7 @@
 # ─────────────────────────────────────────────
 set -e
 
-PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PID_FILE="/tmp/rn-home-pids"
 LOG_SERVER="/tmp/rn-server.log"
 LOG_VITE="/tmp/rn-vite.log"
@@ -27,13 +27,22 @@ for v in v22.17.1 v20.0.0 v18.20.8; do
   fi
 done
 
+# 注入 cargo / rust PATH（Homebrew 安装）
+for cargo_dir in /opt/homebrew/bin "$HOME/.cargo/bin"; do
+  [ -d "$cargo_dir" ] && export PATH="$cargo_dir:$PATH"
+done
+
+# 定位 uv 和 pnpm
+UV_BIN="$(command -v uv 2>/dev/null || echo /usr/local/bin/uv)"
+PNPM_BIN="$(command -v pnpm 2>/dev/null || echo /usr/local/bin/pnpm)"
+
 check_port() {
   lsof -i ":$1" -t 2>/dev/null | head -1
 }
 
 # ── 检查是否已经在运行 ──
 if [ -f "$PID_FILE" ]; then
-  warn "检测到 PID 文件，服务可能已在运行。先执行 ./stop.sh 再重启，或继续？[y/N] "
+  warn "检测到 PID 文件，服务可能已在运行。先执行 ./scripts/stop.sh 再重启，或继续？[y/N] "
   read -r ans
   [ "$ans" != "y" ] && [ "$ans" != "Y" ] && exit 0
 fi
@@ -49,7 +58,7 @@ if PID=$(check_port $API_PORT); then
 else
   info "启动 FastAPI 后端 (port $API_PORT)..."
   cd "$PROJECT_ROOT"
-  nohup uv run python -m app.server > "$LOG_SERVER" 2>&1 &
+  nohup "$UV_BIN" run python -m app.server > "$LOG_SERVER" 2>&1 &
   SERVER_PID=$!
   # 等待就绪
   for i in $(seq 1 20); do
@@ -72,7 +81,7 @@ if PID=$(check_port $VITE_PORT); then
 else
   info "启动 Vite 前端 (port $VITE_PORT)..."
   cd "$PROJECT_ROOT/client"
-  nohup pnpm dev > "$LOG_VITE" 2>&1 &
+  nohup "$PNPM_BIN" dev > "$LOG_VITE" 2>&1 &
   VITE_PID=$!
   for i in $(seq 1 20); do
     sleep 0.5

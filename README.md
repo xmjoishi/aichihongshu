@@ -1,7 +1,7 @@
 # 爱吃红薯（AI吃红书）
 
 > 小红书家居/软装/装修垂类运营助手 · 代号 RN-家居类
-> 当前版本 **v0.3.1**（多账号架构 + 榜样隔离）· 升级记录见 [CHANGELOG.md](./CHANGELOG.md)
+> 当前版本 **v0.3.1**（多账号架构 + 榜样隔离）· 升级记录见 [CHANGELOG.md](./docs/CHANGELOG.md)
 
 家居/软装/装修垂类小红书运营工具，覆盖账号人设设定 → 图库管理 → 物品分析 → 笔记创作 → 发布追踪完整链路。
 
@@ -166,7 +166,7 @@ nohup uv run python -m app.server --port 8765 > /tmp/rn-server.log 2>&1 &
 tail -f /tmp/rn-server.log
 ```
 
-详见 [CHANGELOG.md](./CHANGELOG.md)。
+详见 [CHANGELOG.md](./docs/CHANGELOG.md)。
 
 ## 免责声明
 
@@ -177,7 +177,7 @@ tail -f /tmp/rn-server.log
 
 ## 贡献
 
-欢迎 Issue 和 Pull Request！请先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+欢迎 Issue 和 Pull Request！请先阅读 [CONTRIBUTING.md](./docs/CONTRIBUTING.md)。
 
 - **Bug 报告**：使用 [Bug 报告模板](.github/ISSUE_TEMPLATE/bug_report.md)
 - **功能建议**：使用 [功能请求模板](.github/ISSUE_TEMPLATE/feature_request.md)

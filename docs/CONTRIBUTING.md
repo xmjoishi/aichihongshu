@@ -12,8 +12,8 @@
 
 ```bash
 # 1. Clone 并初始化 submodule
-git clone https://github.com/<your-org>/RN-家居类.git
-cd RN-家居类
+git clone https://github.com/xmjoishi/aichihongshu.git
+cd aichihongshu
 git submodule update --init --recursive
 
 # 2. 安装 Python 依赖（推荐使用 uv）

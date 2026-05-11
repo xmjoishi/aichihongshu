@@ -1,5 +1,9 @@
 # git ignore 规则
 
+# IDE / 编辑器临时文件
+*.artifact.json
+moz*-image.png
+
 # 原始抓取数据（体积大、含用户信息）
 data/crawl/
 data/analysis/

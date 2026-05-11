@@ -8,25 +8,15 @@
 ```
 LOGO/
 ├── official/          # ★ 主推方案（用户自制官方版）
-│   └── logo.svg
-├── reference/         # 参考图复刻版（历史保留）
-│   └── logo.svg
-├── compare/           # 三风格并排对比，决策辅助
-│   └── compare.svg
-├── flat/              # 风格 A · 扁平极简（早期方案，紫红+橙瓤）
-│   └── logo.svg
-├── mascot/            # 风格 B · Q 萌拟人（早期方案，带表情）
-│   └── logo.svg
-├── sketch/            # 风格 C · 手绘墨线（早期方案，黑描边）
-│   └── logo.svg
-└── brand/             # 综合品牌资源（已同步到 official 风格）
-    ├── logo-official.svg    # 官方版分发副本
+│   ├── logo.svg
+│   └── dock-icon.png
+└── brand/             # 综合品牌资源
+    ├── logo-favicon.svg     # favicon 优化版（去叶子/暗影，主体放大）
     ├── logo-with-text.svg   # 含「爱吃红薯」中文字标横版（720x256）
-    ├── logo-mono.svg        # 单色版，currentColor 控色
-    └── logo-favicon.svg     # favicon 优化版（去叶子/暗影，主体放大）
+    └── logo-mono.svg        # 单色版，currentColor 控色
 ```
 
-## 配色规范（reference 主推方案）
+## 配色规范
 
 | 用途 | 色值 | 说明 |
 |---|---|---|
@@ -36,16 +26,6 @@ LOGO/
 | 叶子 | `#3B8C3F` | 深绿 |
 | 描边/暗色 | `#3F1820` | 深红褐（仅文字/单色版用） |
 | 背景奶油色 | `#FAF7F2` | 文档/启动屏背景 |
-
-> **早期方案配色**（flat/mascot/sketch）：表皮 `#C8455A` + 内瓤 `#FFD7A3` + 叶子 `#5BA85B`。仅作历史保留，不再主推。
-
-## 各风格特点
-
-| 风格 | 适用场景 | 关键词 |
-|---|---|---|
-| A 扁平极简 | App icon、favicon、PWA、压缩缩略图 | 几何、纯色、无表情 |
-| B Q 萌拟人 | 品牌主视觉、启动屏、社交平台头像 | 眯眼、撇嘴、腮红、傲娇 |
-| C 手绘墨线 | 笔记物料、水印、印刷品 | 黑描边、牙印、纹路、杂志感 |
 
 ## 使用建议
 

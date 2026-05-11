@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>爱吃红薯 · 看板预览</title>
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+  <div class="app-window">
+    <div class="window-top">
+      <div class="traffic"><i></i><i></i><i></i></div>
+      <div class="window-title">爱吃红薯（AI 吃红书）</div>
+      <div class="account-pill"><i></i>好圆夫妇爱宅家 <b>运营中</b></div>
+    </div>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-brand"><img src="../assets/logo.svg" alt="爱吃红薯 logo"></div>
+        <nav class="nav-group">
+          <a class="nav-link active" href="dashboard.html"><span class="nav-icon chart"></span><span>看板</span></a>
+          <a class="nav-link" href="library.html"><span class="nav-icon grid"></span><span>图库</span></a>
+          <a class="nav-link" href="notes.html"><span class="nav-icon note"></span><span>笔记</span></a>
+          <a class="nav-link" href="inspire.html"><span class="nav-icon spark"></span><span>灵感</span></a>
+          <a class="nav-link" href="data.html"><span class="nav-icon trend"></span><span>数据</span></a>
+          <a class="nav-link" href="accounts.html"><span class="nav-icon users"></span><span>榜样</span></a>
+          <span class="nav-link muted"><span class="nav-icon chart"></span><span>账号</span></span>
+        </nav>
+        <div class="nav-spacer"></div>
+        <div class="nav-divider"></div>
+        <nav class="nav-group">
+          <span class="nav-link muted"><span class="nav-icon users"></span><span>账号池</span></span>
+          <a class="nav-link" href="settings.html"><span class="nav-icon settings"></span><span>设置</span></a>
+        </nav>
+      </aside>
+      <main class="main">
+        <div class="main-top">
+          <div class="breadcrumb">当前运营账号 · 好圆夫妇爱宅家</div>
+          <div class="top-actions"><span class="pill accent">FastAPI 已连接</span><span class="pill">SQLite · 本地数据</span></div>
+        </div>
+        <div class="content">
+          <section class="page">
+            <h1>运营看板</h1>
+            <p class="page-subtitle">今天该做什么、哪些内容该补、最近 90 天的发布趋势，一进来就先说清楚。</p>
+            <div class="banner">
+              <span class="kicker">当前账号人设</span>
+              <strong>好圆夫妇 · 城中村出租屋改造</strong>
+              <p>风格：嘴硬但不悬浮，先给结论，再讲预算和避坑点。禁忌词已经写进后续草稿提示。</p>
+              <div class="metric-grid">
+                <div class="metric"><em>粉丝</em><strong>81</strong><p>当前本地同步</p></div>
+                <div class="metric"><em>均赞</em><strong>16.6</strong><p>近 90 天</p></div>
+                <div class="metric"><em>均评</em><strong>6.5</strong><p>互动偏低</p></div>
+                <div class="metric"><em>均藏</em><strong>6.9</strong><p>收藏潜力高</p></div>
+              </div>
+            </div>
+            <div class="stat-grid">
+              <div class="stat"><span>图库物品</span><strong>60</strong><p>53 件未出稿</p></div>
+              <div class="stat"><span>草稿数</span><strong>3</strong><p>待人工确认</p></div>
+              <div class="stat"><span>已发布</span><strong>18</strong><p>最近 23 天无更新</p></div>
+              <div class="stat"><span>今日建议</span><strong>2</strong><p>先补 1 篇出租屋改造</p></div>
+            </div>
+            <div class="grid-2">
+              <div class="card stack">
+                <span class="kicker">建议行动</span>
+                <div class="list">
+                  <div class="row">
+                    <div class="status"><strong>图库还有 53 件物品没生成笔记</strong><span class="badge warn">待处理</span></div>
+                    <p>优先把餐边柜、书桌角和玄关柜三组图片转成草稿。</p>
+                  </div>
+                  <div class="row">
+                    <div class="status"><strong>距离上次发布已 23 天</strong><span class="badge ok">可恢复</span></div>
+                    <p>建议今天先发一篇低预算改造类笔记，重新拉起更新节奏。</p>
+                  </div>
+                </div>
+                <div class="ai-inline">
+                  <div class="ai-inline-header"><span class="ai-inline-title">AI 今日判断</span><span class="badge ok">已生成</span></div>
+                  <div class="ai-inline-list">
+                    <div class="ai-inline-item"><strong>先补“出租屋角落改造”类内容</strong><p>收藏率比纯好物展示更稳，适合用来恢复更新节奏。</p></div>
+                    <div class="ai-inline-item"><strong>别先发餐边柜空夸型标题</strong><p>最近互动更偏向“先给结论 + 预算解释”的写法。</p></div>
+                  </div>
+                  <p class="ai-inline-note">AI 在这里负责给优先级，不直接代写正文。</p>
+                </div>
+              </div>
+              <div class="card stack">
+                <span class="kicker">笔记发布趋势</span>
+                <div class="bar-chart"><i style="height:42px"></i><i style="height:68px"></i><i style="height:58px"></i><i style="height:108px"></i><i style="height:82px"></i><i style="height:140px"></i><i style="height:124px"></i><i style="height:96px"></i></div>
+                <div class="axis"><span>03/24</span><span>03/31</span><span>04/07</span><span>04/14</span><span>04/21</span><span>04/28</span><span>05/05</span><span>05/10</span></div>
+                <div class="row"><strong>趋势备注</strong><p>近 30 天最能拉收藏的是“预算约束下的局部改造”，不是泛泛而谈的氛围描述。</p></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

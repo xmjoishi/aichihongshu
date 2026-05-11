@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>爱吃红薯｜把小红书内容运营收进一套 AI 工作台</title>
+  <meta name="description" content="爱吃红薯面向家居、软装、装修垂类内容团队，把账号人设、素材理解、草稿生成、自动发布和数据复盘收进同一个桌面工作台。">
+  <meta property="og:title" content="爱吃红薯｜把小红书内容运营收进一套 AI 工作台">
+  <meta property="og:description" content="从人设、素材、草稿到发布和复盘，每个节点都有 AI 参与，但最终交付的是完整运营流程，而不是单点生成。">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://xmjoishi.github.io/aichihongshu/">
+  <meta property="og:image" content="https://xmjoishi.github.io/aichihongshu/assets/og-home.svg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="爱吃红薯｜把小红书内容运营收进一套 AI 工作台">
+  <meta name="twitter:description" content="把人设、素材、草稿、发布和复盘收进一套桌面产品。">
+  <meta name="twitter:image" content="https://xmjoishi.github.io/aichihongshu/assets/og-home.svg">
+  <link rel="canonical" href="https://xmjoishi.github.io/aichihongshu/">
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="shell nav">
+      <a class="brand" href="index.html" aria-label="爱吃红薯首页">
+        <span class="brand-mark"><img src="assets/logo.svg" alt="爱吃红薯 logo"></span>
+        <span class="brand-copy">
+          <strong>爱吃红薯</strong>
+          <span>小红书家居运营 AI 助手</span>
+        </span>
+      </a>
+
+      <nav class="nav-links" aria-label="主导航">
+        <a href="index.html" aria-current="page">首页</a>
+        <a href="product.html">产品</a>
+        <a href="architecture.html">架构</a>
+        <a href="#preview">产品展示</a>
+      </nav>
+
+      <div class="nav-actions">
+        <a class="nav-link-button" href="https://github.com/xmjoishi/aichihongshu" target="_blank" rel="noreferrer">GitHub</a>
+        <a class="nav-cta" href="#preview">看产品</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero shell">
+      <div class="hero-inner">
+        <span class="eyebrow">AI-First Content Operations For Xiaohongshu</span>
+        <h1>
+          不是再给你一个聊天框，<br>
+          而是把<span class="accent">整个内容运营链路</span>收进一套工作台。
+        </h1>
+        <p class="hero-copy">
+          爱吃红薯面向家居、软装、装修垂类内容团队。它让 AI 不只参与“写一段文案”，而是参与账号人设固定、素材理解、选题生成、草稿编辑、自动发布和数据复盘这些真正耗时的节点。
+        </p>
+
+        <div class="hero-actions">
+          <a class="button button-primary" href="#preview">下滑看产品</a>
+          <a class="button button-secondary" href="product.html">看完整产品页</a>
+          <a class="button button-secondary" href="architecture.html">看架构与部署</a>
+        </div>
+
+        <div class="hero-notes" aria-label="产品标签">
+          <span>Desktop 工作台，不是网页拼凑</span>
+          <span>CLI + Tauri + MCP 三端同源</span>
+          <span>AI 在每个运营节点提供不同价值</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="preview" class="section shell" aria-labelledby="preview-title">
+      <div class="section-head">
+        <div>
+          <h2 id="preview-title">往下看真实产品结构，不只看卖点卡片</h2>
+          <p>这里直接展示产品启动后的桌面界面。菜单切换时，左边看页面结构，右边看 AI 在当前节点承担的职责。</p>
+        </div>
+      </div>
+
+      <div class="product-layout showcase" data-showcase>
+        <div class="showcase-frame">
+          <div class="showcase-tabs" role="tablist" aria-label="产品菜单预览切换">
+            <button class="showcase-tab active" type="button" data-product-tab="dashboard" data-preview-src="screens/dashboard.html">看板</button>
+            <button class="showcase-tab" type="button" data-product-tab="library" data-preview-src="screens/library.html">图库</button>
+            <button class="showcase-tab" type="button" data-product-tab="notes" data-preview-src="screens/notes.html">笔记</button>
+            <button class="showcase-tab" type="button" data-product-tab="inspire" data-preview-src="screens/inspire.html">灵感</button>
+            <button class="showcase-tab" type="button" data-product-tab="data" data-preview-src="screens/data.html">数据</button>
+            <button class="showcase-tab" type="button" data-product-tab="accounts" data-preview-src="screens/accounts.html">榜样</button>
+            <button class="showcase-tab" type="button" data-product-tab="settings" data-preview-src="screens/settings.html">设置</button>
+          </div>
+
+          <div class="preview-stage" data-preview-stage>
+            <div class="preview-fit" data-preview-fit>
+              <iframe class="preview-frame" data-preview-frame src="screens/dashboard.html" title="爱吃红薯产品预览"></iframe>
+            </div>
+          </div>
+        </div>
+
+        <aside class="showcase-copy-card" aria-label="当前菜单说明">
+          <section class="copy-panel active" data-copy-panel="dashboard">
+            <span class="copy-kicker">AI 决策层</span>
+            <h3>看板页让 AI 先告诉你今天应该做什么。</h3>
+            <p>先看优先级，再看数据。打开产品的第一秒，AI 就把账号状态、库存空缺和发布节奏整理成今天该做的事。</p>
+            <ul class="copy-value-list">
+              <li>识别人设是否缺失、草稿是否堆积、多久没更新</li>
+              <li>把杂乱信号压成 2 到 3 条明确行动建议</li>
+              <li>让运营团队直接进入执行，而不是先人工盘点</li>
+            </ul>
+            <div class="copy-result">
+              <span>带来的结果</span>
+              <strong>每天先做什么不再靠拍脑袋判断，AI 帮你把运营起点收成可执行清单。</strong>
+            </div>
+          </section>
+
+          <section class="copy-panel" data-copy-panel="library">
+            <span class="copy-kicker">AI 理解层</span>
+            <h3>图库页让 AI 先理解图，而不是让人先写图。</h3>
+            <p>图片一进库，VLM 就先把单品、空间、风格和可写角度提炼出来，后面的创作链路才有可靠输入。</p>
+            <ul class="copy-value-list">
+              <li>识别图里是什么、适合写什么、卖点落在哪</li>
+              <li>自动沉淀成标签、摘要和后续 Prompt 上下文</li>
+              <li>让图库从“文件夹”变成“可运营素材池”</li>
+            </ul>
+            <div class="copy-result">
+              <span>带来的结果</span>
+              <strong>团队不必再对每张图重复做人工描述，素材导入后立刻能进入内容生产。</strong>
+            </div>
+          </section>
+
+          <section class="copy-panel" data-copy-panel="notes">
+            <span class="copy-kicker">AI 编辑层</span>
+            <h3>笔记页里，AI 更像编辑助手而不是终稿机器。</h3>
+            <p>AI 不负责一键交稿，而是留在编辑器里帮你补标题、改开头、压缩废话和补标签，把草稿推到可发布状态。</p>
+            <ul class="copy-value-list">
+              <li>把 AI 动作留在编辑流程里，而不是单独开一个聊天框</li>
+              <li>支持快速改写、补全和压缩，但保留人工最终判断</li>
+              <li>更适合真实内容团队持续打磨，而不是一次性出稿</li>
+            </ul>
+            <div class="copy-result">
+              <span>带来的结果</span>
+              <strong>草稿能更快推进到待发状态，同时不会失去对语气、节奏和风险的控制。</strong>
+            </div>
+          </section>
+
+          <section class="copy-panel" data-copy-panel="inspire">
+            <span class="copy-kicker">AI 组合层</span>
+            <h3>灵感页负责先跑一轮，不把半成品塞进正式草稿区。</h3>
+            <p>灵感页先把人设、图库和榜样账号跑一轮组合，帮你判断哪些方向值得继续深写，哪些只该留在抽屉里。</p>
+            <ul class="copy-value-list">
+              <li>把选题试验前置，减少空 brainstorm</li>
+              <li>先做筛选，再决定要不要进入正式草稿</li>
+              <li>适合高频内容团队做题材探索和方向试错</li>
+            </ul>
+            <div class="copy-result">
+              <span>带来的结果</span>
+              <strong>从“有素材”到“有题可写”的时间更短，草稿区也不会被半成品占满。</strong>
+            </div>
+          </section>
+
+          <section class="copy-panel" data-copy-panel="data">
+            <span class="copy-kicker">AI 复盘层</span>
+            <h3>数据页把 AI 从创作前移到创作后。</h3>
+            <p>这里的 AI 不再写文案，而是回头判断哪些标题结构、题材和表达方式真的在当前账号上更有效。</p>
+            <ul class="copy-value-list">
+              <li>从点赞、评论和收藏里提炼内容判断，而不是只看表格</li>
+              <li>把“表现好”重新翻译成下一轮可执行策略</li>
+              <li>让复盘结果回流到选题和写法，而不是停在报表</li>
+            </ul>
+            <div class="copy-result">
+              <span>带来的结果</span>
+              <strong>发布完不会断链，AI 会把结果重新送回下一轮内容判断里。</strong>
+            </div>
+          </section>
+
+          <section class="copy-panel" data-copy-panel="accounts">
+            <span class="copy-kicker">AI 学习层</span>
+            <h3>榜样账号页让 AI 学的是方法，而不是表面词句。</h3>
+            <p>AI 会把高赞账号拆成结构、语气和选题方法，再转成可复用的仿写提示，而不是停在“这个号写得好”的主观印象。</p>
+            <ul class="copy-value-list">
+              <li>提炼值得学的标题结构和表达方式</li>
+              <li>把学习结果沉淀成可调用的创作资产</li>
+              <li>让对标账号真正进入后续写作链路</li>
+            </ul>
+            <div class="copy-result">
+              <span>带来的结果</span>
+              <strong>团队学到的不只是表面文案，而是可持续复用的写作方法和题材判断。</strong>
+            </div>
+          </section>
+
+          <section class="copy-panel" data-copy-panel="settings">
+            <span class="copy-kicker">AI 控制层</span>
+            <h3>设置页把 AI 能力收口成稳定系统，不是隐藏在神秘按钮里。</h3>
+            <p>模型接入、显示设置和 AI 快捷动作都放在明面上，让产品的工程可信度也成为体验的一部分。</p>
+            <ul class="copy-value-list">
+              <li>把模型配置、快捷动作和显示偏好做成可控系统</li>
+              <li>避免 AI 能力只藏在黑盒按钮后面</li>
+              <li>方便团队理解接入方式和维护成本</li>
+            </ul>
+            <div class="copy-result">
+              <span>带来的结果</span>
+              <strong>AI 在产品里是可配置、可追踪、可维护的能力，而不是不可解释的魔法开关。</strong>
+            </div>
+          </section>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section shell" aria-labelledby="proof-title">
+      <div class="section-head compact">
+        <div>
+          <h2 id="proof-title">AI 不是一个点，而是一条链</h2>
+          <p>首页先把最关键的判断讲清楚：爱吃红薯把 AI 放进不同节点，承担不同职责，而不是把所有问题都粗暴交给一轮生成。</p>
+        </div>
+      </div>
+
+      <div class="proof-grid">
+        <article class="proof-card">
+          <strong>AI 固定人设</strong>
+          <p>先从账号 URL、人工编辑和禁忌词里建立可持续复用的账号上下文，后续写稿不用每轮重讲背景。</p>
+        </article>
+        <article class="proof-card">
+          <strong>AI 理解素材</strong>
+          <p>图片进图库后由 VLM 识别卖点、场景和可写角度，把“视觉素材”转成“可运营素材”。</p>
+        </article>
+        <article class="proof-card">
+          <strong>AI 复盘判断</strong>
+          <p>发布结果回流到趋势和内容判断里，让下一篇内容不是拍脑袋继续写，而是带着反馈迭代。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section shell" aria-labelledby="journey-title">
+      <div class="section-head compact">
+        <div>
+          <h2 id="journey-title">AI 在每个节点分别负责什么</h2>
+          <p>同样叫 AI，不同节点的职责完全不同。这里直接把价值拆开，避免首页只剩抽象功能名。</p>
+        </div>
+      </div>
+
+      <div class="journey-grid">
+        <article class="journey-card">
+          <span class="journey-step">01 人设初始化</span>
+          <h3>AI 帮你固化账号语气</h3>
+          <p>从账号 URL 抓取基础信息，再结合 persona、bio、禁忌词整理成长期可复用的创作上下文。</p>
+          <ul class="journey-list">
+            <li>减少每轮重讲账号背景</li>
+            <li>让草稿始终对齐账号口吻</li>
+            <li>把“禁忌词”变成真正可执行规则</li>
+          </ul>
+        </article>
+
+        <article class="journey-card">
+          <span class="journey-step">02 图库理解</span>
+          <h3>AI 把图片变成选题素材</h3>
+          <p>MiniMax VLM 先理解画面里的物品、空间、风格和卖点，再把结果沉淀到图库与后续 Prompt 里。</p>
+          <ul class="journey-list">
+            <li>识别“图里有什么”</li>
+            <li>判断“这图适合写什么角度”</li>
+            <li>把素材直接接到创作流程</li>
+          </ul>
+        </article>
+
+        <article class="journey-card">
+          <span class="journey-step">03 灵感生成</span>
+          <h3>AI 帮你先跑一轮组合</h3>
+          <p>在人设、图库和榜样账号之间快速试出候选方向，先筛选哪些题值得写，再进入正式草稿。</p>
+          <ul class="journey-list">
+            <li>减少空 brainstorm</li>
+            <li>让选题更贴当前账号</li>
+            <li>半成品先留在抽屉，不污染草稿区</li>
+          </ul>
+        </article>
+
+        <article class="journey-card">
+          <span class="journey-step">04 草稿编辑</span>
+          <h3>AI 是编辑助手，不是终点</h3>
+          <p>标题候选、第一段改写、标签补全和正文压缩都在编辑器里完成，让 AI 变成写稿流程的一部分。</p>
+          <ul class="journey-list">
+            <li>不是一次性吐文案就结束</li>
+            <li>适合真实内容团队反复打磨</li>
+            <li>保留人工判断的最后一层</li>
+          </ul>
+        </article>
+
+        <article class="journey-card">
+          <span class="journey-step">05 发布执行</span>
+          <h3>AI 前后协同，流程更稳</h3>
+          <p>发布前先做登录与状态检查，后台任务负责执行，用户只需要在工作台里确认状态，不再反复切浏览器。</p>
+          <ul class="journey-list">
+            <li>减少重复手动操作</li>
+            <li>发布状态可轮询可追踪</li>
+            <li>让自动化变成可观察流程</li>
+          </ul>
+        </article>
+
+        <article class="journey-card">
+          <span class="journey-step">06 数据复盘</span>
+          <h3>AI 参与下一轮判断</h3>
+          <p>把点赞、评论、收藏和发布时间重新组织成趋势与结论，帮助团队判断“哪类内容值得继续写”。</p>
+          <ul class="journey-list">
+            <li>让复盘不是报表终点</li>
+            <li>帮助找出可持续内容方向</li>
+            <li>影响下一轮选题与写法</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section shell" aria-labelledby="links-title">
+      <div class="section-head compact">
+        <div>
+          <h2 id="links-title">如果你想继续往下看，不必把所有信息都挤在首页</h2>
+          <p>首页负责建立价值和信任，详细产品能力与技术结构拆到独立页面，后续继续扩展也不会把首页越堆越重。</p>
+        </div>
+      </div>
+
+      <div class="page-links-grid">
+        <a class="page-link-card" href="product.html">
+          <span class="feature-kicker">Product</span>
+          <h3>产品页</h3>
+          <p>把 AI 在每个节点的价值、页面之间的关系和完整使用场景讲透。</p>
+        </a>
+        <a class="page-link-card" href="architecture.html">
+          <span class="feature-kicker">Architecture</span>
+          <h3>架构页</h3>
+          <p>看 CLI、Tauri、FastAPI、MCP、发布链路和 GitHub Pages 部署方式如何组合成完整产品。</p>
+        </a>
+      </div>
+    </section>
+
+    <section class="cta-panel shell" aria-labelledby="cta-title">
+      <div>
+        <h2 id="cta-title">AI 的价值，不该停在“帮我写一篇”。</h2>
+        <p>真正值钱的是让 AI 贯穿内容运营链条的不同节点，并在每个节点承担不同职责。爱吃红薯做的就是这件事。</p>
+      </div>
+      <div class="hero-actions">
+        <a class="button button-primary" href="product.html">继续看产品页</a>
+        <a class="button button-secondary" href="architecture.html">看架构与部署</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="shell footer">
+    <span>© 爱吃红薯（AI吃红书）｜官网源码目录：site/</span>
+    <div class="footer-links">
+      <a href="index.html">首页</a>
+      <a href="product.html">产品</a>
+      <a href="architecture.html">架构</a>
+      <a href="https://github.com/xmjoishi/aichihongshu" target="_blank" rel="noreferrer">GitHub</a>
+    </div>
+  </footer>
+
+  <script src="main.js"></script>
+</body>
+</html>

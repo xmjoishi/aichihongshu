@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>架构页｜爱吃红薯</title>
+  <meta name="description" content="查看爱吃红薯如何通过 CLI、Tauri、FastAPI、MCP、SQLite 和发布链路组合成完整产品。">
+  <meta property="og:title" content="架构页｜爱吃红薯">
+  <meta property="og:description" content="不是单一前端，而是官网、桌面端、后端与 Agent 调用协同的完整产品。">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://xmjoishi.github.io/aichihongshu/architecture.html">
+  <meta property="og:image" content="https://xmjoishi.github.io/aichihongshu/assets/og-home.svg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="架构页｜爱吃红薯">
+  <meta name="twitter:description" content="官网、桌面端、后端与 Agent 调用协同的完整产品。">
+  <meta name="twitter:image" content="https://xmjoishi.github.io/aichihongshu/assets/og-home.svg">
+  <link rel="canonical" href="https://xmjoishi.github.io/aichihongshu/architecture.html">
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="shell nav">
+      <a class="brand" href="index.html" aria-label="爱吃红薯首页">
+        <span class="brand-mark"><img src="assets/logo.svg" alt="爱吃红薯 logo"></span>
+        <span class="brand-copy">
+          <strong>爱吃红薯</strong>
+          <span>小红书家居运营 AI 助手</span>
+        </span>
+      </a>
+
+      <nav class="nav-links" aria-label="主导航">
+        <a href="index.html">首页</a>
+        <a href="product.html">产品</a>
+        <a href="architecture.html" aria-current="page">架构</a>
+      </nav>
+
+      <div class="nav-actions">
+        <a class="nav-link-button" href="https://github.com/xmjoishi/aichihongshu" target="_blank" rel="noreferrer">GitHub</a>
+        <a class="nav-cta" href="#deploy">部署</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="page-hero shell">
+      <span class="eyebrow">Product System + Deploy</span>
+      <h1>它不是一个页面，而是一套产品系统。</h1>
+      <p class="hero-copy narrow">架构页负责回答三个问题：为什么这套产品能落地、AI 在系统里放在哪些位置、官网为什么要独立成 `site/` 并通过 GitHub Actions 部署。</p>
+    </section>
+
+    <section class="section shell" aria-labelledby="system-title">
+      <div class="section-head compact">
+        <div>
+          <h2 id="system-title">三层结构，分别承担不同任务</h2>
+          <p>把官网、桌面端和业务系统拆开，既能保持用户体验，也方便继续扩展与部署。</p>
+        </div>
+      </div>
+
+      <div class="system-grid">
+        <article class="system-card">
+          <h3>体验层</h3>
+          <p>`site/` 负责官网叙事与产品展示，`client/` 负责 Tauri 客户端体验。一个面向获客，一个面向日常运营。</p>
+          <div class="architecture-block">
+            <div class="architecture-row">
+              <div class="architecture-node accent">site/</div>
+              <div class="architecture-node accent">client/</div>
+            </div>
+            <div class="architecture-link">官网 / 桌面端</div>
+          </div>
+        </article>
+
+        <article class="system-card">
+          <h3>业务层</h3>
+          <p>`app/` 提供 FastAPI 路由、业务模块和发布链路。CLI、Tauri、MCP 都调用同一套能力，不会形成多套逻辑。</p>
+          <div class="architecture-block">
+            <div class="architecture-row">
+              <div class="architecture-node">FastAPI</div>
+              <div class="architecture-node">modules/</div>
+              <div class="architecture-node">publish worker</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="system-card">
+          <h3>数据与执行层</h3>
+          <p>`data/app.db`、`assets/`、`crawler/` 和浏览器登录态共同支撑图库、自动发布和趋势复盘，不是一个只会生成文字的孤立前端。</p>
+          <div class="architecture-block">
+            <div class="architecture-row">
+              <div class="architecture-node">SQLite</div>
+              <div class="architecture-node">assets/</div>
+              <div class="architecture-node">crawler/</div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section shell" aria-labelledby="ai-system-title">
+      <div class="section-head compact">
+        <div>
+          <h2 id="ai-system-title">AI 在系统中的位置</h2>
+          <p>架构上最重要的一件事，是让 AI 作为系统能力进入不同模块，而不是散落在几个按钮里。</p>
+        </div>
+      </div>
+
+      <div class="journey-grid compact-grid">
+        <article class="journey-card">
+          <span class="journey-step">Profile Analyzer</span>
+          <h3>AI 分析账号人设</h3>
+          <p>帮助构建长期创作上下文，减少后续每轮手工补背景。</p>
+        </article>
+        <article class="journey-card">
+          <span class="journey-step">Library Analyzer</span>
+          <h3>AI 理解图片素材</h3>
+          <p>把图片转成标签、卖点和可写角度，进入图库与 Prompt 构建器。</p>
+        </article>
+        <article class="journey-card">
+          <span class="journey-step">Prompt Builder</span>
+          <h3>AI 组合上下文</h3>
+          <p>把人设、素材和榜样账号重新组织成可执行的草稿输入。</p>
+        </article>
+        <article class="journey-card">
+          <span class="journey-step">Editor Shortcuts</span>
+          <h3>AI 参与编辑流程</h3>
+          <p>在正文编辑器里承担改写、压缩和补标签动作，而不是脱离编辑器独立存在。</p>
+        </article>
+        <article class="journey-card">
+          <span class="journey-step">Analytics Insight</span>
+          <h3>AI 提炼复盘结论</h3>
+          <p>让发布结果不只停在趋势图，而是重新回流到下一轮内容策略。</p>
+        </article>
+        <article class="journey-card">
+          <span class="journey-step">MCP Tools</span>
+          <h3>AI 进入 Agent 协作</h3>
+          <p>通过 MCP，外部 Agent 可以直接调用业务动作，而不是只能看静态页面。</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="deploy" class="section shell" aria-labelledby="deploy-title">
+      <div class="section-head compact">
+        <div>
+          <h2 id="deploy-title">为什么官网源码放在 `site/`</h2>
+          <p>它本质上是产品官网，而不是文档。目录组织应服务维护性，部署策略再单独解决。</p>
+        </div>
+      </div>
+
+      <div class="system-grid">
+        <article class="system-card">
+          <h3>源码结构</h3>
+          <pre class="code-block">site/
+  index.html
+  product.html
+  architecture.html
+  shared.css
+  main.js
+  assets/
+  screens/
+
+client/
+app/
+docs/</pre>
+        </article>
+
+        <article class="system-card">
+          <h3>GitHub Pages 部署</h3>
+          <pre class="code-block">.github/workflows/site-pages.yml
+
+on:
+  push:
+    paths:
+      - site/**
+
+deploy:
+  upload-pages-artifact:
+    path: site</pre>
+          <p>这样目录职责和部署方式分离，官网作为独立前端目录维护，发布时再交给 Actions 处理。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section shell" aria-labelledby="why-title">
+      <div class="section-head compact">
+        <div>
+          <h2 id="why-title">为什么这比单点 AI 工具更有产品感</h2>
+          <p>因为它不是把 AI 套在一个页面外面，而是通过 GUI、CLI、FastAPI、发布链路和数据回流形成闭环。</p>
+        </div>
+      </div>
+
+      <div class="proof-grid">
+        <article class="proof-card">
+          <strong>真实执行链</strong>
+          <p>从草稿到发布状态查询都是系统动作，不只停在“生成一段文案”。</p>
+        </article>
+        <article class="proof-card">
+          <strong>真实数据回流</strong>
+          <p>复盘结果会重新影响看板建议、选题和写法，而不是独立孤岛。</p>
+        </article>
+        <article class="proof-card">
+          <strong>真实协作接口</strong>
+          <p>MCP 让外部 Agent 也能直接调用业务能力，而不只是人工操作 GUI。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="cta-panel shell">
+      <div>
+        <h2>官网、产品和系统层都已经拆开了。</h2>
+        <p>接下来继续迭代时，就不需要再在一个超长单文件里同时维护营销叙事、交互逻辑和模拟应用结构。</p>
+      </div>
+      <div class="hero-actions">
+        <a class="button button-primary" href="product.html">回产品页</a>
+        <a class="button button-secondary" href="index.html">回首页</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="shell footer">
+    <span>© 爱吃红薯（AI吃红书）｜架构页</span>
+    <div class="footer-links">
+      <a href="index.html">首页</a>
+      <a href="product.html">产品</a>
+      <a href="architecture.html">架构</a>
+      <a href="https://github.com/xmjoishi/aichihongshu" target="_blank" rel="noreferrer">GitHub</a>
+    </div>
+  </footer>
+</body>
+</html>
