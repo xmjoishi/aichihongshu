@@ -906,7 +906,7 @@ section[aria-labelledby="journey-title"] .journey-card p {
 .reveal {
   opacity: 0;
   transform: translateY(22px);
-  transition: opacity 0.55s ease, transform 0.55s ease;
+  transition: opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1), transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .reveal.revealed {
@@ -944,6 +944,32 @@ section[aria-labelledby="journey-title"] .journey-card p {
 .page-link-card:hover {
   transform: translateY(-3px);
   box-shadow: 0 20px 40px rgba(255, 36, 66, 0.1);
+}
+
+/* 移动端静态功能列表（desktop 下隐藏） */
+.mobile-feature-list {
+  display: none;
+}
+
+.mobile-feature-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 12px rgba(17, 24, 39, 0.04);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.mobile-feature-list .copy-kicker {
+  flex-shrink: 0;
+  font-size: 10px;
+  min-height: 24px;
+  padding: 0 8px;
 }
 
 /* section-head 左侧红色竖线 */
@@ -1043,10 +1069,81 @@ section[aria-labelledby="journey-title"] .journey-card p {
     display: block;
   }
 
+  .snap-section.section {
+    padding-top: 34px;
+    padding-bottom: 20px;
+  }
+
+  .snap-section.section + .snap-section.section {
+    padding-top: 20px;
+  }
+
+  .section-head {
+    margin-bottom: 16px;
+  }
+
+  .section-head.compact {
+    margin-bottom: 14px;
+  }
+
+  .section-head p {
+    font-size: 14px;
+    line-height: 1.64;
+    max-width: 34ch;
+  }
+
+  section[aria-labelledby="journey-title"] .section-head p,
+  section[aria-labelledby="links-title"] .section-head p {
+    display: none;
+  }
+
+  .proof-card strong + p,
+  .journey-card h3 + p,
+  .page-link-card h3 + p,
+  .cta-main h2 + p {
+    margin-top: 10px;
+  }
+
+  .proof-card p,
+  .journey-card p,
+  .page-link-card p,
+  .cta-main p {
+    line-height: 1.72;
+  }
+
+  .proof-card p,
+  .page-link-card p,
+  .cta-main p {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .proof-card p,
+  .page-link-card p {
+    -webkit-line-clamp: 2;
+  }
+
+  .cta-main p {
+    -webkit-line-clamp: 3;
+    max-width: 30ch;
+  }
+
+  section[aria-labelledby="links-title"] .proof-grid {
+    margin-bottom: 20px;
+  }
+
+  section[aria-labelledby="links-title"] .page-links-grid {
+    margin-top: 2px;
+  }
+
   .snap-section.cta-panel {
     min-height: auto;
-    padding: 24px;
+    margin: 8px auto 16px;
+    padding: 28px 18px;
     align-content: initial;
+    align-items: flex-start;
+    gap: 14px;
   }
 
   .snap-section.cta-panel .hero-actions {
@@ -1054,18 +1151,90 @@ section[aria-labelledby="journey-title"] .journey-card p {
     margin-top: 0;
   }
 
+  .cta-main {
+    text-align: left;
+    justify-items: flex-start;
+    gap: 12px;
+  }
+
   .nav {
-    min-height: 66px;
+    min-height: 60px;
   }
 
   .nav-links {
     display: none;
   }
 
-  .hero-copy {
-    font-size: 18px;
+  /* 移动端顶栏：隐藏 GitHub 文字按钮，只留红色 CTA */
+  .nav-link-button {
+    display: none;
   }
 
+  /* hero 区域 */
+  .hero,
+  .page-hero {
+    padding: 34px 0 24px;
+  }
+
+  .hero.snap-section {
+    min-height: auto;
+    justify-content: flex-start;
+  }
+
+  .hero-inner {
+    gap: 16px;
+  }
+
+  .hero-copy {
+    font-size: 15px;
+    line-height: 1.66;
+    max-width: 30ch;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+
+  /* hero-notes：2 列网格 */
+  .hero-notes {
+    display: none;
+  }
+
+  .hero-notes span {
+    font-size: 12px;
+    min-height: 30px;
+  }
+
+  /* 产品预览：隐藏 iframe，只显示静态功能列表 */
+  .product-layout {
+    display: none;
+  }
+
+  .mobile-feature-list {
+    display: grid !important;
+    gap: 10px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .mobile-feature-list li {
+    opacity: 0;
+    transform: translateY(10px);
+    animation: mobile-list-in 0.42s ease forwards;
+    padding: 12px 14px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .mobile-feature-list li:nth-child(1) { animation-delay: 0.04s; }
+  .mobile-feature-list li:nth-child(2) { animation-delay: 0.08s; }
+  .mobile-feature-list li:nth-child(3) { animation-delay: 0.12s; }
+  .mobile-feature-list li:nth-child(4) { animation-delay: 0.16s; }
+  .mobile-feature-list li:nth-child(5) { animation-delay: 0.20s; }
+  .mobile-feature-list li:nth-child(6) { animation-delay: 0.24s; }
+
+  /* journey 卡片移动端压缩 */
   .journey-grid,
   .feature-grid,
   .proof-grid,
@@ -1074,14 +1243,74 @@ section[aria-labelledby="journey-title"] .journey-card p {
     grid-template-columns: 1fr;
   }
 
+  section[aria-labelledby="journey-title"] .journey-card {
+    padding: 16px;
+  }
+
+  section[aria-labelledby="journey-title"] .journey-card h3 {
+    font-size: 20px;
+    line-height: 1.18;
+  }
+
+  section[aria-labelledby="journey-title"] .journey-card p {
+    font-size: 14px;
+    line-height: 1.72;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+  }
+
+  .journey-list {
+    display: none;
+  }
+
+  /* CTA 弹幕：关闭动画，改为静态换行 */
   .cta-barrage {
     mask-image: none;
     -webkit-mask-image: none;
+    overflow: hidden;
+    margin-top: 10px;
+    gap: 8px;
   }
 
-  .cta-barrage-row-a,
+  .cta-barrage-row {
+    width: max-content;
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+
+  .cta-barrage-row-a {
+    animation: cta-marquee-left 22s linear infinite;
+  }
+
   .cta-barrage-row-b {
-    animation-duration: 18s;
+    display: flex;
+    animation: cta-marquee-right 24s linear infinite;
+  }
+
+  .cta-barrage-row-c {
+    display: flex;
+    animation: cta-marquee-left 28s linear infinite;
+  }
+
+  .cta-barrage-row-a .cta-barrage-item:nth-child(n + 8) {
+    display: none;
+  }
+
+  .cta-barrage-row-b .cta-barrage-item:nth-child(n + 8),
+  .cta-barrage-row-c .cta-barrage-item:nth-child(n + 8) {
+    display: none;
+  }
+
+  .cta-barrage-item {
+    min-height: 30px;
+    font-size: 12px;
+    padding: 0 10px;
+  }
+
+  .footer {
+    padding: 4px 0 26px;
   }
 
   .preview-stage {
@@ -1095,16 +1324,92 @@ section[aria-labelledby="journey-title"] .journey-card p {
   }
 
   h1 {
-    font-size: 42px;
+    font-size: 30px;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    max-width: 14ch;
+  }
+
+  h1 br {
+    display: none;
+  }
+
+  h2 {
+    font-size: 20px;
+    line-height: 1.2;
+  }
+
+  .section-head p,
+  .proof-card p,
+  .journey-card p,
+  .page-link-card p,
+  .cta-main p {
+    font-size: 14px;
+    line-height: 1.68;
+  }
+
+  section[aria-labelledby="preview-title"] .section-head p {
+    display: none;
+  }
+
+  .proof-card strong + p,
+  .journey-card h3 + p,
+  .page-link-card h3 + p,
+  .cta-main h2 + p {
+    margin-top: 12px;
+  }
+
+  .eyebrow {
+    display: none;
   }
 
   .hero,
   .page-hero {
-    padding-top: 40px;
+    padding-top: 38px;
+    padding-bottom: 30px;
+  }
+
+  .hero-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .hero-actions .button {
+    text-align: center;
+    min-height: 46px;
+  }
+
+  .hero-actions .button-secondary {
+    display: none;
   }
 
   .section {
-    padding-top: 64px;
+    padding-top: 32px;
+  }
+
+  .snap-section.section {
+    padding-bottom: 16px;
+  }
+
+  .hero-notes {
+    display: none;
+  }
+
+  .hero-copy {
+    font-size: 15px;
+    line-height: 1.68;
+    max-width: 26ch;
+    -webkit-line-clamp: 2;
+  }
+
+  .section-head > div > h2 {
+    padding-left: 12px;
+  }
+
+  .section-head > div > h2::before {
+    width: 3px;
+    top: 4px;
+    bottom: 4px;
   }
 
   .proof-card,
@@ -1115,10 +1420,53 @@ section[aria-labelledby="journey-title"] .journey-card p {
   .showcase-copy-card,
   .showcase-frame,
   .cta-panel {
-    padding: 20px;
+    padding: 16px;
+  }
+
+  section[aria-labelledby="links-title"] .proof-grid {
+    margin-bottom: 16px;
+  }
+
+  .snap-section.cta-panel {
+    margin-top: 10px;
+    padding: 22px 14px;
+  }
+
+  .cta-barrage {
+    margin-top: 12px;
+    gap: 7px;
+  }
+
+  .cta-barrage-row {
+    gap: 7px;
+  }
+
+  .footer {
+    padding-bottom: 20px;
   }
 
   .preview-stage {
     min-height: 320px;
+  }
+}
+
+@keyframes mobile-list-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
   }
 }
