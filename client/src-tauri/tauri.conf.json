@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "爱吃红薯",
+  "productName": "AiChiHongShu",
   "version": "0.1.0",
   "identifier": "com.aichihongshu.app",
   "build": {
@@ -30,6 +30,11 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      }
+    }
   }
 }
