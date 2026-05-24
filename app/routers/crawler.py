@@ -6,7 +6,6 @@ import asyncio
 import subprocess
 import sys
 import os
-import signal
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -14,14 +13,19 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.processes import (
+    find_processes_by_marker,
+    kill_processes_by_marker,
+    popen_kwargs,
+    terminate_process_tree,
+)
+from app.runtime import CRAWLER_ROOT, MEDIA_CRAWLER_DIR, PROJECT_ROOT, get_media_crawler_python, get_media_crawler_uv
 from app.services import account_pool
 from app.services.protection import require_protection
 
 router = APIRouter(prefix="/api/crawler", tags=["crawler"])
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-MC_DIR = PROJECT_ROOT / "tools" / "MediaCrawler"
-MC_PYTHON = MC_DIR / ".venv" / "bin" / "python"
+MC_DIR = MEDIA_CRAWLER_DIR
 
 
 def _active_user_data_dir() -> Path:
@@ -131,7 +135,7 @@ asyncio.run(main())
 
 
 def _get_python() -> str:
-    return str(MC_PYTHON) if MC_PYTHON.exists() else sys.executable
+    return get_media_crawler_python()
 
 
 def _write_login_script() -> str:
@@ -145,15 +149,7 @@ def _is_browser_running_for(udd: Path) -> bool:
     proc = _browser_procs.get(str(udd))
     if proc and proc.poll() is None:
         return True
-    # 服务器重启后句柄丢失：通过 pgrep 兜底判断
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", f"user-data-dir={udd}"],
-            capture_output=True, timeout=2,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
+    return bool(find_processes_by_marker(f"user-data-dir={udd}"))
 
 
 def _is_browser_running() -> bool:
@@ -213,7 +209,7 @@ def api_open_browser(account_id: Optional[int] = None):
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        preexec_fn=os.setsid,
+        **popen_kwargs(),
     )
     _browser_procs[str(udd)] = proc
     global _browser_proc
@@ -227,21 +223,11 @@ def api_close_browser(account_id: Optional[int] = None):
     udd = _resolve_user_data_dir(account_id)
     proc = _browser_procs.get(str(udd))
     if not proc or proc.poll() is not None:
-        # 兜底：可能由 pgrep 检测到的外部进程，尝试 pkill
-        try:
-            subprocess.run(
-                ["pkill", "-f", f"user-data-dir={udd}"],
-                capture_output=True, timeout=2,
-            )
-        except Exception:
-            pass
+        # 兜底：可能由系统中残留的外部进程占用
+        kill_processes_by_marker(f"user-data-dir={udd}")
         _browser_procs.pop(str(udd), None)
         return {"status": "not_running"}
-    try:
-        pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGTERM)
-    except Exception:
-        proc.terminate()
+    terminate_process_tree(proc)
     _browser_procs.pop(str(udd), None)
     return {"status": "closed"}
 
@@ -288,7 +274,7 @@ def api_open_url(body: OpenUrlRequest):
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        preexec_fn=os.setsid,
+        **popen_kwargs(),
     )
     _browser_proc = proc
     return {"status": "launched", "url": url}
@@ -307,9 +293,9 @@ async def _crawl_and_stream(url: str, name: str, save_db: bool):
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     cmd = [
-        "/usr/local/bin/uv", "run",
+        get_media_crawler_uv(), "run",
         "--project", str(PROJECT_ROOT),
-        "python", str(PROJECT_ROOT / "crawler" / "xhs_creator.py"),
+        "python", str(CRAWLER_ROOT / "xhs_creator.py"),
         "--url", url,
         "--save-db",
         "--user-data-dir", str(_active_user_data_dir()),

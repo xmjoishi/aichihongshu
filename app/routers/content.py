@@ -17,6 +17,7 @@ from app.modules.content.manager import (
     update_note_content, update_note_status, delete_note, export_note_markdown,
 )
 from app.modules.library.manager import get_item
+from app.runtime import CRAWLER_ROOT, PROJECT_ROOT, get_media_crawler_python
 from app.services import account_pool
 from app.services.protection import require_protection
 
@@ -93,12 +94,9 @@ def api_xhs_login_status():
     返回 {"logged_in": bool}
     """
     import subprocess, sys
-    from pathlib import Path
-
-    project_root = Path(__file__).parent.parent.parent
-    publish_script = project_root / "crawler" / "xhs_publish.py"
-    mc_python = project_root / "tools" / "MediaCrawler" / ".venv" / "bin" / "python"
-    python_exe = str(mc_python) if mc_python.exists() else sys.executable
+    project_root = PROJECT_ROOT
+    publish_script = CRAWLER_ROOT / "xhs_publish.py"
+    python_exe = get_media_crawler_python()
 
     try:
         result = subprocess.run(
@@ -199,7 +197,6 @@ def api_export_note(note_id: int):
 
 # ── 半自动发布：暂存图片 ───────────────────────────────────────────────────────
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
 STAGING_DIR = PROJECT_ROOT / "data" / "publish_staging"
 
 
@@ -576,7 +573,6 @@ def api_publish_auto(note_id: int):
     立即返回 {"job_id": str, "status": "running"}，通过 GET /{note_id}/publish-status/{job_id} 轮询结果。
     """
     import subprocess, sys, threading
-    from pathlib import Path
     import uuid, time
 
     note = get_note(note_id, account_pool_id=_active_pool_id())
@@ -585,10 +581,9 @@ def api_publish_auto(note_id: int):
     if not note.title:
         raise HTTPException(400, "笔记标题为空，请先完善内容")
 
-    project_root = Path(__file__).parent.parent.parent
-    publish_script = project_root / "crawler" / "xhs_publish.py"
-    mc_python = project_root / "tools" / "MediaCrawler" / ".venv" / "bin" / "python"
-    python_exe = str(mc_python) if mc_python.exists() else sys.executable
+    project_root = PROJECT_ROOT
+    publish_script = CRAWLER_ROOT / "xhs_publish.py"
+    python_exe = get_media_crawler_python()
 
     job_id = str(uuid.uuid4())[:8]
     _publish_jobs[job_id] = {"status": "running", "note_id": note_id, "started_at": time.time()}

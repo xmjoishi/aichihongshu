@@ -17,7 +17,11 @@ import csv
 from pathlib import Path
 from datetime import datetime
 
-MEDIA_CRAWLER_DIR = Path(__file__).parent.parent / "tools" / "MediaCrawler"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.runtime import MEDIA_CRAWLER_DIR, PROJECT_ROOT
+
 sys.path.insert(0, str(MEDIA_CRAWLER_DIR))
 
 # 把 MediaCrawler 自己的 venv site-packages 加入 sys.path，
@@ -27,8 +31,6 @@ _mc_site = _glob.glob(str(MEDIA_CRAWLER_DIR / ".venv" / "lib" / "python3*" / "si
 for _p in _mc_site:
     if _p not in sys.path:
         sys.path.insert(1, _p)
-
-PROJECT_ROOT = Path(__file__).parent.parent
 
 # v0.2: 多账号 user_data_dir 桥接
 sys.path.insert(0, str(PROJECT_ROOT))

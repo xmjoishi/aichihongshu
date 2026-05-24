@@ -9,9 +9,9 @@ from typing import Optional, List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-router = APIRouter(prefix="/api/settings", tags=["settings"])
+from app.runtime import ENV_PATH
 
-ENV_PATH = Path(__file__).parent.parent.parent / ".env"
+router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 ENV_KEYS = [
     "MINIMAX_API_KEY",

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import {
@@ -6,12 +6,14 @@ import {
   ExternalLink, RefreshCw, ChevronUp, ChevronDown,
   Sparkles, X, CornerDownLeft, StopCircle,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { api, API_BASE, openInBrowser } from "../lib/api";
-import type { Analytics, AnalyticsNote, Insights } from "../lib/types";
+import type { Analytics, AnalyticsNote, Insights, Note, ReferenceAccount } from "../lib/types";
 import { MdContent } from "../components/MdContent";
 import { useAIStream } from "../hooks/useAIStream";
 import { usePanelResize } from "../hooks/usePanelResize";
 import KnowledgeTab from "./KnowledgeTab";
+import { buildSummaryVM, buildInsightsVM, buildRankingVM } from "../selectors/analytics";
 
 // ─── 工具函数 ───────────────────────────────────────────────
 
@@ -99,27 +101,20 @@ function OverviewTab({ summary }: { summary: Analytics | null }) {
 
 type SortKey = "likes" | "collects" | "comments";
 
-function RankingTab() {
+function RankingTab({ allNotes }: { allNotes: Note[] }) {
   const navigate = useNavigate();
   const [sort, setSort] = useState<SortKey>("likes");
-  const [notes, setNotes] = useState<AnalyticsNote[]>([]);
-  const [loading, setLoading] = useState(false);
   // inline 编辑状态
   const [editing, setEditing] = useState<{ id: number; field: SortKey } | null>(null);
   const [editVal, setEditVal] = useState("");
   const [saving, setSaving] = useState(false);
+  const [localOverrides, setLocalOverrides] = useState<Record<number, Partial<Note>>>({});
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await api.get(`/api/analytics/notes?sort=${sort}`);
-      setNotes(data);
-    } finally {
-      setLoading(false);
-    }
-  }, [sort]);
-
-  useEffect(() => { load(); }, [load]);
+  // 用 selector 本地计算排行，合并本地 override
+  const notes: AnalyticsNote[] = useMemo(() => {
+    const merged = allNotes.map((n) => ({ ...n, ...localOverrides[n.id] }));
+    return buildRankingVM(merged, sort);
+  }, [allNotes, sort, localOverrides]);
 
   const startEdit = (id: number, field: SortKey, current: number) => {
     setEditing({ id, field });
@@ -133,9 +128,11 @@ function RankingTab() {
     setSaving(true);
     try {
       await api.patch(`/api/content/${editing.id}/stats`, { [editing.field]: val });
-      setNotes(prev => prev.map(n =>
-        n.id === editing.id ? { ...n, [editing.field]: val } : n
-      ));
+      // 本地立即更新，避免重新 fetch 全量
+      setLocalOverrides((prev) => ({
+        ...prev,
+        [editing.id]: { ...(prev[editing.id] ?? {}), [editing.field]: val },
+      }));
     } finally {
       setSaving(false);
       setEditing(null);
@@ -166,11 +163,11 @@ function RankingTab() {
         ))}
         <div className="relative group ml-auto">
           <button
-            onClick={load}
             className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-zinc-500 bg-white border border-zinc-200 hover:border-zinc-300 transition-colors"
+            disabled
           >
-            <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
-            刷新列表
+            <RefreshCw size={12} />
+            本地计算
           </button>
           {/* Tooltip */}
           <div className="absolute right-0 top-full mt-2 w-52 bg-zinc-800 text-white text-xs rounded-xl px-3 py-2 leading-relaxed
@@ -183,9 +180,7 @@ function RankingTab() {
 
       {/* 表格 */}
       <div className="bg-white rounded-2xl border border-zinc-100 shadow-sm overflow-hidden">
-        {loading && notes.length === 0 ? (
-          <div className="flex items-center justify-center h-40 text-zinc-400 text-sm">加载中…</div>
-        ) : notes.length === 0 ? (
+        {notes.length === 0 ? (
           <div className="flex items-center justify-center h-40 text-zinc-400 text-sm">暂无已发布笔记</div>
         ) : (
           <table className="w-full text-sm">
@@ -300,18 +295,7 @@ function Bar({ value, max, color = "bg-[#ff2442]" }: { value: number; max: numbe
   );
 }
 
-function InsightsTab() {
-  const [insights, setInsights] = useState<Insights | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    api.get("/api/analytics/insights")
-      .then(setInsights)
-      .catch(() => setInsights(null))
-      .finally(() => setLoading(false));
-  }, []);
-
-  if (loading) return <div className="flex items-center justify-center h-60 text-zinc-400">加载中…</div>;
+function InsightsTab({ insights }: { insights: Insights | null }) {
   if (!insights) return <div className="flex items-center justify-center h-60 text-zinc-400">暂无数据</div>;
 
   const maxTitleLikes = Math.max(...insights.title_length_dist.map(d => d.avg_likes), 1);
@@ -678,14 +662,27 @@ const tabs: { key: Tab; label: string }[] = [
 
 export default function Data() {
   const [tab, setTab] = useState<Tab>("overview");
-  const [summary, setSummary] = useState<Analytics | null>(null);
-  const [insights, setInsights] = useState<Insights | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  useEffect(() => {
-    api.get("/api/analytics/summary").then(setSummary).catch(() => {});
-    api.get("/api/analytics/insights").then(setInsights).catch(() => {});
-  }, []);
+  // ── 基础实体 ──────────────────────────────────────────────────
+  const { data: allNotes = [] } = useQuery<Note[]>({
+    queryKey: ["notes"],
+    queryFn: () => api.get("/api/content/"),
+  });
+  const { data: allAccounts = [] } = useQuery<ReferenceAccount[]>({
+    queryKey: ["accounts"],
+    queryFn: () => api.get("/api/accounts/"),
+  });
+
+  // ── 本地计算（替代 analytics/summary + analytics/insights）────
+  const summary = useMemo<Analytics>(
+    () => buildSummaryVM({ notes: allNotes, items: [], accounts: allAccounts }),
+    [allNotes, allAccounts]
+  );
+  const insights = useMemo<Insights>(
+    () => buildInsightsVM({ notes: allNotes, accounts: allAccounts }),
+    [allNotes, allAccounts]
+  );
 
   return (
     <div className="h-full flex flex-col overflow-hidden relative">
@@ -717,8 +714,8 @@ export default function Data() {
       {/* 内容区 */}
       <div className="flex-1 overflow-y-auto px-6 py-5">
         {tab === "overview" && <OverviewTab summary={summary} />}
-        {tab === "ranking" && <RankingTab />}
-        {tab === "insights" && <InsightsTab />}
+        {tab === "ranking" && <RankingTab allNotes={allNotes} />}
+        {tab === "insights" && <InsightsTab insights={insights} />}
         {tab === "knowledge" && <KnowledgeTab />}
       </div>
 

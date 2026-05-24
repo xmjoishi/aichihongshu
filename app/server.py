@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.db.connection import init_db
+from app.runtime import ASSETS_ROOT
 from app.routers import (
     library, content, profile, accounts, analytics, ai, crawler,
     settings, knowledge, accounts_pool,
@@ -56,7 +57,7 @@ app.include_router(accounts_pool.router)
 
 
 # ── 静态资源（图库图片）────────────────────────────────────────────────────
-_ASSETS_DIR = Path(__file__).parent.parent / "assets"
+_ASSETS_DIR = ASSETS_ROOT
 _ASSETS_DIR.mkdir(exist_ok=True)
 app.mount("/assets", StaticFiles(directory=str(_ASSETS_DIR)), name="assets")
 

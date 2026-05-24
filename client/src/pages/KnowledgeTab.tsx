@@ -1,15 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   BarChart2, BookOpen, Users, Lightbulb,
   ToggleLeft, ToggleRight, Trash2, Plus,
   ChevronDown, ChevronUp, ExternalLink,
   Sparkles, Check,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { api, openInBrowser } from "../lib/api";
 import type {
   KnowledgeRule, KnowledgeMySample,
-  KnowledgeRefGroup, KnowledgeInspiration,
+  KnowledgeRefGroup, KnowledgeInspiration, Note,
 } from "../lib/types";
+import { computeRulesFromNotes, mergeRules } from "../selectors/knowledge";
 
 // ─── 分区容器 ─────────────────────────────────────────────────────────────────
 
@@ -48,19 +50,33 @@ function Section({
 // ─── 分区1：互动规律 ──────────────────────────────────────────────────────────
 
 function RulesSection() {
-  const [rules, setRules] = useState<KnowledgeRule[]>([]);
+  // 后端仅提供 enabled 状态（及 label/key）
+  const [backendRules, setBackendRules] = useState<KnowledgeRule[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // 本地 notes 用于重新计算 value/desc
+  const { data: allNotes = [] } = useQuery<Note[]>({
+    queryKey: ["notes"],
+    queryFn: () => api.get("/api/content/"),
+  });
 
   useEffect(() => {
     api.get("/api/knowledge/rules").then((data) => {
-      setRules(data);
+      setBackendRules(data);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
 
+  // 本地计算 value/desc，与后端 enabled 状态合并
+  const rules = useMemo(() => {
+    if (!backendRules.length) return backendRules;
+    const localRules = computeRulesFromNotes(allNotes);
+    return mergeRules(backendRules, localRules);
+  }, [backendRules, allNotes]);
+
   async function toggle(key: string, enabled: boolean) {
     await api.patch(`/api/knowledge/rules/${key}`, { enabled });
-    setRules((prev) => prev.map((r) => r.key === key ? { ...r, enabled } : r));
+    setBackendRules((prev) => prev.map((r) => r.key === key ? { ...r, enabled } : r));
   }
 
   const enabledCount = rules.filter((r) => r.enabled).length;

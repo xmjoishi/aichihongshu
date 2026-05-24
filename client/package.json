@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:tauri": "node ./scripts/prepare-tauri.mjs && pnpm build",
     "preview": "vite preview",
     "tauri": "tauri"
   },

@@ -1,7 +1,8 @@
+import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, openInBrowser } from "../lib/api";
-import { Analytics } from "../lib/types";
+import type { Note, Item, Profile, ReferenceAccount } from "../lib/types";
 import { Spinner } from "../components/ui";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
@@ -11,12 +12,7 @@ import {
   AlertCircle, BookImage, FileText, ArrowRight,
   ExternalLink, Pencil, TrendingUp,
 } from "lucide-react";
-
-// ── 趋势图数据结构 ────────────────────────────────────────────────────────────
-interface TrendResponse {
-  granularity: "day" | "week";
-  items: { day: string; count: number; total_likes: number }[];
-}
+import { buildSummaryVM, buildTrendVM } from "../selectors/analytics";
 
 // ── 今日建议行动卡片 ──────────────────────────────────────────────────────────
 function SuggestionCard({
@@ -54,18 +50,38 @@ function SuggestionCard({
 export default function Dashboard() {
   const navigate = useNavigate();
 
-  const { data, isLoading } = useQuery<Analytics>({
-    queryKey: ["analytics"],
-    queryFn: () => api.get("/api/analytics/summary"),
+  // ── 基础实体查询（替代 analytics/summary + analytics/notes-trend）────────
+  const { data: allNotes = [], isLoading: notesLoading } = useQuery<Note[]>({
+    queryKey: ["notes"],
+    queryFn: () => api.get("/api/content/"),
+  });
+  const { data: allItems = [], isLoading: itemsLoading } = useQuery<Item[]>({
+    queryKey: ["library"],
+    queryFn: () => api.get("/api/library/"),
+  });
+  const { data: profileData, isLoading: profileLoading } = useQuery<Profile>({
+    queryKey: ["profile"],
+    queryFn: () => api.get("/api/profile"),
+  });
+  const { data: allAccounts = [] } = useQuery<ReferenceAccount[]>({
+    queryKey: ["accounts"],
+    queryFn: () => api.get("/api/accounts/"),
   });
 
-  const { data: trendResp } = useQuery<TrendResponse>({
-    queryKey: ["notes-trend"],
-    queryFn: () => api.get("/api/analytics/notes-trend"),
-  });
+  const isLoading = notesLoading || itemsLoading || profileLoading;
+
+  // ── 本地计算 ──────────────────────────────────────────────────────────────
+  const data = useMemo(
+    () => buildSummaryVM({ notes: allNotes, items: allItems, profile: profileData, accounts: allAccounts }),
+    [allNotes, allItems, profileData, allAccounts]
+  );
+
+  const trendResp = useMemo(
+    () => buildTrendVM(allNotes),
+    [allNotes]
+  );
 
   if (isLoading) return <Spinner />;
-  if (!data) return null;
 
   const { library, notes, my_profile, top_notes, suggestions } = data;
   const profile = my_profile as any;
@@ -75,8 +91,8 @@ export default function Dashboard() {
   // profileIncomplete: 有粉丝但人设未完善（已在 banner 引导文案中使用）
   void (hasFollowers && !isProfileSetup);
 
-  const trend = trendResp?.items ?? [];
-  const granularity = trendResp?.granularity ?? "day";
+  const trend = trendResp.items ?? [];
+  const granularity = trendResp.granularity ?? "day";
   const hasTrend = trend.length > 1;
 
   // 建议行动列表

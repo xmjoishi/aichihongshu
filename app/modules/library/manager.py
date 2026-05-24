@@ -11,10 +11,11 @@ from dotenv import load_dotenv
 
 from app.db.connection import get_db
 from app.models.item import Item
+from app.runtime import PROJECT_ROOT
 
 load_dotenv()
 
-_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+_PROJECT_ROOT = PROJECT_ROOT
 _ASSETS_DIR = _PROJECT_ROOT / os.getenv("ASSETS_DIR", "assets")
 
 

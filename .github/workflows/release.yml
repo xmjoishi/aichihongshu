@@ -79,11 +79,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-          releaseName: '爱吃红薯 ${{ github.event_name == ''workflow_dispatch'' && github.event.inputs.tag || github.ref_name }}'
+          releaseName: '${{ github.event_name == ''workflow_dispatch'' && github.event.inputs.tag || github.ref_name }}'
           releaseBody: |
             ## 更新内容
 
-            请查看 [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) 了解详细变更。
+            <!-- 在此填写本次更新内容 -->
 
             ## 安装说明
 

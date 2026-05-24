@@ -17,9 +17,12 @@ import csv
 from pathlib import Path
 from datetime import datetime
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.runtime import MEDIA_CRAWLER_DIR, PROJECT_ROOT
+
 # 把 MediaCrawler 加入 sys.path
-PROJECT_ROOT = Path(__file__).parent.parent
-MEDIA_CRAWLER_DIR = PROJECT_ROOT / "tools" / "MediaCrawler"
 sys.path.insert(0, str(MEDIA_CRAWLER_DIR))
 
 # v0.2: 多账号 user_data_dir 桥接
@@ -119,8 +122,7 @@ def main():
     args = parser.parse_args()
 
     # 输出目录相对项目根
-    project_root = Path(__file__).parent.parent
-    output_dir = project_root / args.output_dir
+    output_dir = PROJECT_ROOT / args.output_dir
     user_data_dir = Path(args.user_data_dir) if args.user_data_dir else None
 
     print(f"[xhs_search] 关键词：{args.keywords}")

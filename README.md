@@ -71,6 +71,13 @@ cd client && pnpm tauri dev
 
 > **生产打包**：`cd client && pnpm tauri build`，产物在 `client/src-tauri/target/release/`
 
+### 桌面打包版说明
+
+- 打包后的 Tauri 客户端会在启动时自动拉起本地 FastAPI 服务，关闭应用时自动停止。
+- 若后端启动失败，前端会显示「本地服务未启动」兜底页，而不是在页面内零散报 `127.0.0.1:8765` 连接错误。
+- 后端日志默认写入系统日志目录；若获取失败，则回退到临时目录：`aichihongshu-backend.log`。
+- 当前桌面包会随应用携带 Python 源码与 MediaCrawler 运行资源，但**仍要求目标机器已安装 `uv` 和可用的 Python 3.11+ 环境**。它还不是完全离线、零依赖的单文件后端包。
+
 ### 仅启动后端 API
 
 如只需 REST API（供其他客户端或脚本调用）：
@@ -205,4 +212,3 @@ tail -f /tmp/rn-server.log
 本仓库自有代码（`app/`、`client/`、`crawler/` 等）采用 [MIT License](./LICENSE)。
 
 `tools/MediaCrawler` 子模块遵守其自身的 NON-COMMERCIAL LEARNING LICENSE，**禁止商业用途**，详见 [LICENSE](./LICENSE)。
-

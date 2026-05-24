@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.parent
-MEDIA_CRAWLER_DIR = PROJECT_ROOT / "tools" / "MediaCrawler"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.runtime import MEDIA_CRAWLER_DIR, PROJECT_ROOT
 
 def resolve_active_user_data_dir() -> Path:
     """返回当前激活账号的 user_data_dir 绝对路径，无激活时回退 main 目录。"""

@@ -170,22 +170,23 @@ def api_refresh_profile(background_tasks: BackgroundTasks):
 def _do_refresh(pool_id: int, account_id: str):
     """后台任务：subprocess 调爬虫刷新主页（用 MediaCrawler 独立 venv）"""
     import subprocess
-    from pathlib import Path
+
+    from app.runtime import CRAWLER_ROOT, MEDIA_CRAWLER_DIR, PROJECT_ROOT, get_media_crawler_uv
 
     status = _refresh_status.setdefault(pool_id, {"running": False, "last_error": None})
     status["running"] = True
     status["last_error"] = None
 
     try:
-        project_root = Path(__file__).parent.parent.parent
-        media_crawler_dir = project_root / "tools" / "MediaCrawler"
+        project_root = PROJECT_ROOT
+        media_crawler_dir = MEDIA_CRAWLER_DIR
         creator_url = f"https://www.xiaohongshu.com/user/profile/{account_id}"
 
         cmd = [
-            "uv", "run",
+            get_media_crawler_uv(), "run",
             "--project", str(media_crawler_dir),
             "python",
-            str(project_root / "crawler" / "xhs_creator.py"),
+            str(CRAWLER_ROOT / "xhs_creator.py"),
             "--url", creator_url,
             "--my-profile",
             "--account-pool-id", str(pool_id),

@@ -10,10 +10,12 @@ import {
   TrendingUp,
   X,
 } from "lucide-react";
-import { api, fetchTopics, inspireStream, type InspireParams } from "../lib/api";
-import { Item, ReferenceAccount, Insights, Note } from "../lib/types";
+import { api, inspireStream, type InspireParams } from "../lib/api";
+import { Item, ReferenceAccount, Note } from "../lib/types";
 import { Empty } from "../components/ui";
 import { useToast } from "../components/Toast";
+import { buildInsightsVM } from "../selectors/analytics";
+import { buildTopicsVM } from "../selectors/topics";
 
 type TopicItem = { word: string; count: number };
 type RefPost = { title: string; likes: number; url?: string };
@@ -136,20 +138,27 @@ export default function Inspire() {
     queryFn: () => api.get("/api/accounts/"),
   });
 
-  const { data: topicsData, refetch: refetchTopics, isFetching: topicsRefreshing } = useQuery<{ topics: TopicItem[] }>({
-    queryKey: ["inspire-topics"],
-    queryFn: fetchTopics,
+  // 拉 notes 用于本地计算 topics / insights
+  const { data: allNotes = [] } = useQuery<Note[]>({
+    queryKey: ["notes"],
+    queryFn: () => api.get("/api/content/"),
   });
 
-  const { data: insights } = useQuery<Insights>({
-    queryKey: ["inspire-insights"],
-    queryFn: () => api.get("/api/analytics/insights"),
-  });
+  // 本地计算 topics（替代 fetchTopics → GET /api/analytics/topics）
+  const topicsData = useMemo(() => buildTopicsVM(allNotes), [allNotes]);
+  const [topicsVersion, setTopicsVersion] = useState(0); // 用于触发重新洗牌
+
+  // 本地计算 insights（替代 GET /api/analytics/insights）
+  const insights = useMemo(
+    () => buildInsightsVM({ notes: allNotes, accounts: allAccounts }),
+    [allNotes, allAccounts]
+  );
 
   useEffect(() => {
     if (!topicsData?.topics) return;
     setTopicPool(shuffleTake(topicsData.topics, 12));
-  }, [topicsData]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topicsData, topicsVersion]);
 
   useEffect(() => {
     if (!allItems.length) return;
@@ -196,11 +205,7 @@ export default function Inspire() {
   }
 
   function refreshTopicPool() {
-    if (topicsData?.topics?.length) {
-      setTopicPool(shuffleTake(topicsData.topics, 12));
-      return;
-    }
-    refetchTopics();
+    setTopicsVersion((v) => v + 1);
   }
 
   function refreshItemPool() {
@@ -356,7 +361,7 @@ export default function Inspire() {
                     onClick={refreshTopicPool}
                     className="inline-flex items-center gap-1 rounded-full border border-zinc-200 px-3 py-1 text-xs text-zinc-600 hover:bg-zinc-50"
                   >
-                    <RefreshCw size={12} className={topicsRefreshing ? "animate-spin" : ""} /> 刷新
+                    <RefreshCw size={12} /> 刷新
                   </button>
                 </div>
                 <input

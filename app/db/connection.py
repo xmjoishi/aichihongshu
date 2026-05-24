@@ -7,9 +7,11 @@ import sqlite3
 from pathlib import Path
 from dotenv import load_dotenv
 
+from app.runtime import PROJECT_ROOT
+
 load_dotenv()
 
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
+_PROJECT_ROOT = PROJECT_ROOT
 _DB_PATH = _PROJECT_ROOT / os.getenv("DB_PATH", "data/app.db")
 
 # v0.2 新增：账号池浏览器目录根（可通过 .env 覆盖）

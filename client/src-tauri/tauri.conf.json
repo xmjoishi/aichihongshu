@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm build:tauri",
     "frontendDist": "../dist"
   },
   "app": {
@@ -24,6 +24,25 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": [
+      "../../app",
+      "../../crawler",
+      "../../tools/MediaCrawler/base",
+      "../../tools/MediaCrawler/cmd_arg",
+      "../../tools/MediaCrawler/config",
+      "../../tools/MediaCrawler/constant",
+      "../../tools/MediaCrawler/libs",
+      "../../tools/MediaCrawler/media_platform",
+      "../../tools/MediaCrawler/model",
+      "../../tools/MediaCrawler/store",
+      "../../tools/MediaCrawler/main.py",
+      "../../tools/MediaCrawler/var.py",
+      "../../pyproject.toml",
+      "../../uv.lock",
+      "../../.env.example",
+      "../../tools/MediaCrawler/pyproject.toml",
+      "../../tools/MediaCrawler/uv.lock"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

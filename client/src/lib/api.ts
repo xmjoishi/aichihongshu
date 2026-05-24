@@ -1,6 +1,8 @@
 // API base URL — FastAPI server
 export const API_BASE = "http://127.0.0.1:8765";
 
+export const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 /** 风险二次确认所需的特殊错误（HTTP 428）。 */
@@ -16,6 +18,21 @@ export class RiskConfirmationRequiredError extends Error {
     this.role = String(payload?.role ?? "");
     this.alias = String(payload?.alias ?? "");
     this.payload = payload;
+  }
+}
+
+export function isBackendUnavailableError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const msg = error.message.toLowerCase();
+  return msg.includes("failed to fetch") || msg.includes("networkerror") || msg.includes("load failed");
+}
+
+export async function checkBackendHealth(): Promise<boolean> {
+  try {
+    const r = await fetch(`${API_BASE}/health`, { cache: "no-store" });
+    return r.ok;
+  } catch {
+    return false;
   }
 }
 
