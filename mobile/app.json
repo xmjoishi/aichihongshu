@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "爱吃红薯",
+    "slug": "aichihongshu",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "scheme": "aichihongshu",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "拍摄家居图片导入图库",
+        "NSPhotoLibraryUsageDescription": "从相册导入家居图片",
+        "NSPhotoLibraryAddUsageDescription": "将整理好的图片保存到相册"
+      },
+      "bundleIdentifier": "com.anonymous.aichihongshu"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#FF2442",
+        "foregroundImage": "./assets/icon.png"
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.ACCESS_MEDIA_LOCATION",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "从相册导入家居图片",
+          "cameraPermission": "拍摄家居图片导入图库"
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "将整理好的图片保存到相册",
+          "savePhotosPermission": "将整理好的图片保存到相册",
+          "isAccessMediaLocationEnabled": true
+        }
+      ]
+    ]
+  }
+}

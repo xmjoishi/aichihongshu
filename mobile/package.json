@@ -1,0 +1,43 @@
+{
+  "name": "mobile",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "dependencies": {
+    "@expo/vector-icons": "^15.1.1",
+    "drizzle-orm": "^0.45.2",
+    "expo": "~56.0.4",
+    "expo-blur": "~56.0.3",
+    "expo-clipboard": "~56.0.3",
+    "expo-file-system": "~56.0.7",
+    "expo-image-picker": "~56.0.13",
+    "expo-linear-gradient": "^56.0.4",
+    "expo-linking": "~56.0.11",
+    "expo-media-library": "~56.0.6",
+    "expo-router": "~56.2.6",
+    "expo-secure-store": "~56.0.4",
+    "expo-sqlite": "~56.0.4",
+    "expo-status-bar": "~56.0.4",
+    "nativewind": "^4.2.4",
+    "react": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-gesture-handler": "~2.31.1",
+    "react-native-reanimated": "4.3.1",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "4.25.2",
+    "react-native-svg": "15.15.4",
+    "tailwindcss": "^4.3.0",
+    "zustand": "^5.0.13"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web"
+  },
+  "private": true
+}

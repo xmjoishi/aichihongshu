@@ -55,6 +55,12 @@ uv run python app/cli.py db init
 
 ## 启动
 
+### Mobile（Expo）
+
+移动端启动、Debug、模拟器和真机部署手册见：
+
+- [`mobile/README.md`](./mobile/README.md)
+
 ### GUI 客户端（推荐日常使用）
 
 需要**同时**启动后端 API 和前端客户端：
