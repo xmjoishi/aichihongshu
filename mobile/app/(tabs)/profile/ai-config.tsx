@@ -11,7 +11,7 @@ import { AuroraBackground, LiquidButton } from '../../../components/ui';
 import { Glass, Brand, Text as TText, Font, Radius, Sys } from '../../../utils/theme';
 
 export default function AiConfigScreen() {
-  const [config, setConfig] = useState<AiConfig>({ providerId: 'minimax', modelId: 'MiniMax-Text-01' });
+  const [config, setConfig] = useState<AiConfig>({ providerId: 'minimax', modelId: 'MiniMax-M3' });
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [maskedKeys, setMaskedKeys] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);

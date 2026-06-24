@@ -2,7 +2,7 @@
  * AI 服务层
  *
  * 支持的 Provider：
- *  - minimax   : MiniMax（VL-01 图片分析 / Text-01 文本）
+ *  - minimax   : MiniMax（VL-01 图片分析 / M3 文本）
  *  - deepseek  : DeepSeek（OpenAI 兼容接口，仅文本）
  *  - openai    : OpenAI 官方接口（gpt-4o 等，仅文本）
  *  - custom    : 用户自定义 OpenAI 兼容端点
@@ -35,13 +35,13 @@ export const PROVIDERS: ProviderDef[] = [
   {
     id: 'minimax',
     label: 'MiniMax',
-    baseUrl: 'https://api.minimaxi.com',
-    chatPath: '/v1/text/chatcompletion_v2',
+    baseUrl: 'https://api.minimaxi.com/anthropic',
+    chatPath: '/v1/messages',
     keyPlaceholder: 'eyJ...',
-    keyHint: '前往 minimaxi.com 获取',
+    keyHint: '前往 Token Plan 获取订阅 Key',
     models: [
-      { id: 'MiniMax-Text-01', label: 'MiniMax Text-01', vision: false },
-      { id: 'MiniMax-VL-01',   label: 'MiniMax VL-01（图文）', vision: true },
+      { id: 'MiniMax-M3', label: 'MiniMax M3', vision: false },
+      { id: 'MiniMax-VL-01', label: 'MiniMax VL-01（图文）', vision: true },
     ],
   },
   {
@@ -93,7 +93,7 @@ export interface AiConfig {
 
 const DEFAULT_CONFIG: AiConfig = {
   providerId: 'minimax',
-  modelId: 'MiniMax-Text-01',
+  modelId: 'MiniMax-M3',
 };
 
 // ── Config 读写 ─────────────────────────────────────────────────
@@ -179,6 +179,26 @@ export async function chat(
 
   const provider = getProvider(config.providerId);
   const endpoint = getEndpoint(provider, config);
+
+  if (config.providerId === 'minimax') {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key, Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: config.modelId,
+        max_tokens: 2000,
+        system: systemPrompt,
+        messages: messages.map((message) => ({
+          role: message.role,
+          content: [{ type: 'text', text: message.content }],
+        })),
+      }),
+    });
+    if (!res.ok) throw new Error(`AI 对话失败: ${await res.text()}`);
+    const data = await res.json();
+    const textBlocks = (data.content ?? []).filter((block: any) => block?.type === 'text');
+    return textBlocks.map((block: any) => block.text ?? '').join('\n').trim();
+  }
 
   const res = await fetch(endpoint, {
     method: 'POST',

@@ -135,10 +135,10 @@ import * as FileSystem from 'expo-file-system/legacy';
 处理步骤：
 
 1. 打开 `Xcode > Settings > Components` 安装对应 iOS Runtime
-2. 改用机型名启动（不要用旧 UDID）
+2. 使用 `--device` 指定设备名或 UDID。若存在同名模拟器，优先使用 UDID
 
 ```bash
-pnpm exec expo run:ios --simulator "iPhone 16 Pro"
+pnpm exec expo run:ios --device "iPhone 16 Pro"
 ```
 
 3. 或直接回到推荐开发模式：
@@ -146,6 +146,33 @@ pnpm exec expo run:ios --simulator "iPhone 16 Pro"
 ```bash
 pnpm exec expo start --clear
 ```
+
+#### 问题 F：`No script URL provided`
+
+这表示 Development Build 已安装，但 Metro 没有运行。启动 Dev Client 对应的 Metro：
+
+```bash
+pnpm exec expo start --dev-client --clear
+```
+
+也可以重新运行原生构建命令，并确保没有添加 `--no-bundler`：
+
+```bash
+pnpm exec expo run:ios --device "设备名或 UDID"
+```
+
+#### 问题 G：`ExpoKeepAwake` 找不到 Swift 输入文件
+
+如果 Pods 仍引用 `node_modules/expo/node_modules/expo-keep-awake`，但项目使用的是 pnpm 布局，需要重新生成 Pods 引用：
+
+```bash
+cd ios
+pod install
+cd ..
+pnpm exec expo run:ios --device "设备名或 UDID"
+```
+
+`pod install` 需要联网下载 React Native/Hermes 依赖。不要手工修改 `Pods.xcodeproj` 中的路径。
 
 ---
 
@@ -168,10 +195,44 @@ pnpm exec expo run:ios
 如需指定机型：
 
 ```bash
-pnpm exec expo run:ios --simulator "iPhone 16 Pro"
+pnpm exec expo run:ios --device "iPhone 16 Pro"
 ```
 
 > `run:ios` 依赖原生工程，若缺失会触发 prebuild。
+
+### 4.3 iOS SDK、最低版本与模拟器版本
+
+以下三个版本含义不同：
+
+- Xcode iOS SDK：编译时使用的 SDK，决定能否面向最新 iOS 构建
+- Deployment Target：应用允许安装的最低 iOS 版本，不是最高版本
+- Simulator Runtime：当前模拟器实际运行的 iOS 版本
+
+例如 `IPHONEOS_DEPLOYMENT_TARGET = 16.4` 表示支持 iOS 16.4 及以上，不妨碍应用运行在 iOS 26.5。若命令启动了 iOS 18.2，通常是选中了旧 Runtime 下的同名模拟器。
+
+### 4.4 创建最新 iOS 模拟器
+
+1. 打开 `Xcode > Settings > Components`
+2. 下载需要的 iOS Simulator Runtime
+3. 打开 `Xcode > Window > Devices and Simulators`
+4. 切换到 `Simulators`，点击左下角 `+`
+5. 设置名称、Device Type 和 OS Version，例如：
+   - Simulator Name：`iPhone 16 Pro iOS 26.5`
+   - Device Type：`iPhone 16 Pro`
+   - OS Version：`iOS 26.5`
+6. 点击 `Create`
+
+查看可用设备及 UDID：
+
+```bash
+xcrun simctl list devices available
+```
+
+使用 UDID 可以避免 Expo 命中同名的旧模拟器：
+
+```bash
+pnpm exec expo run:ios --device "模拟器 UDID"
+```
 
 ---
 
@@ -179,28 +240,51 @@ pnpm exec expo run:ios --simulator "iPhone 16 Pro"
 
 当 Expo Go 不兼容时，使用 Dev Client 真机部署。
 
-### 5.1 生成 iOS 原生工程
+### 5.1 准备 iPhone
+
+1. 使用数据线连接 Mac 和 iPhone
+2. 在 iPhone 上选择“信任此电脑”
+3. 打开 `设置 > 隐私与安全性 > 开发者模式`，启用后按提示重启
+4. 建议让 iPhone 和 Mac 连接同一局域网
+
+### 5.2 生成 iOS 原生工程（仅在需要时）
+
+仓库已有 `mobile/ios` 时不需要每次执行 prebuild。仅在原生工程缺失或原生配置变化后运行：
 
 ```bash
 cd mobile
 pnpm exec expo prebuild --clean
 ```
 
-### 5.2 Xcode 签名与安装
+`--clean` 会重新生成原生工程；签名、包名等需要持久化的配置应先写入 `app.json` 或 Expo config。
+
+### 5.3 Xcode 签名与安装
 
 ```bash
-open ios/mobile.xcworkspace
+open ios/app.xcworkspace
 ```
 
 在 Xcode 中：
 
-1. 选择项目 target
-2. 打开 `Signing & Capabilities`
-3. `Team` 选择你的 Apple ID
-4. `Bundle Identifier` 改为唯一值（如 `com.yourname.aichihongshu.mobile`）
-5. 选择真机设备，点击 Run（▶）
+1. 左侧选择蓝色 `app` 项目
+2. 选择 `TARGETS > app > Signing & Capabilities`
+3. 勾选 `Automatically manage signing`
+4. `Team` 选择你的 Apple ID
+5. 将 `Bundle Identifier` 改为唯一值，例如 `com.yourname.aichihongshu`
+6. 在 Xcode 顶部设备列表选择已连接的 iPhone
+7. 点击 Run（▶）安装 Development Build
 
-### 5.3 连接 Dev Server
+同时应将同一个 Bundle Identifier 写入 `app.json` 的 `expo.ios.bundleIdentifier`，否则以后 prebuild 可能恢复旧包名。
+
+完成一次 Xcode 签名配置后，也可以通过命令选择并安装到真机：
+
+```bash
+pnpm exec expo run:ios --device
+```
+
+不要添加 `--no-bundler`，除非另一个终端已经启动 Metro。
+
+### 5.4 连接 Dev Server
 
 安装成功后，在项目目录执行：
 
@@ -209,6 +293,8 @@ pnpm exec expo start --dev-client --clear
 ```
 
 真机打开已安装 App，会连接到本机 Metro。
+
+如果 iPhone 提示开发者不受信任，打开 `设置 > 通用 > VPN与设备管理`，信任对应 Apple ID。免费 Apple ID 的开发签名通常需要定期重新安装；需要提供给其他测试人员时，使用 TestFlight 或 EAS Build。
 
 ---
 
