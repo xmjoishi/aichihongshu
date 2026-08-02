@@ -1,4 +1,4 @@
-import { Tabs } from 'expo-router';
+import { Tabs, usePathname } from 'expo-router';
 import React, { useState } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
@@ -197,10 +197,19 @@ function FloatingTabBar({
 
 // ─── Layout ───────────────────────────────────────────────────────
 export default function TabLayout() {
+  const pathname = usePathname();
+  const hideTabBar =
+    pathname.startsWith('/(tabs)/create/')
+    || pathname.startsWith('/create/')
+    || pathname.startsWith('/(tabs)/profile/')
+    || pathname.startsWith('/profile/')
+    || pathname.startsWith('/(tabs)/library/')
+    || pathname.startsWith('/library/');
+
   return (
     <Tabs
       screenOptions={{ headerShown: false }}
-      tabBar={(props) => <FloatingTabBar {...props} />}
+      tabBar={(props) => (hideTabBar ? null : <FloatingTabBar {...props} />)}
     >
       <Tabs.Screen
         name="library"

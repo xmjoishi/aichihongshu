@@ -1,19 +1,20 @@
 import {
   View, Text, FlatList, TextInput, TouchableOpacity,
   KeyboardAvoidingView, Platform, StyleSheet,
-  ActivityIndicator, Alert, ScrollView, Linking,
+  ActivityIndicator, Alert, ScrollView,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useState, useRef, useEffect } from 'react';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useStore } from '../../../store';
-import { chat, buildSystemPrompt, getApiKey, getAiConfig } from '../../../services/ai';
+import { chatStream, buildSystemPrompt, getApiKey, getAiConfig } from '../../../services/ai';
 import { AuroraBackground, InlineNav, PhImage } from '../../../components/ui';
 import { Glass, Brand, Text as TText, Font, Radius } from '../../../utils/theme';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
-type Message = { role: 'user' | 'assistant'; content: string };
+type Message = { id: string; role: 'user' | 'assistant'; content: string; streaming?: boolean };
 
 // 快捷提示词
 const QUICK_PROMPTS = [
@@ -26,6 +27,7 @@ const QUICK_PROMPTS = [
 export default function ChatScreen() {
   const { noteId } = useLocalSearchParams<{ noteId: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const notes = useStore((s) => s.notes);
   const items = useStore((s) => s.items);
   const profile = useStore((s) => s.profile);
@@ -41,13 +43,17 @@ export default function ChatScreen() {
   const flatRef = useRef<FlatList>(null);
 
   // 检查 API Key
-  useEffect(() => {
-    (async () => {
-      const config = await getAiConfig();
-      const key = await getApiKey(config.providerId);
-      setKeyMissing(!key);
-    })();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void (async () => {
+        const config = await getAiConfig();
+        const key = await getApiKey(config.providerId);
+        if (!cancelled) setKeyMissing(!key);
+      })();
+      return () => { cancelled = true; };
+    }, [])
+  );
 
   async function handleSend(text?: string) {
     const content = (text ?? input).trim();
@@ -63,11 +69,19 @@ export default function ChatScreen() {
       );
       return;
     }
-    const userMsg: Message = { role: 'user', content };
-    const next = [...messages, userMsg];
+    const userMsg: Message = { id: `user-${Date.now()}`, role: 'user', content };
+    const assistantId = `assistant-${Date.now()}`;
+    const assistantMsg: Message = {
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      streaming: true,
+    };
+    const next: Message[] = [...messages, userMsg, assistantMsg];
     setMessages(next);
     setInput('');
     setLoading(true);
+    setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 50);
     try {
       const analyses = linkedItems.map((i) => i.analysis ?? '').filter(Boolean);
       const sys = buildSystemPrompt(
@@ -79,9 +93,28 @@ export default function ChatScreen() {
         },
         analyses,
       );
-      const reply = await chat(next, sys);
-      setMessages([...next, { role: 'assistant', content: reply }]);
+      const conversation: Array<{ role: 'user' | 'assistant'; content: string }> = next
+        .filter((message) => message.id !== assistantId)
+        .map((message) => ({ role: message.role, content: message.content }));
+      const reply = await chatStream(conversation, sys, (_delta, fullText) => {
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantId
+              ? { ...message, content: fullText, streaming: true }
+              : message
+          )
+        );
+        setTimeout(() => flatRef.current?.scrollToEnd({ animated: false }), 0);
+      });
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === assistantId
+            ? { ...message, content: reply, streaming: false }
+            : message
+        )
+      );
     } catch (e: any) {
+      setMessages((prev) => prev.filter((message) => message.id !== assistantId));
       const msg: string = e.message ?? '未知错误';
       if (msg.includes('API Key') || msg.includes('401') || msg.includes('403')) {
         Alert.alert('Key 无效或已过期', msg, [
@@ -132,9 +165,21 @@ export default function ChatScreen() {
             />
           )}
           {!isUser && <View style={styles.bubbleAIBg} />}
-          <Text style={[styles.bubbleText, isUser && styles.bubbleTextUser]}>
-            {item.content}
-          </Text>
+          {isUser ? (
+            <Text style={[styles.bubbleText, styles.bubbleTextUser]}>
+              {item.content}
+            </Text>
+          ) : (
+            <View>
+              <MarkdownBubble content={item.content} />
+              {item.streaming && !item.content ? (
+                <View style={styles.streamingRow}>
+                  <ActivityIndicator size="small" color={Brand.red} />
+                  <Text style={styles.streamingText}>AI 正在生成…</Text>
+                </View>
+              ) : null}
+            </View>
+          )}
           {!isUser && (
             <TouchableOpacity style={styles.saveBtn} onPress={() => handleSave(item.content)}>
               <Text style={styles.saveBtnText}>保存到草稿 →</Text>
@@ -217,9 +262,9 @@ export default function ChatScreen() {
         <FlatList
           ref={flatRef}
           data={messages}
-          keyExtractor={(_, i) => String(i)}
+          keyExtractor={(item) => item.id}
           renderItem={renderMessage}
-          contentContainerStyle={styles.msgList}
+          contentContainerStyle={[styles.msgList, { paddingBottom: 96 + Math.max(insets.bottom, 12) }]}
           ListEmptyComponent={
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyTitle}>AI 创作助手</Text>
@@ -246,7 +291,7 @@ export default function ChatScreen() {
         {/* 输入区 */}
         <BlurView intensity={65} tint="light" style={styles.inputBar}>
           <View style={styles.inputBarBg} />
-          <View style={styles.inputRow}>
+          <View style={[styles.inputRow, { paddingBottom: Math.max(insets.bottom, 12) }]}>
             <BlurView intensity={20} tint="light" style={styles.inputWrap}>
               <View style={styles.inputBg} />
               <TextInput
@@ -277,6 +322,68 @@ export default function ChatScreen() {
   );
 }
 
+function MarkdownBubble({ content }: { content: string }) {
+  const lines = content.split('\n');
+
+  return (
+    <View style={styles.markdownWrap}>
+      {lines.map((line, index) => {
+        const trimmed = line.trim();
+
+        if (!trimmed) return <View key={`spacer-${index}`} style={styles.mdSpacer} />;
+        if (/^---+$/.test(trimmed)) return <View key={`rule-${index}`} style={styles.mdRule} />;
+
+        if (/^#\s+/.test(trimmed)) {
+          return (
+            <Text key={`h-${index}`} style={styles.mdHeading}>
+              {trimmed.replace(/^#\s+/, '')}
+            </Text>
+          );
+        }
+
+        const orderedMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
+        if (orderedMatch) {
+          return (
+            <View key={`ol-${index}`} style={styles.mdListRow}>
+              <Text style={styles.mdListIndex}>{orderedMatch[1]}.</Text>
+              <Text style={styles.mdParagraph}>{renderInlineMarkdown(orderedMatch[2])}</Text>
+            </View>
+          );
+        }
+
+        const bulletMatch = trimmed.match(/^[-*]\s+(.*)$/);
+        if (bulletMatch) {
+          return (
+            <View key={`ul-${index}`} style={styles.mdListRow}>
+              <Text style={styles.mdListIndex}>•</Text>
+              <Text style={styles.mdParagraph}>{renderInlineMarkdown(bulletMatch[1])}</Text>
+            </View>
+          );
+        }
+
+        return (
+          <Text key={`p-${index}`} style={styles.mdParagraph}>
+            {renderInlineMarkdown(trimmed)}
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
+
+function renderInlineMarkdown(text: string) {
+  const parts = text.split(/(\*\*.*?\*\*)/g).filter(Boolean);
+  return parts.map((part, index) => {
+    const isBold = part.startsWith('**') && part.endsWith('**');
+    const value = isBold ? part.slice(2, -2) : part;
+    return (
+      <Text key={`${index}-${value}`} style={isBold ? styles.mdBold : undefined}>
+        {value}
+      </Text>
+    );
+  });
+}
+
 const styles = StyleSheet.create({
   keyWarning: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
@@ -303,7 +410,7 @@ const styles = StyleSheet.create({
   imgStripContent: { padding: 10, gap: 8 },
   thumb: { width: 50, height: 50, borderRadius: Radius.md },
 
-  msgList: { padding: 16, gap: 14, paddingBottom: 16, flexGrow: 1 },
+  msgList: { padding: 16, gap: 14, flexGrow: 1 },
   msgRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
   msgRowUser: { justifyContent: 'flex-end' },
   msgRowAI: { justifyContent: 'flex-start' },
@@ -320,6 +427,16 @@ const styles = StyleSheet.create({
   bubbleAIBg: { ...StyleSheet.absoluteFill, backgroundColor: Glass.bg },
   bubbleText: { fontSize: Font.subheadline, color: TText.secondary, lineHeight: 22 },
   bubbleTextUser: { color: '#fff' },
+  markdownWrap: { gap: 0 },
+  mdHeading: { fontSize: Font.callout, fontWeight: Font.bold, color: TText.primary, lineHeight: 24, marginBottom: 4 },
+  mdParagraph: { fontSize: Font.subheadline, color: TText.secondary, lineHeight: 22, flex: 1 },
+  mdBold: { fontWeight: Font.bold, color: TText.primary },
+  mdRule: { height: 1, backgroundColor: Glass.border, marginVertical: 10 },
+  mdSpacer: { height: 10 },
+  mdListRow: { flexDirection: 'row', gap: 6, alignItems: 'flex-start', marginBottom: 6 },
+  mdListIndex: { width: 18, fontSize: Font.subheadline, color: TText.secondary, lineHeight: 22 },
+  streamingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
+  streamingText: { fontSize: Font.caption, color: TText.tertiary },
   saveBtn: { marginTop: 8, alignSelf: 'flex-end' },
   saveBtnText: { fontSize: Font.caption, color: Brand.red, fontWeight: Font.medium },
 
@@ -340,7 +457,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     padding: 12,
     gap: 8,
-    paddingBottom: Platform.OS === 'ios' ? 28 : 12,
     alignItems: 'flex-end',
   },
   inputWrap: { flex: 1, borderRadius: Radius.xl, overflow: 'hidden', borderWidth: 0.5, borderColor: Glass.borderSoft },

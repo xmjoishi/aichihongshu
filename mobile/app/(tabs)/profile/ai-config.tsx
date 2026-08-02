@@ -1,7 +1,8 @@
 import {
   View, Text, ScrollView, TextInput, Pressable,
-  StyleSheet, Alert, KeyboardAvoidingView, Platform, ActivityIndicator,
+  StyleSheet, Alert, KeyboardAvoidingView, Platform,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { useState, useEffect } from 'react';
 import {
   PROVIDERS, getAiConfig, setAiConfig, getApiKey, setApiKey, deleteApiKey,
@@ -41,6 +42,20 @@ export default function AiConfigScreen() {
 
   function selectModel(modelId: string) {
     setConfig((c) => ({ ...c, modelId }));
+  }
+
+  function handleEditKey(providerId: ProviderId) {
+    setApiKeys((k) => ({ ...k, [providerId]: '' }));
+    setMaskedKeys((m) => ({ ...m, [providerId]: false }));
+  }
+
+  async function handlePasteKey(providerId: ProviderId) {
+    const text = (await Clipboard.getStringAsync()).trim();
+    if (!text) {
+      Alert.alert('剪贴板为空', '先在 Mac 上复制 API Key，再点这里粘贴。');
+      return;
+    }
+    setApiKeys((k) => ({ ...k, [providerId]: text }));
   }
 
   async function handleSave() {
@@ -153,32 +168,44 @@ export default function AiConfigScreen() {
           {/* 当前 Provider 的 API Key */}
           <Text style={styles.groupLabel}>API Key — {currentProvider.label}</Text>
           <View style={styles.card}>
-            <View style={styles.keyRow}>
-              <TextInput
-                style={styles.keyInput}
-                value={maskedKeys[config.providerId] ? '••••••••••••••••••••••••' : (apiKeys[config.providerId] ?? '')}
-                onChangeText={(v) => {
-                  setApiKeys((k) => ({ ...k, [config.providerId]: v }));
-                  setMaskedKeys((m) => ({ ...m, [config.providerId]: false }));
-                }}
-                onFocus={() => {
-                  if (maskedKeys[config.providerId]) {
-                    setApiKeys((k) => ({ ...k, [config.providerId]: '' }));
-                    setMaskedKeys((m) => ({ ...m, [config.providerId]: false }));
-                  }
-                }}
-                placeholder={currentProvider.keyPlaceholder}
-                placeholderTextColor={TText.tertiary}
-                autoCapitalize="none"
-                autoCorrect={false}
-                secureTextEntry={false}
-              />
-              {maskedKeys[config.providerId] && (
-                <Pressable onPress={() => handleDeleteKey(config.providerId)} style={styles.deleteBtn}>
-                  <Text style={styles.deleteBtnText}>删除</Text>
-                </Pressable>
-              )}
-            </View>
+            {maskedKeys[config.providerId] ? (
+              <View style={styles.keyStatusRow}>
+                <View style={styles.keyStatusLeft}>
+                  <View style={styles.keyStatusBadge}>
+                    <Text style={styles.keyStatusBadgeText}>已配置</Text>
+                  </View>
+                  <Text style={styles.keyStatusHint}>点击编辑后可粘贴新的 API Key</Text>
+                </View>
+                <View style={styles.keyActions}>
+                  <Pressable onPress={() => handleEditKey(config.providerId)} style={styles.editBtn}>
+                    <Text style={styles.editBtnText}>编辑</Text>
+                  </Pressable>
+                  <Pressable onPress={() => handleDeleteKey(config.providerId)} style={styles.deleteBtn}>
+                    <Text style={styles.deleteBtnText}>删除</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.keyInputWrap}>
+                <TextInput
+                  style={styles.keyInput}
+                  value={apiKeys[config.providerId] ?? ''}
+                  onChangeText={(v) => {
+                    setApiKeys((k) => ({ ...k, [config.providerId]: v }));
+                  }}
+                  placeholder={currentProvider.keyPlaceholder}
+                  placeholderTextColor={TText.tertiary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  secureTextEntry={false}
+                />
+                <View style={styles.keyInputActions}>
+                  <Pressable onPress={() => handlePasteKey(config.providerId)} style={styles.pasteBtn}>
+                    <Text style={styles.pasteBtnText}>从剪贴板粘贴</Text>
+                  </Pressable>
+                </View>
+              </View>
+            )}
           </View>
 
           {/* 自定义端点（仅 custom） */}
@@ -277,8 +304,39 @@ const styles = StyleSheet.create({
   radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: Brand.red },
 
   // ── Key ─────────────────────────────────────────────────────
-  keyRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 4 },
+  keyStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  keyStatusLeft: { flex: 1, gap: 6 },
+  keyStatusBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(34,197,94,0.12)',
+    borderRadius: Radius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  keyStatusBadgeText: { fontSize: Font.caption, color: Sys.success, fontWeight: Font.semibold },
+  keyStatusHint: { fontSize: Font.caption, color: TText.tertiary, lineHeight: 18 },
+  keyActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  keyInputWrap: { paddingHorizontal: 16, paddingVertical: 4 },
   keyInput: { flex: 1, fontSize: Font.body, color: TText.primary, paddingVertical: 12 },
+  keyInputActions: { alignItems: 'flex-end', paddingBottom: 10 },
+  pasteBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: Radius.pill,
+    backgroundColor: Brand.redSoft,
+    borderWidth: 0.5,
+    borderColor: Brand.redMid,
+  },
+  pasteBtnText: { fontSize: Font.caption, color: Brand.red, fontWeight: Font.semibold },
+  editBtn: { paddingHorizontal: 4, paddingVertical: 12 },
+  editBtnText: { fontSize: Font.subheadline, color: TText.primary, fontWeight: Font.medium },
   deleteBtn: { paddingHorizontal: 4, paddingVertical: 12 },
   deleteBtnText: { fontSize: Font.subheadline, color: Brand.red, fontWeight: Font.medium },
 

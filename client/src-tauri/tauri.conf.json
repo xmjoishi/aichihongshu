@@ -5,7 +5,7 @@
   "identifier": "com.aichihongshu.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1422",
     "beforeBuildCommand": "pnpm build:tauri",
     "frontendDist": "../dist"
   },

@@ -8,6 +8,7 @@
 
 > 当前项目基于 `Expo SDK 56`（`expo ~56.0.4`）。
 > 建议优先使用 **Dev Client**，不要依赖旧版 Expo Go。
+> 本项目移动端开发、联调、截图统一使用 **`iPhone 16 Pro iOS 26.5`**，不要混用 `iOS 18.x` 模拟器。
 
 ---
 
@@ -46,6 +47,34 @@ pnpm exec expo start --clear
 - Dev Client：运行后连接 `http://localhost:8081`
 
 > 若提示 "Project is incompatible with this version of Expo Go"，是 Expo Go 版本不支持 SDK 56。请走第 5 节真机 Dev Client。
+
+### 2.3 固定使用 iOS 26.5 模拟器
+
+推荐固定流程：
+
+```bash
+cd mobile
+pnpm exec expo start --clear
+```
+
+然后在 Simulator 中手动确认当前设备为：
+
+- `iPhone 16 Pro`
+- `iOS 26.5`
+
+如果需要原生重编译，统一使用：
+
+```bash
+cd mobile
+pnpm exec expo run:ios --device "iPhone 16 Pro iOS 26.5"
+```
+
+如果本机存在多个同名 `iPhone 16 Pro`，优先使用 UDID，避免 Expo 命中旧的 `iOS 18.x` Runtime：
+
+```bash
+xcrun simctl list devices available
+pnpm exec expo run:ios --device "模拟器 UDID"
+```
 
 ---
 
@@ -186,16 +215,18 @@ pnpm exec expo start --clear
 
 在交互终端里按 `i` 自动打开模拟器。
 
+> 若本机同时存在 `iOS 18.x` 和 `iOS 26.5` 的同名模拟器，`i` 可能打开旧 Runtime。此项目不建议依赖这种自动选择方式做联调或截图。
+
 ### 4.2 方式二：直接 run:ios
 
 ```bash
-pnpm exec expo run:ios
+pnpm exec expo run:ios --device "iPhone 16 Pro iOS 26.5"
 ```
 
 如需指定机型：
 
 ```bash
-pnpm exec expo run:ios --device "iPhone 16 Pro"
+pnpm exec expo run:ios --device "iPhone 16 Pro iOS 26.5"
 ```
 
 > `run:ios` 依赖原生工程，若缺失会触发 prebuild。
@@ -209,6 +240,12 @@ pnpm exec expo run:ios --device "iPhone 16 Pro"
 - Simulator Runtime：当前模拟器实际运行的 iOS 版本
 
 例如 `IPHONEOS_DEPLOYMENT_TARGET = 16.4` 表示支持 iOS 16.4 及以上，不妨碍应用运行在 iOS 26.5。若命令启动了 iOS 18.2，通常是选中了旧 Runtime 下的同名模拟器。
+
+本项目约定：
+
+- 默认联调设备：`iPhone 16 Pro iOS 26.5`
+- 默认截图设备：`iPhone 16 Pro iOS 26.5`
+- 如果 `expo run:ios` 启动成 `iOS 18.x`，不要继续调试，直接切回 `26.5` 后再运行
 
 ### 4.4 创建最新 iOS 模拟器
 

@@ -183,7 +183,11 @@ export async function chat(
   if (config.providerId === 'minimax') {
     const res = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': key, Authorization: `Bearer ${key}` },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+      },
       body: JSON.stringify({
         model: config.modelId,
         max_tokens: 2000,
@@ -214,6 +218,90 @@ export async function chat(
   if (!res.ok) throw new Error(`AI 对话失败: ${await res.text()}`);
   const data = await res.json();
   return data.choices?.[0]?.message?.content ?? '';
+}
+
+export async function chatStream(
+  messages: { role: 'user' | 'assistant'; content: string }[],
+  systemPrompt: string,
+  onDelta: (delta: string, fullText: string) => void
+): Promise<string> {
+  const config = await getAiConfig();
+  if (config.providerId !== 'minimax') {
+    const full = await chat(messages, systemPrompt);
+    if (full) onDelta(full, full);
+    return full;
+  }
+
+  const key = (await getApiKey('minimax')) ?? (await legacyMiniMaxKey());
+  if (!key) throw new Error('请先在 AI 模型设置中配置 MiniMax API Key');
+
+  const endpoint = getEndpoint(getProvider('minimax'), config);
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: config.modelId,
+      max_tokens: 2000,
+      stream: true,
+      system: systemPrompt,
+      messages: messages.map((message) => ({
+        role: message.role,
+        content: [{ type: 'text', text: message.content }],
+      })),
+    }),
+  });
+
+  if (!res.ok) throw new Error(`AI 对话失败: ${await res.text()}`);
+  if (!res.body) {
+    const fallback = await chat(messages, systemPrompt);
+    if (fallback) onDelta(fallback, fallback);
+    return fallback;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let fullText = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line.startsWith('data:')) continue;
+
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+
+      try {
+        const event = JSON.parse(payload);
+        const delta =
+          event?.delta?.text
+          ?? event?.delta?.partial_json
+          ?? event?.content_block?.text
+          ?? event?.content?.[0]?.text
+          ?? '';
+
+        if (delta) {
+          fullText += delta;
+          onDelta(delta, fullText);
+        }
+      } catch {
+        // ignore malformed SSE chunks and keep reading
+      }
+    }
+  }
+
+  return fullText.trim();
 }
 
 // ── System Prompt 组装 ──────────────────────────────────────────
