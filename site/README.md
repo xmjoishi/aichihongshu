@@ -12,7 +12,8 @@ site/
   shared.css          # 官网共享样式
   main.js             # 官网交互（预览切换、舞台缩放）
   assets/
-    favicon.svg
+    logo.png            # V2.8 纯白底生产主图源导出的官网 Logo
+    favicon.png         # V2.8 纯白底生产主图源导出的 64 px favicon
     og-home.svg
   screens/
     shared.css

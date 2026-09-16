@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import "./index.css";
+import { initializeTheme } from "./hooks/useThemeSetting";
 
 // 在 React 渲染前立即初始化 HDR attribute，避免首帧闪烁
 ;(function initHDR() {
@@ -11,6 +12,7 @@ import "./index.css";
   try { hdr = localStorage.getItem("hdr_display") === "true"; } catch { /* ignore */ }
   document.documentElement.setAttribute("data-hdr", hdr ? "on" : "off");
 })();
+initializeTheme();
 
 const queryClient = new QueryClient({
   defaultOptions: {

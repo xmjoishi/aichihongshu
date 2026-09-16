@@ -1,18 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AiChiHongShu",
+  "productName": "爱吃红薯",
   "version": "0.1.3",
   "identifier": "com.aichihongshu.app",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1422",
-    "beforeBuildCommand": "pnpm build:tauri",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "爱吃红薯（AI吃红书）",
+        "title": "爱吃红薯",
         "width": 800,
         "height": 600
       }

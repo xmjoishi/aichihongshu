@@ -7,15 +7,18 @@ import {
 import { api, API_BASE } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { Spinner } from "../components/ui";
+import LocalImage from "../components/LocalImage";
 import { useHDRSetting } from "../hooks/useHDRSetting";
+import { useThemeSetting, type ThemePreference } from "../hooks/useThemeSetting";
 import { useNavigate } from "react-router-dom";
 import { Item } from "../lib/types";
+import { IS_TAURI_RUNTIME } from "../lib/local";
 
 // ── 通用 Section 容器 ──────────────────────────────────────────────
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="bg-white rounded-2xl border border-zinc-100 p-5 space-y-4">
-      <h2 className="text-sm font-semibold text-zinc-700">{title}</h2>
+    <div className="space-y-4 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 shadow-sm">
+      <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">{title}</h2>
       {children}
     </div>
   );
@@ -34,8 +37,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
-const inputCls = "w-full border border-zinc-200 rounded-lg px-3 py-1.5 text-sm text-zinc-800 \
-focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442] bg-white";
+const inputCls = "w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand)]/30 focus:border-[var(--color-brand)]";
 
 // ── 页签定义 ──────────────────────────────────────────────────────
 const TABS = [
@@ -52,16 +54,16 @@ export default function Settings() {
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* 页签栏 */}
-      <div className="flex items-center gap-1 px-6 py-3 border-b border-zinc-100 bg-white shrink-0">
-        <h1 className="text-lg font-semibold text-zinc-900 mr-4">设置</h1>
+      <div className="flex shrink-0 items-center gap-1 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-6 py-3">
+        <h1 className="mr-4 text-lg font-semibold text-[var(--color-text-primary)]">设置</h1>
         {TABS.map((t) => (
           <button
             key={t.key}
             onClick={() => setActiveTab(t.key)}
             className={`text-sm px-3 py-1 rounded-lg transition-colors ${
               activeTab === t.key
-                ? "bg-[#ff2442] text-white"
-                : "text-zinc-500 hover:bg-zinc-100"
+                ? "bg-[var(--color-brand)] text-white"
+                : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
             }`}
           >
             {t.label}
@@ -88,10 +90,12 @@ function GeneralTab() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { hdr, toggle: toggleHDR, imgStyle } = useHDRSetting();
+  const { preference, setPreference } = useThemeSetting();
 
   const { data: envData, isLoading: envLoading } = useQuery<Record<string, string>>({
     queryKey: ["settings-env"],
     queryFn: () => api.get("/api/settings/env"),
+    enabled: !IS_TAURI_RUNTIME,
   });
 
   const [envForm, setEnvForm] = useState({
@@ -125,8 +129,33 @@ function GeneralTab() {
 
   return (
     <>
+      <Section title="外观主题">
+        <Field label="应用主题" hint="跟随系统会在系统外观变化时自动切换">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3" role="radiogroup" aria-label="应用主题">
+            {([
+              ["system", "跟随系统", "推荐"],
+              ["light", "浅色", "米白品牌底"],
+              ["dark", "深色", "低亮度工作区"],
+            ] as [ThemePreference, string, string][]).map(([value, label, hint]) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={preference === value}
+                onClick={() => setPreference(value)}
+                className={`rounded-xl border p-3 text-left transition ${preference === value ? "border-[var(--color-brand)] bg-[var(--color-selected)]" : "border-[var(--color-border)] bg-[var(--color-surface)] hover:bg-[var(--color-surface-2)]"}`}
+              >
+                <span className="block text-sm font-medium text-[var(--color-text-primary)]">{label}</span>
+                <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">{hint}</span>
+              </button>
+            ))}
+          </div>
+        </Field>
+      </Section>
+
       {/* ── API 配置 */}
-      <Section title="API 配置">
+      <Section title={IS_TAURI_RUNTIME ? "API 配置（旧服务）" : "API 配置"}>
+        {IS_TAURI_RUNTIME && <p className="rounded-lg bg-[var(--color-selected)] px-3 py-2 text-xs text-[var(--color-text-secondary)]">桌面本地运行时的 Provider 配置仍在迁移中，当前保留字段仅供浏览器预览使用。</p>}
         <Field label="MiniMax API Key" hint="Token Plan 密钥，sk-cp- 开头">
           <div className="relative">
             <KeyRound size={14} className="absolute left-3 top-2.5 text-zinc-400" />
@@ -134,6 +163,7 @@ function GeneralTab() {
               type="text"
               value={envForm.MINIMAX_API_KEY}
               onChange={(e) => setEnvForm((f) => ({ ...f, MINIMAX_API_KEY: e.target.value }))}
+              disabled={IS_TAURI_RUNTIME}
               placeholder="sk-cp-****（留空则不更新）"
               className={`${inputCls} pl-8`}
             />
@@ -142,22 +172,25 @@ function GeneralTab() {
         <Field label="Base URL" hint="Anthropic 兼容接口">
           <input type="text" value={envForm.MINIMAX_BASE_URL}
             onChange={(e) => setEnvForm((f) => ({ ...f, MINIMAX_BASE_URL: e.target.value }))}
+            disabled={IS_TAURI_RUNTIME}
             className={inputCls} />
         </Field>
         <Field label="文本模型">
           <input type="text" value={envForm.MINIMAX_TEXT_MODEL}
             onChange={(e) => setEnvForm((f) => ({ ...f, MINIMAX_TEXT_MODEL: e.target.value }))}
+            disabled={IS_TAURI_RUNTIME}
             className={inputCls} />
         </Field>
         <Field label="视觉模型" hint="图片分析">
           <input type="text" value={envForm.MINIMAX_VISION_MODEL}
             onChange={(e) => setEnvForm((f) => ({ ...f, MINIMAX_VISION_MODEL: e.target.value }))}
+            disabled={IS_TAURI_RUNTIME}
             className={inputCls} />
         </Field>
         <div className="flex justify-end pt-1">
           <button
             onClick={() => saveEnv.mutate()}
-            disabled={saveEnv.isPending}
+            disabled={saveEnv.isPending || IS_TAURI_RUNTIME}
             className="flex items-center gap-1.5 bg-[#ff2442] hover:bg-[#e01f3a] disabled:opacity-50
                        text-white text-sm font-medium px-4 py-1.5 rounded-lg transition-colors"
           >
@@ -173,7 +206,8 @@ function GeneralTab() {
           <div className="flex items-center gap-3">
             <button
               onClick={() => toggleHDR(!hdr)}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${hdr ? "bg-[#ff2442]" : "bg-zinc-200"}`}
+              aria-pressed={hdr}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${hdr ? "bg-[var(--color-brand)]" : "bg-zinc-200"}`}
             >
               <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${hdr ? "translate-x-6" : "translate-x-1"}`} />
             </button>
@@ -520,12 +554,12 @@ function TrashSection() {
         <div className="space-y-2">
           {trashItems.map((item) => (
             <div key={item.id} className="flex items-center gap-3 p-2.5 rounded-xl border border-zinc-100 hover:bg-zinc-50 transition-colors">
-              <img
+              <LocalImage
+                itemId={item.id}
                 src={`${API_BASE}/api/library/${item.id}/image`}
                 alt={item.title}
                 style={imgStyle()}
                 className="w-12 h-12 rounded-lg object-cover bg-zinc-100 shrink-0"
-                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
               />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-zinc-800 truncate">{item.title}</p>

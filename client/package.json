@@ -1,5 +1,5 @@
 {
-  "name": "client",
+  "name": "爱吃红薯",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "build:tauri": "node ./scripts/prepare-tauri.mjs && pnpm build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "CARGO_TARGET_DIR=target/tauri-dev tauri"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.99.0",

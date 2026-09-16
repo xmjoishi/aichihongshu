@@ -5,7 +5,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, API_BASE, openInBrowser, openInSystemBrowser, riskAckHeader } from "../lib/api";
 import { NOTE_TYPE_GROUPS, getNoteTypeBadge, type NoteType } from "../lib/noteTypes";
 import { Note, Item } from "../lib/types";
-import { Spinner, Empty, StatusBadge } from "../components/ui";
+import { Dialog, Spinner, Empty, StatusBadge, primaryButtonClass, secondaryButtonClass } from "../components/ui";
+import LocalImage from "../components/LocalImage";
 import { Save, Copy, ChevronRight, Sparkles, ImagePlus, Hash, FileText, Trash2, X, Search, Send, Check, ExternalLink, Rocket, Loader2, FolderOpen, Images } from "lucide-react";
 import AIPanel from "../components/AIPanel";
 import { useToast } from "../components/Toast";
@@ -13,6 +14,13 @@ import { useRiskConfirm } from "../components/useRiskConfirm";
 import { useHDRSetting } from "../hooks/useHDRSetting";
 import { useDebounce } from "../hooks/useDebounce";
 import BodyEditor from "../components/BodyEditor";
+import {
+  IS_TAURI_RUNTIME,
+  createLocalDraft,
+  localNoteToNote,
+  readLocalWorkspaceSnapshot,
+  type LocalWorkspaceSnapshot,
+} from "../lib/local";
 
 
 const AUTOSAVE_DELAY = 1500; // ms
@@ -153,9 +161,9 @@ function PublishModal({
               {stageFiles === null && !staging ? (
                 <div className="px-3 py-3 flex gap-2 overflow-x-auto">
                   {note.item_ids!.map((id) => (
-                    <img key={id} src={`${API_BASE}/api/library/${id}/image`}
+                    <LocalImage key={id} itemId={id} src={`${API_BASE}/api/library/${id}/image`}
                       className="w-20 h-20 rounded-xl object-cover shrink-0 bg-zinc-100" alt=""
-                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                    />
                   ))}
                 </div>
               ) : stageFiles !== null && stageFiles.length > 0 ? (
@@ -163,7 +171,8 @@ function PublishModal({
                   {stageFiles.map((f) => (
                     <div key={f.filename} className="shrink-0 flex flex-col items-center gap-1">
                       <div className="relative">
-                        <img
+                        <LocalImage
+                          itemId={f.item_id}
                           src={`${API_BASE}${f.url}`}
                           className="w-20 h-20 rounded-xl object-cover bg-zinc-100"
                           alt={f.title}
@@ -280,10 +289,13 @@ export function NoteList() {
   const [confirmId, setConfirmId] = useState<number | null>(null);
   const [publishingNote, setPublishingNote] = useState<Note | null>(null);
   const [autoPublishingId, setAutoPublishingId] = useState<number | null>(null);
+  const [newDraftOpen, setNewDraftOpen] = useState(false);
+  const [newDraftTitle, setNewDraftTitle] = useState("");
+  const [creatingDraft, setCreatingDraft] = useState(false);
 
   const searchDebounced = useDebounce(search, 300);
 
-  const { data: notes = [], isLoading } = useQuery<Note[]>({
+  const { data: remoteNotes = [], isLoading: remoteNotesLoading } = useQuery<Note[]>({
     queryKey: ["notes", statusFilter, searchDebounced, sort],
     queryFn: () => {
       const params = new URLSearchParams();
@@ -293,9 +305,30 @@ export function NoteList() {
       const qs = params.toString();
       return api.get(`/api/content/${qs ? `?${qs}` : ""}`);
     },
+    enabled: !IS_TAURI_RUNTIME,
   });
+  const { data: localWorkspace, isLoading: localNotesLoading } = useQuery<LocalWorkspaceSnapshot>({
+    queryKey: ["local-notes"],
+    queryFn: readLocalWorkspaceSnapshot,
+    enabled: IS_TAURI_RUNTIME,
+  });
+  const notes: Note[] = IS_TAURI_RUNTIME
+    ? (localWorkspace?.notes ?? [])
+        .map(localNoteToNote)
+        .filter((note) => !statusFilter || note.status === statusFilter)
+        .filter((note) => !searchDebounced || `${note.title ?? ""} ${note.body ?? ""}`.toLowerCase().includes(searchDebounced.toLowerCase()))
+        .sort((a, b) => {
+          if (sort === "published_desc") return (b.published_at ?? "").localeCompare(a.published_at ?? "");
+          return (b.created_at ?? "").localeCompare(a.created_at ?? "");
+        })
+    : remoteNotes;
+  const isLoading = IS_TAURI_RUNTIME ? localNotesLoading : remoteNotesLoading;
 
   async function deleteNote(id: number) {
+    if (IS_TAURI_RUNTIME) {
+      toast("本地笔记只读，删除写入仍在迁移中", "info");
+      return;
+    }
     setDeletingId(id);
     try {
       await api.delete(`/api/content/${id}`);
@@ -310,6 +343,10 @@ export function NoteList() {
   }
 
   async function moveTo(noteId: number, newStatus: "draft" | "ready" | "published", noteUrl?: string) {
+    if (IS_TAURI_RUNTIME) {
+      toast("本地笔记状态写入仍在迁移中", "info");
+      return;
+    }
     qc.setQueryData<Note[]>(["notes", statusFilter, searchDebounced, sort], (old = []) =>
       old.map((n) => (n.id === noteId ? { ...n, status: newStatus } : n))
     );
@@ -327,6 +364,10 @@ export function NoteList() {
   }
 
   async function autoPublish(note: Note) {
+    if (IS_TAURI_RUNTIME) {
+      toast("本地笔记暂不支持发布操作", "info");
+      return;
+    }
     if (autoPublishingId !== null) return;
     setAutoPublishingId(note.id);
 
@@ -384,6 +425,22 @@ export function NoteList() {
     { key: "title_asc",      label: "标题 A→Z" },
   ];
 
+  async function createDraftFromList() {
+    setCreatingDraft(true);
+    try {
+      await createLocalDraft(newDraftTitle.trim() || "新建草稿");
+      await qc.invalidateQueries({ queryKey: ["local-notes"] });
+      await qc.invalidateQueries({ queryKey: ["local-dashboard"] });
+      setNewDraftOpen(false);
+      setNewDraftTitle("");
+      toast("草稿已创建", "success");
+    } catch (cause) {
+      toast(`创建失败：${cause instanceof Error ? cause.message : String(cause)}`, "error");
+    } finally {
+      setCreatingDraft(false);
+    }
+  }
+
   return (
     <div className="flex flex-col h-full">
       {riskDialog}
@@ -411,12 +468,17 @@ export function NoteList() {
             </button>
           ))}
           <button
-            onClick={() => navigate("/notes/new")}
+            onClick={() => IS_TAURI_RUNTIME ? setNewDraftOpen(true) : toast("请先在图库选择素材后生成草稿", "info")}
             className="ml-auto text-sm px-4 py-1.5 rounded-lg bg-[#ff2442] text-white hover:bg-[#e01f3a] transition-colors"
           >
             + 新建
           </button>
         </div>
+        {IS_TAURI_RUNTIME && (
+          <div className="border-b border-[var(--color-border)] bg-[var(--color-selected)] px-6 py-2 text-xs text-[var(--color-text-secondary)]">
+            当前笔记来自本地数据库，只读查看已接入；编辑、删除、状态变更和发布仍需后续迁移。
+          </div>
+        )}
         <div className="flex items-center gap-3 px-6 pb-3">
           <div className="relative flex-1 max-w-sm">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
@@ -461,12 +523,12 @@ export function NoteList() {
                 {/* 主体内容行 */}
                 <div className="flex items-start gap-3 cursor-pointer" onClick={() => navigate(`/notes/${note.id}`)}>
                   {note.item_id ? (
-                    <img
+                    <LocalImage
+                      itemId={note.item_id}
                       src={`${API_BASE}/api/library/${note.item_id}/image`}
                       alt=""
                       style={imgStyle()}
                       className="w-14 h-14 rounded-lg object-cover shrink-0 bg-zinc-100"
-                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                     />
                   ) : (
                     <div className="w-14 h-14 rounded-lg bg-zinc-100 shrink-0 flex items-center justify-center text-zinc-300 text-xs">无图</div>
@@ -503,7 +565,7 @@ export function NoteList() {
                 <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-zinc-50">
                   {/* 左侧：互动数据（已发布）/ 状态推进按钮（草稿/待发） */}
                   <div className="flex items-center gap-2">
-                    {note.status === "published" && (
+                    {note.status === "published" && !IS_TAURI_RUNTIME && (
                       <div className="flex gap-2 items-center">
                         {note.note_url && (
                           <button
@@ -528,7 +590,7 @@ export function NoteList() {
                         </div>
                       </div>
                     )}
-                    {note.status === "ready" && (
+                    {note.status === "ready" && !IS_TAURI_RUNTIME && (
                       <>
                         <button
                           onClick={(e) => { e.stopPropagation(); moveTo(note.id, "draft"); }}
@@ -565,13 +627,13 @@ export function NoteList() {
                     >
                       <ChevronRight size={14} />
                     </button>
-                    <button
+                    {!IS_TAURI_RUNTIME && <button
                       onClick={(e) => { e.stopPropagation(); setConfirmId(note.id); }}
                       className="p-1.5 rounded-lg text-zinc-300 hover:text-red-500 hover:bg-red-50 transition-colors"
                       title="删除笔记"
                     >
                       <Trash2 size={13} />
-                    </button>
+                    </button>}
                   </div>
                 </div>
               </div>
@@ -599,6 +661,16 @@ export function NoteList() {
           </div>
         </div>
       )}
+      {newDraftOpen && (
+        <Dialog
+          title="新建草稿"
+          description="创建后会回到列表，当前本地层先保证创建与回读。"
+          onClose={() => !creatingDraft && setNewDraftOpen(false)}
+          footer={<><button type="button" className={secondaryButtonClass} disabled={creatingDraft} onClick={() => setNewDraftOpen(false)}>取消</button><button type="button" className={primaryButtonClass} disabled={creatingDraft} onClick={() => void createDraftFromList()}>{creatingDraft ? "创建中…" : "创建草稿"}</button></>}
+        >
+          <label className="block text-sm font-medium text-[var(--color-text-primary)]">标题（可选）<input autoFocus value={newDraftTitle} onChange={(event) => setNewDraftTitle(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void createDraftFromList()} placeholder="例如：春日客厅改造灵感" className="mt-2 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]" /></label>
+        </Dialog>
+      )}
     </div>
   );
 }
@@ -612,10 +684,21 @@ export function NoteEditor() {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  const { data: note, isLoading } = useQuery<Note>({
+  const { data: remoteNote, isLoading: remoteNoteLoading } = useQuery<Note>({
     queryKey: ["note", noteId],
     queryFn: () => api.get(`/api/content/${noteId}`),
+    enabled: !IS_TAURI_RUNTIME,
   });
+  const { data: localWorkspace, isLoading: localNoteLoading } = useQuery<LocalWorkspaceSnapshot>({
+    queryKey: ["local-note", noteId],
+    queryFn: readLocalWorkspaceSnapshot,
+    enabled: IS_TAURI_RUNTIME,
+  });
+  const note = IS_TAURI_RUNTIME
+    ? localWorkspace?.notes.map(localNoteToNote).find((item) => item.id === noteId)
+    : remoteNote;
+  const isLoading = IS_TAURI_RUNTIME ? localNoteLoading : remoteNoteLoading;
+  const localReadOnly = IS_TAURI_RUNTIME;
 
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");       // HTML 字符串（Tiptap 输出）
@@ -626,7 +709,7 @@ export function NoteEditor() {
   const [copied, setCopied] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [showPrompt, setShowPrompt] = useState(false);
-  const [showAI, setShowAI] = useState(true);
+  const [showAI, setShowAI] = useState(!IS_TAURI_RUNTIME);
   const { width: promptWidth, dragging: promptDragging, onDragStart: onPromptDragStart } = usePanelResize({
     defaultWidth: 320,
     min: 240,
@@ -657,6 +740,7 @@ export function NoteEditor() {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function scheduleAutoSave(newTitle: string, newBody: string, newTags: string) {
+    if (localReadOnly) return;
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     autoSaveTimer.current = setTimeout(async () => {
       const tags = newTags.split(/[\s,，#]+/).map((t) => t.trim()).filter(Boolean);
@@ -678,6 +762,10 @@ export function NoteEditor() {
   useEffect(() => () => { autoSaveTimer.current && clearTimeout(autoSaveTimer.current); }, []);
 
   async function save() {
+    if (localReadOnly) {
+      toast("本地笔记编辑写入仍在迁移中，当前页面只读", "info");
+      return;
+    }
     setSaving(true);
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     try {
@@ -695,6 +783,10 @@ export function NoteEditor() {
   }
 
   async function markReady() {
+    if (localReadOnly) {
+      toast("本地笔记状态写入仍在迁移中", "info");
+      return;
+    }
     try {
       await api.patch(`/api/content/${noteId}/status`, { status: "ready" });
       qc.invalidateQueries({ queryKey: ["note", noteId] });
@@ -751,6 +843,8 @@ export function NoteEditor() {
           <div className="ml-auto flex gap-2">
             <button
               onClick={() => { setShowAI((v) => !v); setShowPrompt(false); }}
+              disabled={localReadOnly}
+              title={localReadOnly ? "本地笔记 AI 写入仍在迁移中" : "打开 AI 助手"}
               className={`flex items-center gap-1.5 text-xs border px-3 py-1.5 rounded-lg transition-colors ${
                 showAI
                   ? "bg-[#fff0f2] border-[#ff2442] text-[#ff2442]"
@@ -775,12 +869,14 @@ export function NoteEditor() {
             )}
             <button
               onClick={copyMarkdown}
+              disabled={localReadOnly}
+              title={localReadOnly ? "本地笔记导出仍在迁移中" : "复制 Markdown"}
               className="flex items-center gap-1.5 text-xs border border-zinc-200 px-3 py-1.5 rounded-lg hover:bg-zinc-50"
             >
               <Copy size={13} />
               {copied ? "已复制!" : "复制 MD"}
             </button>
-            {note.status === "draft" && (
+            {note.status === "draft" && !localReadOnly && (
               <button
                 onClick={markReady}
                 className="text-xs bg-amber-500 text-white px-3 py-1.5 rounded-lg hover:bg-amber-600"
@@ -790,7 +886,8 @@ export function NoteEditor() {
             )}
             <button
               onClick={save}
-              disabled={saving}
+              disabled={saving || localReadOnly}
+              title={localReadOnly ? "本地笔记编辑写入仍在迁移中" : "保存笔记"}
               className="flex items-center gap-1.5 text-xs bg-[#ff2442] text-white px-3 py-1.5 rounded-lg hover:bg-[#e01f3a] disabled:opacity-50"
             >
               <Save size={13} />
@@ -798,6 +895,12 @@ export function NoteEditor() {
             </button>
           </div>
         </div>
+
+        {localReadOnly && (
+          <div className="border-b border-[var(--color-border)] bg-[var(--color-selected)] px-6 py-2 text-xs text-[var(--color-text-secondary)]">
+            当前笔记来自本地数据库，编辑和状态写入仍在迁移中；你可以查看内容，返回不会修改数据。
+          </div>
+        )}
 
         {/* Editor body: two-column on wide screens, stacked on narrow */}
         <div className="flex-1 overflow-hidden">
@@ -818,6 +921,7 @@ export function NoteEditor() {
                   itemIds={note.item_ids?.length ? note.item_ids : (note.item_id ? [note.item_id] : [])}
                   noteId={noteId}
                   onItemIdsChange={(_ids) => qc.invalidateQueries({ queryKey: ["note", noteId] })}
+                  readOnly={localReadOnly}
                 />
 
                 {/* Title */}
@@ -828,6 +932,7 @@ export function NoteEditor() {
                     setTitle(e.target.value);
                     scheduleAutoSave(e.target.value, body, tagsInput);
                   }}
+                  readOnly={localReadOnly}
                   placeholder="笔记标题..."
                   className="w-full text-xl font-semibold text-zinc-900 outline-none bg-transparent placeholder:text-zinc-300 mb-3"
                 />
@@ -842,6 +947,7 @@ export function NoteEditor() {
                 }}
                 tagsLength={tagsInput.length}
                 className="flex-1 min-h-0"
+                readOnly={localReadOnly}
               />
 
               {/* 话题标签 — 固定在底部，紧凑 */}
@@ -857,6 +963,7 @@ export function NoteEditor() {
                     setTagsInput(e.target.value);
                     scheduleAutoSave(title, body, e.target.value);
                   }}
+                  readOnly={localReadOnly}
                   placeholder="#出租屋改造 #租房好物 ..."
                   className="w-full text-xs text-[#ff2442] outline-none bg-transparent placeholder:text-zinc-300 leading-snug"
                 />
@@ -874,7 +981,7 @@ export function NoteEditor() {
                       return (
                         <button
                           key={t.key}
-                          disabled={!t.available}
+                          disabled={!t.available || localReadOnly}
                           onClick={async () => {
                             if (!t.available) return;
                             setNoteType(t.key);
@@ -909,7 +1016,7 @@ export function NoteEditor() {
                         {group.types.map((t) => (
                           <button
                             key={t.key}
-                            disabled={!t.available}
+                            disabled={!t.available || localReadOnly}
                             onClick={async () => {
                               if (!t.available) return;
                               setNoteType(t.key);
@@ -1183,7 +1290,8 @@ function LibraryPickerModal({
                           : "border-transparent hover:border-zinc-300"
                     }`}
                   >
-                    <img
+                    <LocalImage
+                      itemId={item.id}
                       src={`${API_BASE}/api/library/${item.id}/image`}
                       alt={item.title}
                       style={imgStyle()}
@@ -1353,7 +1461,8 @@ function NoteImagePanel({ itemIds, title, body, tags }: {
               {/* 大图区域 */}
               <div className="relative w-full aspect-[4/5] bg-zinc-100 overflow-hidden">
                 {images.length > 0 ? (
-                  <img
+                  <LocalImage
+                    itemId={images[safeIdx]?.id}
                     src={`${API_BASE}/api/library/${images[safeIdx]?.id}/image`}
                     alt={images[safeIdx]?.title}
                     style={imgStyle()}
@@ -1454,7 +1563,8 @@ function NoteImagePanel({ itemIds, title, body, tags }: {
                   <div className="rounded-xl overflow-hidden bg-zinc-50 border border-zinc-100">
                     <div className="aspect-[3/4] bg-zinc-100 overflow-hidden">
                       {coverImg ? (
-                        <img
+                        <LocalImage
+                          itemId={coverImg.id}
                           src={`${API_BASE}/api/library/${coverImg.id}/image`}
                           alt={coverImg.title}
                           style={imgStyle()}
@@ -1547,10 +1657,11 @@ function NoteImagePanel({ itemIds, title, body, tags }: {
 // ── NoteImageStrip ────────────────────────────────────────────────────────────
 // 右侧编辑区标题上方的横向图片缩略条，仿小红书发布页多图选择器
 
-function NoteImageStrip({ itemIds, noteId, onItemIdsChange }: {
+function NoteImageStrip({ itemIds, noteId, onItemIdsChange, readOnly = false }: {
   itemIds: number[];
   noteId: number;
   onItemIdsChange: (ids: number[]) => void;
+  readOnly?: boolean;
 }) {
   const { imgStyle } = useHDRSetting();
   const { toast } = useToast();
@@ -1601,6 +1712,7 @@ function NoteImageStrip({ itemIds, noteId, onItemIdsChange }: {
                 : "",
             ].join(" ")}
             onMouseDown={(e) => {
+              if (readOnly) return;
               if (e.button !== 0) return;
               e.preventDefault();
               dragIdxRef.current = idx;
@@ -1648,7 +1760,8 @@ function NoteImageStrip({ itemIds, noteId, onItemIdsChange }: {
               className="w-[120px] h-[120px] rounded-xl overflow-hidden border-2 border-[#ff2442] shadow-sm cursor-grab active:cursor-grabbing"
               onClick={() => { if (!isDraggingRef.current) setLightboxIdx(idx); }}
             >
-              <img
+              <LocalImage
+                itemId={img.id}
                 src={`${API_BASE}/api/library/${img.id}/image`}
                 alt={img.title}
                 style={imgStyle()}
@@ -1658,7 +1771,7 @@ function NoteImageStrip({ itemIds, noteId, onItemIdsChange }: {
                 {idx + 1}
               </span>
             </div>
-            <button
+            {!readOnly && <button
               onClick={async () => {
                 const newIds = itemIds.filter((id) => id !== img.id);
                 try {
@@ -1667,10 +1780,10 @@ function NoteImageStrip({ itemIds, noteId, onItemIdsChange }: {
                 } catch (e: unknown) { toast((e as Error).message, "error"); }
               }}
               className="absolute -top-1 -right-1 z-10 w-5 h-5 rounded-full bg-zinc-800 text-white text-[10px] items-center justify-center hidden group-hover:flex hover:bg-red-500 transition-colors"
-            >✕</button>
+            >✕</button>}
           </div>
         ))}
-        {images.length < 9 && (
+        {images.length < 9 && !readOnly && (
           <>
             <input ref={fileRef} type="file" accept="image/*" className="hidden"
               onChange={async (e) => {
@@ -1740,7 +1853,8 @@ function NoteImageStrip({ itemIds, noteId, onItemIdsChange }: {
           >‹</button>
         )}
 
-        <img
+        <LocalImage
+          itemId={images[lightboxIdx].id}
           src={`${API_BASE}/api/library/${images[lightboxIdx].id}/image`}
           alt={images[lightboxIdx].title}
           style={imgStyle()}

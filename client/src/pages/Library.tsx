@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, API_BASE } from "../lib/api";
 import { Item } from "../lib/types";
 import { Spinner, Tag } from "../components/ui";
+import LocalImage from "../components/LocalImage";
 import {
   Upload, Plus, X, FileText, ChevronLeft, ChevronRight,
   LayoutGrid, Grid2x2, Grid3x3, Sparkles, Trash2, FolderOpen,
@@ -11,6 +12,12 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "../components/Toast";
 import { useHDRSetting } from "../hooks/useHDRSetting";
+import {
+  IS_TAURI_RUNTIME,
+  localItemToItem,
+  readLocalWorkspaceSnapshot,
+  type LocalWorkspaceSnapshot,
+} from "../lib/local";
 
 // 列数 → Tailwind grid class
 const COLS_CLASS: Record<number, string> = {
@@ -50,7 +57,11 @@ export default function Library() {
   const [previewItem, setPreviewItem] = useState<Item | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const { data: items = [], isLoading } = useQuery<Item[]>({
+  function explainLocalLimit() {
+    toast("当前为本地图库，只读能力已接入；导入、分析、删除和生成笔记仍在迁移中", "info");
+  }
+
+  const { data: remoteItems = [], isLoading: remoteItemsLoading } = useQuery<Item[]>({
     queryKey: ["items", filterTag, page],
     queryFn: () =>
       api.get(
@@ -58,9 +69,19 @@ export default function Library() {
           filterTag ? `&tag=${encodeURIComponent(filterTag)}` : ""
         }`
       ),
+    enabled: !IS_TAURI_RUNTIME,
     // 如果有正在分析的图片，每 3 秒轮询一次
     refetchInterval: analyzingIds.size > 0 ? 3000 : false,
   });
+  const { data: localWorkspace, isLoading: localItemsLoading } = useQuery<LocalWorkspaceSnapshot>({
+    queryKey: ["local-library"],
+    queryFn: readLocalWorkspaceSnapshot,
+    enabled: IS_TAURI_RUNTIME,
+  });
+  const items: Item[] = IS_TAURI_RUNTIME
+    ? (localWorkspace?.items ?? []).map(localItemToItem)
+    : remoteItems;
+  const isLoading = IS_TAURI_RUNTIME ? localItemsLoading : remoteItemsLoading;
 
   // 轮询时检查哪些图片已完成分析，移除 analyzingIds
   useEffect(() => {
@@ -79,6 +100,10 @@ export default function Library() {
   // 导入后追踪哪些图片需要等待 AI 分析
   async function handleUpload(files: FileList | File[] | null) {
     if (!files || !files.length) return;
+    if (IS_TAURI_RUNTIME) {
+      explainLocalLimit();
+      return;
+    }
     setUploading(true);
     try {
       const newIds: number[] = [];
@@ -112,6 +137,10 @@ export default function Library() {
 
   async function draftNote() {
     if (!selected) return;
+    if (IS_TAURI_RUNTIME) {
+      explainLocalLimit();
+      return;
+    }
     try {
       const res = await api.post("/api/content/draft", { item_id: selected.id, save: true });
       navigate(`/notes/${res.note_id}`);
@@ -128,6 +157,10 @@ export default function Library() {
 
   async function deleteItem() {
     if (!selected) return;
+    if (IS_TAURI_RUNTIME) {
+      explainLocalLimit();
+      return;
+    }
     setDeleting(true);
     try {
       await api.delete(`/api/library/${selected.id}`);
@@ -144,6 +177,10 @@ export default function Library() {
 
   async function deleteMulti() {
     if (multiSelected.size === 0) return;
+    if (IS_TAURI_RUNTIME) {
+      explainLocalLimit();
+      return;
+    }
     setDeletingMulti(true);
     const ids = Array.from(multiSelected);
     let failed = 0;
@@ -167,6 +204,10 @@ export default function Library() {
 
   async function draftMulti() {
     if (multiSelected.size === 0) return;
+    if (IS_TAURI_RUNTIME) {
+      explainLocalLimit();
+      return;
+    }
     setDraftingMulti(true);
     try {
       const res = await api.post("/api/content/draft/multi", {
@@ -230,6 +271,10 @@ export default function Library() {
   }
 
   async function analyzeMulti() {
+    if (IS_TAURI_RUNTIME) {
+      explainLocalLimit();
+      return;
+    }
     const ids = Array.from(multiSelected).filter(
       (id) => !items.find((i) => i.id === id)?.analysis_raw
     );
@@ -370,7 +415,8 @@ export default function Library() {
             />
             <button
               onClick={() => fileRef.current?.click()}
-              disabled={uploading}
+              disabled={uploading || IS_TAURI_RUNTIME}
+              title={IS_TAURI_RUNTIME ? "本地图库只读能力已接入" : "导入图片"}
               className="flex items-center gap-1.5 text-sm bg-[#ff2442] text-white px-3 py-1.5 rounded-lg hover:bg-[#e01f3a] transition-colors disabled:opacity-50"
             >
               {uploading ? (
@@ -383,6 +429,12 @@ export default function Library() {
             <span className="text-xs text-zinc-300 hidden lg:block">或 ⌘V 粘贴</span>
           </div>
         </div>
+
+        {IS_TAURI_RUNTIME && (
+          <div className="border-b border-[var(--color-border)] bg-[var(--color-selected)] px-6 py-2 text-xs text-[var(--color-text-secondary)]">
+            当前显示本地图库；导入、分析、删除和生成笔记仍需后续迁移。现有素材可以查看和选择。
+          </div>
+        )}
 
         {/* 第二行：标签过滤 */}
         <div className="px-6 py-2 border-b border-zinc-100 bg-white">
@@ -494,16 +546,13 @@ export default function Library() {
                         </>
                       )}
                       <div className="aspect-square bg-zinc-100 overflow-hidden relative">
-                        <img
+                        <LocalImage
+                          itemId={item.id}
                           src={`${API_BASE}/api/library/${item.id}/image`}
                           alt={item.title}
                           loading="lazy"
                           style={imgStyle()}
                           className="w-full h-full object-cover"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).src =
-                              "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect fill='%23f4f4f5' width='100' height='100'/%3E%3C/svg%3E";
-                          }}
                         />
                         {/* AI 识别标识 / analyzing 遮罩 */}
                         {isAnalyzing ? (
@@ -643,7 +692,8 @@ export default function Library() {
             </button>
           </div>
 
-          <img
+          <LocalImage
+            itemId={selected.id}
             src={`${API_BASE}/api/library/${selected.id}/image`}
             alt={selected.title}
             style={imgStyle()}
@@ -757,7 +807,8 @@ export default function Library() {
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm"
         onClick={() => setPreviewItem(null)}
       >
-        <img
+        <LocalImage
+          itemId={previewItem.id}
           src={`${API_BASE}/api/library/${previewItem.id}/image`}
           alt={previewItem.title}
           style={imgStyle()}

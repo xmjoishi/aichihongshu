@@ -12,18 +12,17 @@ import Inspire from "./pages/Inspire";
 import { ToastProvider } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import ActiveAccountSwitcher from "./components/ActiveAccountSwitcher";
-import BackendGate from "./components/BackendGate";
+import LocalRuntimeStatus from "./components/LocalRuntimeStatus";
 
 export default function App() {
   return (
     <ToastProvider>
       <ErrorBoundary>
-        <BackendGate>
-          <div className="flex h-screen overflow-hidden bg-[#fafafa]">
+        <div className="flex h-screen overflow-hidden bg-[var(--color-canvas)] text-[var(--color-text-primary)]">
             <Sidebar />
             <main className="flex h-full flex-1 flex-col overflow-hidden">
-              {/* 顶栏：右侧固定显示账号切换器 */}
-              <div className="h-11 px-4 flex items-center justify-end bg-white border-b border-zinc-100 shrink-0">
+              <div className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-6">
+                <LocalRuntimeStatus />
                 <ActiveAccountSwitcher />
               </div>
               <div className="flex-1 overflow-hidden flex flex-col">
@@ -42,8 +41,7 @@ export default function App() {
                 </Routes>
               </div>
             </main>
-          </div>
-        </BackendGate>
+        </div>
       </ErrorBoundary>
     </ToastProvider>
   );

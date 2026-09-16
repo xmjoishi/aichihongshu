@@ -1,0 +1,9 @@
+{
+  "name": "爱吃红薯",
+  "private": true,
+  "scripts": {
+    "tauri": "npm --prefix client run tauri -- dev",
+    "tauri:build": "npm --prefix client run tauri -- build",
+    "build": "npm --prefix client run build"
+  }
+}

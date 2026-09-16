@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">爱吃红薯反白图标</title>
+  <desc id="desc">品牌红背景上的白色红薯图形与星光</desc>
+  <rect width="1024" height="1024" rx="220" fill="#FF2442"/>
+  <path fill="#FFFFFF" d="M610 154c92 10 154 91 171 190 25 144-35 305-145 420-92 96-216 133-315 67-91-60-126-173-101-288 28-128 99-244 198-327 73-61 137-72 192-62Z"/>
+  <path fill="#FFC94A" d="M603 159c-10 57 19 112 72 139 27 14 59 20 91 17-20 47-70 75-123 69-78-8-132-77-117-153 10-48 40-83 77-100Z"/>
+  <path fill="#FFFFFF" d="m774 112 16 39 39 16-39 16-16 39-16-39-39-16 39-16 16-39Z"/>
+</svg>

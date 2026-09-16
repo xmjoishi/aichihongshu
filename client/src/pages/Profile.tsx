@@ -10,6 +10,12 @@ import {
 import AIPanel from "../components/AIPanel";
 import { useToast } from "../components/Toast";
 import { useRiskConfirm } from "../components/useRiskConfirm";
+import {
+  IS_TAURI_RUNTIME,
+  localProfileToProfile,
+  readLocalWorkspaceSnapshot,
+  type LocalWorkspaceSnapshot,
+} from "../lib/local";
 
 // ── 工具函数 ──────────────────────────────────────────────────────
 function toArray(s: string): string[] {
@@ -276,14 +282,26 @@ export default function ProfilePage() {
   const [form, setForm] = useState<EditForm | null>(null);
   const focusedFieldRef = useRef<keyof EditForm | null>(null);
 
-  const { data: profile, isLoading } = useQuery<ProfileType>({
+  const { data: remoteProfile, isLoading: remoteProfileLoading } = useQuery<ProfileType>({
     queryKey: ["profile"],
     queryFn: () => api.get("/api/profile"),
+    enabled: !IS_TAURI_RUNTIME,
   });
+
+  const { data: localWorkspace, isLoading: localProfileLoading } = useQuery<LocalWorkspaceSnapshot>({
+    queryKey: ["local-profile"],
+    queryFn: readLocalWorkspaceSnapshot,
+    enabled: IS_TAURI_RUNTIME,
+  });
+  const profile = IS_TAURI_RUNTIME
+    ? (localWorkspace?.profile ? localProfileToProfile(localWorkspace.profile) : undefined)
+    : remoteProfile;
+  const isLoading = IS_TAURI_RUNTIME ? localProfileLoading : remoteProfileLoading;
 
   const { data: activeStatus } = useQuery<{ active?: { alias?: string; display_name?: string } | null }>({
     queryKey: ["account-pool", "protection"],
     queryFn: () => api.get("/api/account-pool/protection/status"),
+    enabled: !IS_TAURI_RUNTIME,
   });
 
   // 刷新爬虫轮询

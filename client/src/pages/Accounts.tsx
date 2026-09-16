@@ -12,6 +12,12 @@ import { useRiskConfirm } from "../components/useRiskConfirm";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { usePanelResize } from "../hooks/usePanelResize";
+import {
+  IS_TAURI_RUNTIME,
+  localReferenceAccountToReferenceAccount,
+  readLocalWorkspaceSnapshot,
+  type LocalWorkspaceSnapshot,
+} from "../lib/local";
 
 // ── 解析 content_style JSON → keywords 数组 ─────────────────────────────────
 function stripFence(raw: string): string {
@@ -863,10 +869,20 @@ export default function Accounts() {
   const [showModal, setShowModal] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const { data: accounts = [], isLoading } = useQuery<ReferenceAccount[]>({
+  const { data: remoteAccounts = [], isLoading: remoteLoading } = useQuery<ReferenceAccount[]>({
     queryKey: ["accounts"],
     queryFn: () => api.get("/api/accounts/"),
+    enabled: !IS_TAURI_RUNTIME,
   });
+  const { data: localWorkspace, isLoading: localLoading } = useQuery<LocalWorkspaceSnapshot>({
+    queryKey: ["local-accounts"],
+    queryFn: readLocalWorkspaceSnapshot,
+    enabled: IS_TAURI_RUNTIME,
+  });
+  const accounts = IS_TAURI_RUNTIME
+    ? (localWorkspace?.referenceAccounts ?? []).map(localReferenceAccountToReferenceAccount)
+    : remoteAccounts;
+  const isLoading = IS_TAURI_RUNTIME ? localLoading : remoteLoading;
 
   const deleteMutation = useMutation({
     mutationFn: (account_id: string) => api.delete(`/api/accounts/${account_id}`),

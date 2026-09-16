@@ -14,6 +14,13 @@ import { useAIStream } from "../hooks/useAIStream";
 import { usePanelResize } from "../hooks/usePanelResize";
 import KnowledgeTab from "./KnowledgeTab";
 import { buildSummaryVM, buildInsightsVM, buildRankingVM } from "../selectors/analytics";
+import {
+  IS_TAURI_RUNTIME,
+  localNoteToNote,
+  localReferenceAccountToReferenceAccount,
+  readLocalWorkspaceSnapshot,
+  type LocalWorkspaceSnapshot,
+} from "../lib/local";
 
 // ─── 工具函数 ───────────────────────────────────────────────
 
@@ -665,14 +672,27 @@ export default function Data() {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   // ── 基础实体 ──────────────────────────────────────────────────
-  const { data: allNotes = [] } = useQuery<Note[]>({
+  const { data: remoteNotes = [] } = useQuery<Note[]>({
     queryKey: ["notes"],
     queryFn: () => api.get("/api/content/"),
+    enabled: !IS_TAURI_RUNTIME,
   });
-  const { data: allAccounts = [] } = useQuery<ReferenceAccount[]>({
+  const { data: remoteAccounts = [] } = useQuery<ReferenceAccount[]>({
     queryKey: ["accounts"],
     queryFn: () => api.get("/api/accounts/"),
+    enabled: !IS_TAURI_RUNTIME,
   });
+  const { data: localWorkspace } = useQuery<LocalWorkspaceSnapshot>({
+    queryKey: ["local-data"],
+    queryFn: readLocalWorkspaceSnapshot,
+    enabled: IS_TAURI_RUNTIME,
+  });
+  const allNotes = IS_TAURI_RUNTIME
+    ? (localWorkspace?.notes ?? []).map(localNoteToNote)
+    : remoteNotes;
+  const allAccounts = IS_TAURI_RUNTIME
+    ? (localWorkspace?.referenceAccounts ?? []).map(localReferenceAccountToReferenceAccount)
+    : remoteAccounts;
 
   // ── 本地计算（替代 analytics/summary + analytics/insights）────
   const summary = useMemo<Analytics>(

@@ -1,129 +1,127 @@
-use once_cell::sync::Lazy;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
-use tauri::{App, Manager, RunEvent};
+mod db;
 
-static BACKEND_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
+use serde::Serialize;
+use std::path::PathBuf;
+use tauri::{Manager, State};
 
-fn is_dev() -> bool {
-    cfg!(debug_assertions)
+struct AppState {
+    db: db::LocalDb,
 }
 
-fn candidate_uv_names() -> &'static [&'static str] {
-    if cfg!(target_os = "windows") {
-        &["uv.exe", "uv"]
-    } else {
-        &["uv"]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeStatus {
+    runtime: &'static str,
+    python_backend: bool,
+    database: &'static str,
+    database_path: String,
+}
+
+/// 返回桌面宿主自身的运行时边界，供前端启动自检和后续本地 command 迁移使用。
+/// 这里不探测、更不拉起 Python；旧 Python CLI/MCP 仍作为独立入口保留。
+#[tauri::command]
+fn runtime_status(state: State<'_, AppState>) -> RuntimeStatus {
+    RuntimeStatus {
+        runtime: "tauri-rust",
+        python_backend: false,
+        database: "ready",
+        database_path: state.db.path().display().to_string(),
     }
 }
 
-fn existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
-    candidates.iter().find(|path| path.exists()).cloned()
+/// 读取当前运营账号隔离范围内的最小本地工作区快照。
+/// 这是首个 vertical slice：只读 profile/items/notes，不替换全站 HTTP adapter。
+#[tauri::command]
+fn read_status(state: State<'_, AppState>) -> Result<db::WorkspaceSnapshot, String> {
+    state
+        .db
+        .snapshot()
+        .map_err(|error| format!("读取本地工作区失败: {error}"))
 }
 
-fn resource_roots(app: &App) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Ok(dir) = app.path().resource_dir() {
-        roots.push(dir.clone());
-        if let Some(parent) = dir.parent() {
-            roots.push(parent.to_path_buf());
-            if let Some(grand) = parent.parent() {
-                roots.push(grand.to_path_buf());
-            }
+/// 读取当前运营账号隔离范围内的图片，避免桌面端依赖旧 Python HTTP 图片接口。
+#[tauri::command]
+fn read_local_image(state: State<'_, AppState>, item_id: i64) -> Result<Option<String>, String> {
+    state.db.image_data_url(item_id)
+}
+
+/// 创建一个属于当前运营账号的本地草稿，用于验证 Rust SQLite 写入和账号池边界。
+#[tauri::command]
+fn create_local_draft(
+    state: State<'_, AppState>,
+    title: String,
+) -> Result<db::NoteSummary, String> {
+    state
+        .db
+        .create_local_draft(&title)
+        .map_err(|error| format!("创建本地草稿失败: {error}"))
+}
+
+/// 读取本地账号池，供桌面端顶栏切换运营账号，不回退到 HTTP。
+#[tauri::command]
+fn read_account_pool(state: State<'_, AppState>) -> Result<db::AccountPoolSnapshot, String> {
+    state
+        .db
+        .account_pool()
+        .map_err(|error| format!("读取本地账号池失败: {error}"))
+}
+
+/// 切换本地激活运营账号，并由前端重新读取当前账号快照。
+#[tauri::command]
+fn activate_local_account(
+    state: State<'_, AppState>,
+    account_id: i64,
+) -> Result<db::ActiveAccount, String> {
+    state
+        .db
+        .activate_account(account_id)
+        .map_err(|error| format!("切换本地账号失败: {error}"))
+}
+
+fn setup_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
+    Box::new(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        message.into(),
+    ))
+}
+
+fn resolve_database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| setup_error(format!("定位应用数据目录失败: {error}")))?;
+
+    #[cfg(debug_assertions)]
+    {
+        let project_db = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/app.db");
+        if project_db.is_file() {
+            return Ok(project_db);
         }
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            roots.push(dir.to_path_buf());
-            if let Some(parent) = dir.parent() {
-                roots.push(parent.to_path_buf());
-            }
-        }
-    }
-    roots
-}
 
-fn find_project_root(app: &App) -> Option<PathBuf> {
-    resource_roots(app).into_iter().find(|root| root.join("app").exists() && root.join("crawler").exists())
-}
-
-fn find_uv(app: &App, project_root: &Path) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    for name in candidate_uv_names() {
-        candidates.push(project_root.join(".venv").join(if cfg!(target_os = "windows") { "Scripts" } else { "bin" }).join(name));
-    }
-    for root in resource_roots(app) {
-        for name in candidate_uv_names() {
-            candidates.push(root.join(name));
-        }
-    }
-    existing_path(&candidates)
-}
-
-fn stop_backend() {
-    let mut guard = BACKEND_CHILD.lock().unwrap();
-    if let Some(child) = guard.as_mut() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    *guard = None;
-}
-
-fn backend_log_path(app: &App) -> PathBuf {
-    if let Ok(dir) = app.path().app_log_dir() {
-        let _ = std::fs::create_dir_all(&dir);
-        return dir.join("backend.log");
-    }
-    std::env::temp_dir().join("aichihongshu-backend.log")
-}
-
-fn start_backend(app: &App) -> Result<(), String> {
-    if is_dev() {
-        return Ok(());
-    }
-
-    let project_root = find_project_root(app).ok_or_else(|| "未找到桌面版后端资源目录".to_string())?;
-    let uv = find_uv(app, &project_root).ok_or_else(|| "未找到 uv，可执行文件未随应用打包".to_string())?;
-
-    let mut cmd = Command::new(uv);
-    let log_path = backend_log_path(app);
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| format!("打开后端日志失败: {e}"))?;
-    let err_file = log_file
-        .try_clone()
-        .map_err(|e| format!("复制后端日志句柄失败: {e}"))?;
-
-    cmd.current_dir(&project_root)
-        .env("RN_PROJECT_ROOT", &project_root)
-        .args(["run", "python", "-m", "app.server", "--port", "8765"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(err_file));
-
-    let child = cmd.spawn().map_err(|e| format!("启动内置后端失败: {e}"))?;
-    *BACKEND_CHILD.lock().unwrap() = Some(child);
-    Ok(())
+    Ok(app_data_dir.join("app.db"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            if let Err(err) = start_backend(app) {
-                eprintln!("[tauri] {err}");
-            }
+            let db_path = resolve_database_path(app.handle())?;
+            let db = db::LocalDb::open(db_path)
+                .map_err(|error| setup_error(format!("初始化本地数据库失败: {error}")))?;
+            app.manage(AppState { db });
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            runtime_status,
+            read_status,
+            read_local_image,
+            create_local_draft,
+            read_account_pool,
+            activate_local_account
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_, event| {
-            if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
-                stop_backend();
-            }
-        });
+        .run(|_, _| {});
 }

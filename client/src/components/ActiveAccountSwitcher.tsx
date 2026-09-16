@@ -3,6 +3,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, Users, Shield } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
+import {
+  IS_TAURI_RUNTIME,
+  activateLocalAccount,
+  readLocalAccountPool,
+  type LocalPoolAccount,
+} from "../lib/local";
 import { useToast } from "./Toast";
 
 interface PoolAccount {
@@ -24,14 +30,31 @@ export default function ActiveAccountSwitcher() {
   const qc = useQueryClient();
   const { toast } = useToast();
 
-  const { data: poolData } = useQuery<{ items: PoolAccount[] }>({
+  const { data: remotePoolData } = useQuery<{ items: PoolAccount[] }>({
     queryKey: ["account-pool"],
     queryFn: () => api.get("/api/account-pool"),
+    enabled: !IS_TAURI_RUNTIME,
+    refetchOnWindowFocus: true,
+    refetchInterval: 10000,
+  });
+  const { data: localPoolData } = useQuery<{ items: LocalPoolAccount[] }>({
+    queryKey: ["local-account-pool"],
+    queryFn: readLocalAccountPool,
+    enabled: IS_TAURI_RUNTIME,
     refetchOnWindowFocus: true,
     refetchInterval: 10000,
   });
 
-  const items = poolData?.items ?? [];
+  const items: PoolAccount[] = IS_TAURI_RUNTIME
+    ? (localPoolData?.items ?? []).map((account) => ({
+        id: account.id,
+        alias: account.alias,
+        role: account.role as PoolAccount["role"],
+        display_name: account.displayName,
+        is_active: account.isActive,
+        status: account.status,
+      }))
+    : (remotePoolData?.items ?? []);
   const operationItems = items.filter((a) => a.status === "active" && a.role === "operation");
   const active = operationItems.find((a) => a.is_active);
   const others = operationItems.filter((a) => !a.is_active);
@@ -39,9 +62,14 @@ export default function ActiveAccountSwitcher() {
   const handleSwitch = async (id: number) => {
     setOpen(false);
     try {
-      await api.post(`/api/account-pool/${id}/activate`, {});
+      if (IS_TAURI_RUNTIME) {
+        await activateLocalAccount(id);
+      } else {
+        await api.post(`/api/account-pool/${id}/activate`, {});
+      }
       toast("已切换激活账号", "success");
-      qc.invalidateQueries({ queryKey: ["account-pool"] });
+      qc.invalidateQueries({ queryKey: IS_TAURI_RUNTIME ? ["local-account-pool"] : ["account-pool"] });
+      if (IS_TAURI_RUNTIME) qc.invalidateQueries({ queryKey: ["local-dashboard"] });
       qc.invalidateQueries({ queryKey: ["profile"] });
       qc.invalidateQueries({ queryKey: ["notes"] });
       qc.invalidateQueries({ queryKey: ["items"] });
@@ -57,7 +85,7 @@ export default function ActiveAccountSwitcher() {
     return (
       <Link
         to="/accounts/pool"
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-100 text-zinc-600 hover:bg-zinc-200 text-xs"
+        className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-2)] px-3 py-2 text-sm text-[var(--color-text-primary)] hover:border-[var(--color-brand)]"
       >
         <Users size={14} /> 设置运营账号
       </Link>
@@ -71,7 +99,9 @@ export default function ActiveAccountSwitcher() {
     <div className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-zinc-200 hover:border-zinc-300 text-sm"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm hover:border-[var(--color-brand)]"
       >
         <Shield size={14} className="text-emerald-500" />
         <span className="text-zinc-800 font-medium max-w-[140px] truncate">{displayName}</span>
@@ -82,10 +112,10 @@ export default function ActiveAccountSwitcher() {
       {open && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-1 w-64 rounded-xl bg-white shadow-lg border border-zinc-200 z-40 overflow-hidden">
-            <div className="px-3 py-2 bg-zinc-50 border-b border-zinc-100">
-              <div className="text-[11px] text-zinc-500">当前激活（运营账号）</div>
-              <div className="text-sm font-medium text-zinc-800 mt-0.5 flex items-center gap-2">
+          <div role="menu" className="absolute right-0 top-full z-40 mt-2 w-64 overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg">
+            <div className="border-b border-[var(--color-border)] bg-[var(--color-surface-2)] px-3 py-2">
+              <div className="text-[11px] text-[var(--color-text-secondary)]">当前激活（运营账号）</div>
+              <div className="mt-0.5 flex items-center gap-2 text-sm font-medium text-[var(--color-text-primary)]">
                 <span className="truncate">{displayName}</span>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${badge.cls}`}>{badge.label}</span>
               </div>
@@ -93,14 +123,15 @@ export default function ActiveAccountSwitcher() {
 
             {others.length > 0 && (
               <div className="py-1">
-                <div className="px-3 py-1 text-[10px] text-zinc-400 uppercase">切换运营账号</div>
+                <div className="px-3 py-1 text-[10px] uppercase text-[var(--color-text-secondary)]">切换运营账号</div>
                 {others.map((a) => {
                   const b = ROLE_BADGE[a.role] ?? ROLE_BADGE.operation;
                   return (
                     <button
                       key={a.id}
                       onClick={() => handleSwitch(a.id)}
-                      className="w-full px-3 py-1.5 text-left hover:bg-zinc-50 flex items-center justify-between gap-2"
+                      role="menuitem"
+                      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-[var(--color-surface-2)]"
                     >
                       <span className="text-sm text-zinc-700 truncate">{a.display_name || a.alias}</span>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${b.cls}`}>{b.label}</span>
@@ -113,7 +144,7 @@ export default function ActiveAccountSwitcher() {
             <Link
               to="/accounts/pool"
               onClick={() => setOpen(false)}
-              className="block px-3 py-2 text-xs text-zinc-600 hover:bg-zinc-50 border-t border-zinc-100"
+              className="block border-t border-[var(--color-border)] px-3 py-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
             >
               管理账号池 →
             </Link>

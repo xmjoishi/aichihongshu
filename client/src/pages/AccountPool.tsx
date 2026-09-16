@@ -13,8 +13,9 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { api } from "../lib/api";
-import { Spinner, Empty } from "../components/ui";
+import { Dialog, Spinner, Empty, primaryButtonClass, secondaryButtonClass } from "../components/ui";
 import { useToast } from "../components/Toast";
+import { IS_TAURI_RUNTIME, activateLocalAccount, readLocalAccountPool } from "../lib/local";
 
 interface PoolAccount {
   id: number;
@@ -56,6 +57,7 @@ export default function AccountPool() {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<PoolAccount | null>(null);
+  const [deleting, setDeleting] = useState<PoolAccount | null>(null);
   const [browserStatusMap, setBrowserStatusMap] = useState<Record<number, BrowserStatus>>({});
   const [browserBusyMap, setBrowserBusyMap] = useState<Record<number, boolean>>({});
 
@@ -65,6 +67,23 @@ export default function AccountPool() {
   const reload = async () => {
     setLoading(true);
     try {
+      if (IS_TAURI_RUNTIME) {
+        const pool = await readLocalAccountPool();
+        setItems(pool.items.map((account) => ({
+          id: account.id,
+          alias: account.alias,
+          role: account.role as PoolAccount["role"],
+          display_name: account.displayName,
+          status: account.status as PoolAccount["status"],
+          is_active: account.isActive,
+          user_data_dir: "",
+          ban_count: 0,
+          created_at: "",
+        })));
+        setBrowserStatusMap({});
+        qc.invalidateQueries({ queryKey: ["local-account-pool"] });
+        return;
+      }
       const pool = await api.get("/api/account-pool");
       const nextItems: PoolAccount[] = pool.items || [];
       setItems(nextItems);
@@ -114,6 +133,10 @@ export default function AccountPool() {
   };
 
   const handleOpenBrowser = async (acc: PoolAccount) => {
+    if (IS_TAURI_RUNTIME) {
+      toast("本地账号的浏览器控制仍在迁移中", "info");
+      return;
+    }
     await withBrowserBusy(acc.id, async () => {
       try {
         await api.post(`/api/crawler/browser?account_id=${acc.id}`, {});
@@ -126,6 +149,10 @@ export default function AccountPool() {
   };
 
   const handleCloseBrowser = async (acc: PoolAccount) => {
+    if (IS_TAURI_RUNTIME) {
+      toast("本地账号的浏览器控制仍在迁移中", "info");
+      return;
+    }
     await withBrowserBusy(acc.id, async () => {
       try {
         await api.delete(`/api/crawler/browser?account_id=${acc.id}`);
@@ -143,7 +170,11 @@ export default function AccountPool() {
       return;
     }
     try {
-      await api.post(`/api/account-pool/${acc.id}/activate`, {});
+      if (IS_TAURI_RUNTIME) {
+        await activateLocalAccount(acc.id);
+      } else {
+        await api.post(`/api/account-pool/${acc.id}/activate`, {});
+      }
       toast("已切换激活账号", "success");
       await reload();
       qc.invalidateQueries({ queryKey: ["profile"] });
@@ -159,13 +190,24 @@ export default function AccountPool() {
       toast("无法删除当前激活账号，请先切换到其他运营账号", "error");
       return;
     }
-    if (!confirm(`确认删除账号「${acc.alias}」？\n（仅标记 retired，登录态目录保留）`)) return;
+    if (IS_TAURI_RUNTIME) {
+      toast("桌面本地账号暂不支持删除，账号数据保持不变", "info");
+      return;
+    }
+    setDeleting(acc);
+  };
+
+  const confirmDelete = async () => {
+    const acc = deleting;
+    if (!acc) return;
     try {
       await api.delete(`/api/account-pool/${acc.id}`);
       toast("已删除", "success");
       await reload();
     } catch (e) {
       toast(`删除失败：${(e as Error).message}`, "error");
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -183,7 +225,9 @@ export default function AccountPool() {
           </div>
           <button
             onClick={() => setShowAdd(true)}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#ff2442] text-white text-sm font-medium hover:bg-[#e51d39]"
+            disabled={IS_TAURI_RUNTIME}
+            title={IS_TAURI_RUNTIME ? "本地账号写入仍在迁移中" : "新建账号"}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#ff2442] text-white text-sm font-medium hover:bg-[#e51d39] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Plus size={16} /> 新建账号
           </button>
@@ -193,6 +237,11 @@ export default function AccountPool() {
           <div className="font-medium text-zinc-800">使用建议</div>
           <div className="mt-1">1) 顶栏仅可激活运营账号；2) 辅助账号用于搜索/抓取与扫码登录。</div>
         </div>
+        {IS_TAURI_RUNTIME && (
+          <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-selected)] p-4 text-sm text-[var(--color-text-secondary)]">
+            当前显示本地账号池；账号新增、编辑、删除和浏览器控制仍需后续迁移。激活账号切换已可用。
+          </div>
+        )}
 
         {items.length === 0 ? (
           <Empty message="还没有账号，点右上角新建" />
@@ -287,7 +336,8 @@ export default function AccountPool() {
 
                       <button
                         onClick={() => setEditing(acc)}
-                        className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100"
+                        disabled={IS_TAURI_RUNTIME}
+                        className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
                         title="编辑账号"
                       >
                         <Pencil size={16} />
@@ -326,6 +376,15 @@ export default function AccountPool() {
             setEditing(null);
             await reload();
           }}
+        />
+      )}
+
+      {deleting && (
+        <Dialog
+          title={`删除账号「${deleting.alias}」？`}
+          description="此操作只会标记为已退休，登录态目录会保留。"
+          onClose={() => setDeleting(null)}
+          footer={<><button type="button" className={secondaryButtonClass} onClick={() => setDeleting(null)}>取消</button><button type="button" className={primaryButtonClass} onClick={() => void confirmDelete()}>确认删除</button></>}
         />
       )}
     </div>

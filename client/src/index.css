@@ -4,15 +4,66 @@
 @theme {
   --color-brand: #ff2442;
   --color-brand-light: #ff6b81;
-  --color-surface: #fafafa;
+  --color-inspiration: #ffc94a;
+  --color-canvas: #fafafa;
+  --color-surface: #ffffff;
   --color-surface-2: #f4f4f5;
+  --color-text-primary: #18181b;
+  --color-text-secondary: #71717a;
+  --color-border: #e4e4e7;
+  --color-action-primary: #ff2442;
+  --color-selected: #fff0f2;
   --radius-card: 12px;
   --font-sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
 }
 
 body {
   font-family: var(--font-sans);
-  background: var(--color-surface);
+  background: var(--color-canvas);
+  color: var(--color-text-primary);
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+:root[data-theme="dark"] {
+  --color-canvas: #18181b;
+  --color-surface: #27272a;
+  --color-surface-2: #3f3f46;
+  --color-text-primary: #fafafa;
+  --color-text-secondary: #a1a1aa;
+  --color-border: #52525b;
+  --color-action-primary: #ff6b81;
+  --color-selected: #4a1d27;
+}
+
+/* Compatibility bridge for existing utility classes while pages migrate to tokens. */
+:root[data-theme="dark"] .bg-white { background-color: var(--color-surface) !important; }
+:root[data-theme="dark"] .bg-zinc-50,
+:root[data-theme="dark"] .bg-zinc-100 { background-color: var(--color-surface-2) !important; }
+:root[data-theme="dark"] .border-zinc-50,
+:root[data-theme="dark"] .border-zinc-100,
+:root[data-theme="dark"] .border-zinc-200 { border-color: var(--color-border) !important; }
+:root[data-theme="dark"] .text-zinc-900,
+:root[data-theme="dark"] .text-zinc-800,
+:root[data-theme="dark"] .text-zinc-700 { color: var(--color-text-primary) !important; }
+:root[data-theme="dark"] .text-zinc-600,
+:root[data-theme="dark"] .text-zinc-500,
+:root[data-theme="dark"] .text-zinc-400 { color: var(--color-text-secondary) !important; }
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] textarea,
+:root[data-theme="dark"] select { background-color: var(--color-surface) !important; color: var(--color-text-primary) !important; border-color: var(--color-border) !important; }
+
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--color-brand) 48%, transparent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 /* scrollbar */
@@ -20,6 +71,8 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 9999px; }
 ::-webkit-scrollbar-thumb:hover { background: #a1a1aa; }
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #66565d; }
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #8a747d; }
 
 /* scrollbar-hide utility */
 .scrollbar-hide {
@@ -33,4 +86,9 @@ body {
 /* HDR 显示控制：data-hdr="off" 时对所有 img 应用 SDR 压缩 filter */
 :root[data-hdr="off"] img {
   filter: brightness(0.88) saturate(0.92);
+}
+
+/* 品牌资源必须保持生产导出的纯白底和标准色，不参与显示适配滤镜。 */
+:root[data-hdr="off"] img.hdr-ignore {
+  filter: none;
 }

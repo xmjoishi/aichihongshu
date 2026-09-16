@@ -62,9 +62,10 @@ interface Props {
   placeholder?: string;
   className?: string;
   tagsLength?: number;   // 标签字数，计入总字数统计
+  readOnly?: boolean;
 }
 
-export default function BodyEditor({ value, onChange, placeholder, className, tagsLength = 0 }: Props) {
+export default function BodyEditor({ value, onChange, placeholder, className, tagsLength = 0, readOnly = false }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [showEmoji, setShowEmoji] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -109,6 +110,7 @@ export default function BodyEditor({ value, onChange, placeholder, className, ta
             type="button"
             title="插入表情"
             onClick={() => setShowEmoji((v) => !v)}
+            disabled={readOnly}
             className={`w-6 h-6 rounded flex items-center justify-center transition-colors
               ${showEmoji ? "bg-[#ff2442]/10 text-[#ff2442]" : "text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"}`}
           >
@@ -151,9 +153,10 @@ export default function BodyEditor({ value, onChange, placeholder, className, ta
           ref={textareaRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          readOnly={readOnly}
           placeholder={placeholder ?? "正文内容..."}
           spellCheck={false}
-          className="absolute inset-0 w-full h-full resize-none outline-none text-sm text-zinc-700 leading-relaxed px-6 py-3 bg-transparent placeholder:text-zinc-300"
+          className="absolute inset-0 h-full w-full resize-none bg-transparent px-6 py-3 text-sm leading-relaxed text-zinc-700 outline-none placeholder:text-zinc-300 read-only:cursor-default"
         />
       </div>
 

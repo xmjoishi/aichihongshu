@@ -13,9 +13,18 @@ import {
 import { api, inspireStream, type InspireParams } from "../lib/api";
 import { Item, ReferenceAccount, Note } from "../lib/types";
 import { Empty } from "../components/ui";
+import LocalImage from "../components/LocalImage";
 import { useToast } from "../components/Toast";
 import { buildInsightsVM } from "../selectors/analytics";
 import { buildTopicsVM } from "../selectors/topics";
+import {
+  IS_TAURI_RUNTIME,
+  localItemToItem,
+  localNoteToNote,
+  localReferenceAccountToReferenceAccount,
+  readLocalWorkspaceSnapshot,
+  type LocalWorkspaceSnapshot,
+} from "../lib/local";
 
 type TopicItem = { word: string; count: number };
 type RefPost = { title: string; likes: number; url?: string };
@@ -128,21 +137,47 @@ export default function Inspire() {
     return () => ro.disconnect();
   }, []);
 
-  const { data: allItems = [], isLoading: itemsLoading } = useQuery<Item[]>({
+  const { data: remoteItems = [], isLoading: remoteItemsLoading } = useQuery<Item[]>({
     queryKey: ["inspire-items-all"],
     queryFn: () => api.get("/api/library/?offset=0&limit=200"),
+    enabled: !IS_TAURI_RUNTIME,
   });
 
-  const { data: allAccounts = [], isLoading: accountsLoading } = useQuery<ReferenceAccount[]>({
+  const { data: remoteAccounts = [], isLoading: accountsLoading } = useQuery<ReferenceAccount[]>({
     queryKey: ["inspire-accounts-all"],
     queryFn: () => api.get("/api/accounts/"),
+    enabled: !IS_TAURI_RUNTIME,
   });
 
   // 拉 notes 用于本地计算 topics / insights
-  const { data: allNotes = [] } = useQuery<Note[]>({
+  const { data: remoteNotes = [] } = useQuery<Note[]>({
     queryKey: ["notes"],
     queryFn: () => api.get("/api/content/"),
+    enabled: !IS_TAURI_RUNTIME,
   });
+  const { data: localWorkspace, isLoading: localWorkspaceLoading } = useQuery<LocalWorkspaceSnapshot>({
+    queryKey: ["local-inspire"],
+    queryFn: readLocalWorkspaceSnapshot,
+    enabled: IS_TAURI_RUNTIME,
+  });
+  // 这些转换必须缓存。否则每次 render 都会生成新数组，下面的随机池 effect
+  // 会再次 setState，造成进入「灵感」页后持续随机重渲染。
+  const localItems = useMemo(
+    () => (localWorkspace?.items ?? []).map(localItemToItem),
+    [localWorkspace?.items],
+  );
+  const localNotes = useMemo(
+    () => (localWorkspace?.notes ?? []).map(localNoteToNote),
+    [localWorkspace?.notes],
+  );
+  const localAccounts = useMemo(
+    () => (localWorkspace?.referenceAccounts ?? []).map(localReferenceAccountToReferenceAccount),
+    [localWorkspace?.referenceAccounts],
+  );
+  const allItems = IS_TAURI_RUNTIME ? localItems : remoteItems;
+  const allNotes = IS_TAURI_RUNTIME ? localNotes : remoteNotes;
+  const allAccounts = IS_TAURI_RUNTIME ? localAccounts : remoteAccounts;
+  const itemsLoading = IS_TAURI_RUNTIME ? localWorkspaceLoading : remoteItemsLoading;
 
   // 本地计算 topics（替代 fetchTopics → GET /api/analytics/topics）
   const topicsData = useMemo(() => buildTopicsVM(allNotes), [allNotes]);
@@ -444,7 +479,7 @@ export default function Inspire() {
                           onClick={() => toggleId(item.id, selectedItemIds, setSelectedItemIds)}
                           className={`overflow-hidden rounded-2xl border text-left transition ${active ? "border-[#ff2442] ring-2 ring-[#ffd3db]" : "border-zinc-200 hover:border-zinc-300"}`}
                         >
-                          <img src={api.imageUrl(item.id)} alt={item.title} className="aspect-square w-full object-cover" />
+                          <LocalImage itemId={item.id} src={api.imageUrl(item.id)} alt={item.title} className="aspect-square w-full object-cover" />
                           <div className="truncate px-2 py-2 text-xs text-zinc-700">{item.title}</div>
                         </button>
                       );
@@ -570,7 +605,7 @@ export default function Inspire() {
                             isSelected ? "border-[#ff2442] shadow-sm" : "border-transparent hover:border-zinc-300"
                           }`}
                         >
-                          <img src={api.imageUrl(img.id)} alt={img.title} className="w-full h-full object-cover" />
+                              <LocalImage itemId={img.id} src={api.imageUrl(img.id)} alt={img.title} className="w-full h-full object-cover" />
                           {isSelected && (
                             <div className="absolute inset-0 bg-[#ff2442]/15 flex items-end justify-end p-1">
                               <span className="w-5 h-5 rounded-full bg-[#ff2442] text-white text-[10px] font-bold flex items-center justify-center">
