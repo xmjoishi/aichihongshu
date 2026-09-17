@@ -17,13 +17,35 @@ import BodyEditor from "../components/BodyEditor";
 import {
   IS_TAURI_RUNTIME,
   createLocalDraft,
+  deleteLocalNote,
+  localItemToItem,
   localNoteToNote,
   readLocalWorkspaceSnapshot,
+  restoreLocalNote,
+  updateLocalNote,
+  updateLocalNoteItems,
+  updateLocalNoteStatus,
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
+import { useAccountChange, useAccountContext } from "../lib/accountContext";
+import { getCapability } from "../lib/capabilities";
+import {
+  createProposal,
+  isProposalCurrent,
+  listProposals,
+  saveProposal,
+  type AIProposal,
+} from "../lib/aiProposal";
+import { preparePublish, type PublishPreparation } from "../lib/publishPreparation";
+import { noteToMarkdown } from "../lib/noteMarkdown";
 
 
 const AUTOSAVE_DELAY = 1500; // ms
+const NOTES_VIEW_KEY = "aichihongshu.notes-view.v1";
+
+function notesViewKey(scopeKey: string): string {
+  return `${NOTES_VIEW_KEY}:${encodeURIComponent(scopeKey)}`;
+}
 
 // ── Publish Modal ─────────────────────────────────────────────────────────────
 
@@ -273,10 +295,17 @@ export function NoteList() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { toast } = useToast();
+  const { accountId, scopeKey } = useAccountContext();
+  const noteRead = getCapability("note.read");
+  const noteWrite = getCapability("note.write");
+  const noteStatusWrite = getCapability("note.status.write");
+  const noteDelete = getCapability("note.delete");
+  const publish = getCapability("publish");
   const { confirmAndRetry, dialog: riskDialog } = useRiskConfirm();
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("created_desc");
+  const [showTrash, setShowTrash] = useState(false);
 
   function handleStatusChange(key: string) {
     setStatusFilter(key);
@@ -292,6 +321,34 @@ export function NoteList() {
   const [newDraftOpen, setNewDraftOpen] = useState(false);
   const [newDraftTitle, setNewDraftTitle] = useState("");
   const [creatingDraft, setCreatingDraft] = useState(false);
+  const notesScrollRef = useRef<HTMLDivElement>(null);
+  const viewScopeRef = useRef<string | null>(null);
+
+  useAccountChange(() => {
+    setNewDraftOpen(false);
+    setNewDraftTitle("");
+    setCreatingDraft(false);
+  });
+
+  useEffect(() => {
+    viewScopeRef.current = scopeKey;
+    try {
+      const saved = JSON.parse(localStorage.getItem(notesViewKey(scopeKey)) ?? "null") as Partial<{ statusFilter: string; search: string; sort: string; showTrash: boolean }> | null;
+      if (saved) {
+        if (typeof saved.statusFilter === "string") setStatusFilter(saved.statusFilter);
+        if (typeof saved.search === "string") setSearch(saved.search);
+        if (typeof saved.sort === "string") setSort(saved.sort);
+        if (typeof saved.showTrash === "boolean") setShowTrash(saved.showTrash);
+      }
+      const scroll = Number(sessionStorage.getItem(`${notesViewKey(scopeKey)}:scroll`));
+      if (Number.isFinite(scroll) && notesScrollRef.current) notesScrollRef.current.scrollTop = scroll;
+    } catch { /* preferences are optional */ }
+  }, [scopeKey]);
+
+  useEffect(() => {
+    if (viewScopeRef.current !== scopeKey) return;
+    try { localStorage.setItem(notesViewKey(scopeKey), JSON.stringify({ statusFilter, search, sort, showTrash })); } catch { /* optional */ }
+  }, [scopeKey, statusFilter, search, sort, showTrash]);
 
   const searchDebounced = useDebounce(search, 300);
 
@@ -308,12 +365,12 @@ export function NoteList() {
     enabled: !IS_TAURI_RUNTIME,
   });
   const { data: localWorkspace, isLoading: localNotesLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-notes"],
-    queryFn: readLocalWorkspaceSnapshot,
-    enabled: IS_TAURI_RUNTIME,
+    queryKey: ["local-notes", scopeKey, statusFilter, searchDebounced, sort],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && noteRead.available && accountId !== null,
   });
   const notes: Note[] = IS_TAURI_RUNTIME
-    ? (localWorkspace?.notes ?? [])
+    ? (showTrash ? (localWorkspace?.trashNotes ?? []) : (localWorkspace?.notes ?? []))
         .map(localNoteToNote)
         .filter((note) => !statusFilter || note.status === statusFilter)
         .filter((note) => !searchDebounced || `${note.title ?? ""} ${note.body ?? ""}`.toLowerCase().includes(searchDebounced.toLowerCase()))
@@ -325,15 +382,22 @@ export function NoteList() {
   const isLoading = IS_TAURI_RUNTIME ? localNotesLoading : remoteNotesLoading;
 
   async function deleteNote(id: number) {
-    if (IS_TAURI_RUNTIME) {
-      toast("本地笔记只读，删除写入仍在迁移中", "info");
+    if (!noteDelete.available) {
+      toast(`${noteDelete.reason}。${noteDelete.nextStep}`, "info");
       return;
     }
     setDeletingId(id);
     try {
-      await api.delete(`/api/content/${id}`);
-      qc.invalidateQueries({ queryKey: ["notes"] });
-      toast("笔记已删除", "success");
+      if (IS_TAURI_RUNTIME) {
+        if (accountId === null) throw new Error("当前账号尚未就绪");
+        await deleteLocalNote(id, accountId);
+        await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
+        await qc.invalidateQueries({ queryKey: ["local-dashboard", scopeKey] });
+      } else {
+        await api.delete(`/api/content/${id}`);
+        qc.invalidateQueries({ queryKey: ["notes"] });
+      }
+      toast(IS_TAURI_RUNTIME ? "笔记已移入回收站" : "笔记已删除", "success");
     } catch (e: unknown) {
       toast((e as Error).message, "error");
     } finally {
@@ -342,9 +406,45 @@ export function NoteList() {
     }
   }
 
+  async function restoreNote(id: number) {
+    if (!IS_TAURI_RUNTIME || accountId === null) return;
+    setDeletingId(id);
+    try {
+      await restoreLocalNote(id, accountId);
+      await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
+      await qc.invalidateQueries({ queryKey: ["local-dashboard", scopeKey] });
+      toast("笔记已恢复", "success");
+    } catch (e: unknown) {
+      toast((e as Error).message, "error");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   async function moveTo(noteId: number, newStatus: "draft" | "ready" | "published", noteUrl?: string) {
+    if (!noteStatusWrite.available) {
+      toast(`${noteStatusWrite.reason}。${noteStatusWrite.nextStep}`, "info");
+      return;
+    }
     if (IS_TAURI_RUNTIME) {
-      toast("本地笔记状态写入仍在迁移中", "info");
+      const current = notes.find((item) => item.id === noteId);
+      if (!current || accountId === null) {
+        toast("当前账号下找不到这篇笔记", "error");
+        return;
+      }
+      try {
+        await updateLocalNoteStatus({
+          noteId,
+          accountPoolId: accountId,
+          expectedVersion: current.content_version ?? 1,
+          status: newStatus,
+          noteUrl,
+        });
+        await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
+        await qc.invalidateQueries({ queryKey: ["local-dashboard", scopeKey] });
+      } catch (e: unknown) {
+        toast((e as Error).message, "error");
+      }
       return;
     }
     qc.setQueryData<Note[]>(["notes", statusFilter, searchDebounced, sort], (old = []) =>
@@ -364,8 +464,8 @@ export function NoteList() {
   }
 
   async function autoPublish(note: Note) {
-    if (IS_TAURI_RUNTIME) {
-      toast("本地笔记暂不支持发布操作", "info");
+    if (!publish.available) {
+      toast(`${publish.reason}。${publish.nextStep}`, "info");
       return;
     }
     if (autoPublishingId !== null) return;
@@ -426,11 +526,15 @@ export function NoteList() {
   ];
 
   async function createDraftFromList() {
+    if (!noteWrite.available) {
+      toast(`${noteWrite.reason}。${noteWrite.nextStep}`, "info");
+      return;
+    }
     setCreatingDraft(true);
     try {
-      await createLocalDraft(newDraftTitle.trim() || "新建草稿");
-      await qc.invalidateQueries({ queryKey: ["local-notes"] });
-      await qc.invalidateQueries({ queryKey: ["local-dashboard"] });
+      await createLocalDraft(newDraftTitle.trim() || "新建草稿", accountId ?? undefined);
+      await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
+      await qc.invalidateQueries({ queryKey: ["local-dashboard", scopeKey] });
       setNewDraftOpen(false);
       setNewDraftTitle("");
       toast("草稿已创建", "success");
@@ -467,8 +571,27 @@ export function NoteList() {
               {t.label}
             </button>
           ))}
+          {IS_TAURI_RUNTIME && (
+            <button
+              onClick={() => { setShowTrash((value) => !value); setStatusFilter(""); }}
+              className={`text-sm px-3 py-1 rounded-lg transition-colors ${showTrash ? "bg-amber-500 text-white" : "text-zinc-500 hover:bg-zinc-100"}`}
+              title="本地笔记回收站；关联素材不会随笔记删除"
+            >
+              回收站{localWorkspace?.trashNotes?.length ? ` (${localWorkspace.trashNotes.length})` : ""}
+            </button>
+          )}
           <button
-            onClick={() => IS_TAURI_RUNTIME ? setNewDraftOpen(true) : toast("请先在图库选择素材后生成草稿", "info")}
+            onClick={() => {
+              if (!noteWrite.available) {
+                toast(`${noteWrite.reason}。${noteWrite.nextStep}`, "info");
+              } else if (IS_TAURI_RUNTIME) {
+                setNewDraftOpen(true);
+              } else {
+                toast("请先在图库选择素材后生成草稿", "info");
+              }
+            }}
+            disabled={!noteWrite.available}
+            title={noteWrite.available ? "新建草稿" : `${noteWrite.reason}；${noteWrite.nextStep}`}
             className="ml-auto text-sm px-4 py-1.5 rounded-lg bg-[#ff2442] text-white hover:bg-[#e01f3a] transition-colors"
           >
             + 新建
@@ -476,7 +599,7 @@ export function NoteList() {
         </div>
         {IS_TAURI_RUNTIME && (
           <div className="border-b border-[var(--color-border)] bg-[var(--color-selected)] px-6 py-2 text-xs text-[var(--color-text-secondary)]">
-            当前笔记来自本地数据库，只读查看已接入；编辑、删除、状态变更和发布仍需后续迁移。
+            当前笔记来自本地数据库；编辑、状态变更和素材关联已可用，{noteDelete.available ? "删除会进入回收站" : "删除仍需迁移"}，{publish.available ? "发布已可用" : "发布仍需迁移"}。
           </div>
         )}
         <div className="flex items-center gap-3 px-6 pb-3">
@@ -509,7 +632,9 @@ export function NoteList() {
       </div>
 
       {/* List */}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div ref={notesScrollRef} className="flex-1 overflow-y-auto p-6" onScroll={(event) => {
+        try { sessionStorage.setItem(`${notesViewKey(scopeKey)}:scroll`, String(event.currentTarget.scrollTop)); } catch { /* optional */ }
+      }}>
         {isLoading ? (
           <Spinner />
         ) : notes.length === 0 ? (
@@ -521,7 +646,7 @@ export function NoteList() {
                 className="bg-white rounded-xl p-4 border border-zinc-100 hover:border-zinc-200 transition-colors group relative"
               >
                 {/* 主体内容行 */}
-                <div className="flex items-start gap-3 cursor-pointer" onClick={() => navigate(`/notes/${note.id}`)}>
+                <div className={`flex items-start gap-3 ${showTrash ? "" : "cursor-pointer"}`} onClick={() => { if (!showTrash) navigate(`/notes/${note.id}`); }}>
                   {note.item_id ? (
                     <LocalImage
                       itemId={note.item_id}
@@ -565,7 +690,7 @@ export function NoteList() {
                 <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-zinc-50">
                   {/* 左侧：互动数据（已发布）/ 状态推进按钮（草稿/待发） */}
                   <div className="flex items-center gap-2">
-                    {note.status === "published" && !IS_TAURI_RUNTIME && (
+                    {!showTrash && note.status === "published" && publish.available && (
                       <div className="flex gap-2 items-center">
                         {note.note_url && (
                           <button
@@ -590,7 +715,7 @@ export function NoteList() {
                         </div>
                       </div>
                     )}
-                    {note.status === "ready" && !IS_TAURI_RUNTIME && (
+                    {!showTrash && note.status === "ready" && (
                       <>
                         <button
                           onClick={(e) => { e.stopPropagation(); moveTo(note.id, "draft"); }}
@@ -600,13 +725,15 @@ export function NoteList() {
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); setPublishingNote(note); }}
+                          disabled={!publish.available}
+                          title={publish.available ? "发布" : `${publish.reason}；${publish.nextStep}`}
                           className="flex items-center gap-1 text-xs text-white bg-[#ff2442] px-2.5 py-1 rounded-lg hover:bg-[#e01f3a] transition-colors font-medium"
                         >
                           <Send size={10} />发布
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); autoPublish(note); }}
-                          disabled={autoPublishingId !== null}
+                          disabled={autoPublishingId !== null || !publish.available}
                           className="flex items-center gap-1 text-xs text-white bg-violet-500 px-2.5 py-1 rounded-lg hover:bg-violet-600 disabled:opacity-50 transition-colors font-medium"
                           title="Playwright 自动发布到小红书"
                         >
@@ -620,20 +747,34 @@ export function NoteList() {
                   </div>
                   {/* 右侧：编辑 + 删除 */}
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={() => navigate(`/notes/${note.id}`)}
-                      className="p-1.5 rounded-lg text-zinc-300 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
-                      title="编辑笔记"
-                    >
-                      <ChevronRight size={14} />
-                    </button>
-                    {!IS_TAURI_RUNTIME && <button
-                      onClick={(e) => { e.stopPropagation(); setConfirmId(note.id); }}
-                      className="p-1.5 rounded-lg text-zinc-300 hover:text-red-500 hover:bg-red-50 transition-colors"
-                      title="删除笔记"
-                    >
-                      <Trash2 size={13} />
-                    </button>}
+                    {!showTrash && (
+                      <button
+                        onClick={() => navigate(`/notes/${note.id}`)}
+                        className="p-1.5 rounded-lg text-zinc-300 hover:text-zinc-600 hover:bg-zinc-100 transition-colors"
+                        title="编辑笔记"
+                      >
+                        <ChevronRight size={14} />
+                      </button>
+                    )}
+                    {showTrash ? (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); void restoreNote(note.id); }}
+                        disabled={deletingId === note.id}
+                        className="text-xs px-2 py-1 rounded-lg text-amber-700 bg-amber-50 hover:bg-amber-100 disabled:opacity-50"
+                        title="恢复到笔记列表"
+                      >
+                        {deletingId === note.id ? "恢复中…" : "恢复"}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmId(note.id); }}
+                        disabled={!noteDelete.available}
+                        className="p-1.5 rounded-lg text-zinc-300 hover:text-red-500 hover:bg-red-50 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                        title={noteDelete.available ? "移入笔记回收站" : `${noteDelete.reason}；${noteDelete.nextStep}`}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -647,7 +788,7 @@ export function NoteList() {
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setConfirmId(null)}>
           <div className="bg-white rounded-2xl w-full max-w-sm shadow-xl p-6" onClick={(e) => e.stopPropagation()}>
             <p className="text-sm font-semibold text-zinc-800 mb-1">确认删除？</p>
-            <p className="text-xs text-zinc-400 mb-5">此操作不可恢复，笔记将被永久删除。</p>
+            <p className="text-xs text-zinc-400 mb-5">笔记会移入当前账号回收站，关联素材会保留，可从回收站恢复。</p>
             <div className="flex justify-end gap-2">
               <button onClick={() => setConfirmId(null)}
                 className="text-xs px-4 py-2 rounded-lg text-zinc-500 hover:bg-zinc-100 transition-colors">
@@ -683,6 +824,13 @@ export function NoteEditor() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { accountId, accountAlias, databaseIdentity, scopeKey } = useAccountContext();
+  const noteRead = getCapability("note.read");
+  const noteWrite = getCapability("note.write");
+  const noteItemsWrite = getCapability("note.items.write");
+  const noteStatusWrite = getCapability("note.status.write");
+  const aiGenerate = getCapability("ai.generate");
+  const noteExport = getCapability("note.export");
 
   const { data: remoteNote, isLoading: remoteNoteLoading } = useQuery<Note>({
     queryKey: ["note", noteId],
@@ -690,15 +838,15 @@ export function NoteEditor() {
     enabled: !IS_TAURI_RUNTIME,
   });
   const { data: localWorkspace, isLoading: localNoteLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-note", noteId],
-    queryFn: readLocalWorkspaceSnapshot,
-    enabled: IS_TAURI_RUNTIME,
+    queryKey: ["local-note", scopeKey, noteId],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && noteRead.available && accountId !== null,
   });
   const note = IS_TAURI_RUNTIME
     ? localWorkspace?.notes.map(localNoteToNote).find((item) => item.id === noteId)
     : remoteNote;
   const isLoading = IS_TAURI_RUNTIME ? localNoteLoading : remoteNoteLoading;
-  const localReadOnly = IS_TAURI_RUNTIME;
+  const localMode = IS_TAURI_RUNTIME;
 
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");       // HTML 字符串（Tiptap 输出）
@@ -709,7 +857,8 @@ export function NoteEditor() {
   const [copied, setCopied] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [showPrompt, setShowPrompt] = useState(false);
-  const [showAI, setShowAI] = useState(!IS_TAURI_RUNTIME);
+  const [showAI, setShowAI] = useState(() => aiGenerate.available && (typeof window === "undefined" || window.innerWidth >= 900));
+  const [publishPreparation, setPublishPreparation] = useState<PublishPreparation | null>(null);
   const { width: promptWidth, dragging: promptDragging, onDragStart: onPromptDragStart } = usePanelResize({
     defaultWidth: 320,
     min: 240,
@@ -720,6 +869,15 @@ export function NoteEditor() {
 
   // Init local state once note loads
   const [inited, setInited] = useState(false);
+  const [noteVersion, setNoteVersion] = useState(1);
+  const noteVersionRef = useRef(1);
+  // A proposal keeps the version from the AI session that produced it. This
+  // ref deliberately does not follow editor saves while the panel is open, so
+  // an older suggestion cannot silently overwrite a newer draft.
+  const aiProposalBaseVersionRef = useRef(1);
+  const [lastAIProposal, setLastAIProposal] = useState<AIProposal | null>(null);
+  const [proposalHistory, setProposalHistory] = useState<AIProposal[]>([]);
+  const [saveError, setSaveError] = useState<string | null>(null);
   if (note && !inited) {
     setTitle(note.title ?? "");
     // body 直接存纯文本；兼容旧版 HTML 存储：自动剥离标签
@@ -733,28 +891,138 @@ export function NoteEditor() {
     setBody(plainBody);
     setTagsInput(note.tags.join(" "));
     setNoteType((note.note_type as "text" | "image" | "video") || "text");
+    const version = note.content_version ?? 1;
+    setNoteVersion(version);
+    noteVersionRef.current = version;
+    aiProposalBaseVersionRef.current = version;
     setInited(true);
   }
 
   // Debounce 自动保存
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveEpochRef = useRef(0);
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
 
-  function scheduleAutoSave(newTitle: string, newBody: string, newTags: string) {
-    if (localReadOnly) return;
+  useAccountChange(() => {
+    saveEpochRef.current += 1;
+    if (autoSaveTimer.current) {
+      clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = null;
+    }
+    setSaving(false);
+    setSaveError(null);
+  });
+
+  // 账号或对象切换后丢弃旧编辑态，避免未保存草稿被新账号复用。
+  useEffect(() => {
+    saveEpochRef.current += 1;
+    setInited(false);
+    setTitle("");
+    setBody("");
+    setTagsInput("");
+    setNoteVersion(1);
+    noteVersionRef.current = 1;
+    aiProposalBaseVersionRef.current = 1;
+    setLastAIProposal(null);
+    setProposalHistory([]);
+    setAutoSaved(false);
+    setSaveError(null);
+    setShowPrompt(false);
+  }, [scopeKey, noteId]);
+
+  // Restore only the latest bounded history for this database/account/note.
+  // The scope changes whenever the active account changes, so a prior account's
+  // proposal can never become the current editor's diff by accident.
+  useEffect(() => {
+    const history = listProposals(databaseIdentity, accountId, noteId);
+    setProposalHistory(history);
+    setLastAIProposal(history[0] ?? null);
+  }, [accountId, databaseIdentity, noteId]);
+
+  type SavePayload = {
+    title: string;
+    body: string;
+    tagsInput: string;
+    noteType: NoteType;
+    itemIds: number[];
+    epoch: number;
+    accountId: number | null;
+    noteId: number;
+  };
+
+  function enqueueSave(payload: SavePayload): Promise<void> {
+    const queued = saveQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (payload.epoch !== saveEpochRef.current || payload.noteId !== noteId) return;
+        setSaving(true);
+        try {
+          const tags = payload.tagsInput.split(/[\s,，#]+/).map((t) => t.trim()).filter(Boolean);
+          if (localMode) {
+            if (!noteWrite.available) throw new Error(`${noteWrite.reason}。${noteWrite.nextStep}`);
+            if (payload.accountId === null) throw new Error("当前账号尚未就绪");
+            const updated = await updateLocalNote({
+              noteId: payload.noteId,
+              accountPoolId: payload.accountId,
+              expectedVersion: noteVersionRef.current,
+              title: payload.title,
+              body: payload.body,
+              tags,
+              noteType: payload.noteType,
+              itemIds: payload.itemIds,
+            });
+            if (payload.epoch !== saveEpochRef.current) return;
+            const nextVersion = updated.contentVersion ?? noteVersionRef.current + 1;
+            noteVersionRef.current = nextVersion;
+            setNoteVersion(nextVersion);
+            await qc.invalidateQueries({ queryKey: ["local-note", scopeKey, payload.noteId] });
+            await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
+            await qc.invalidateQueries({ queryKey: ["local-dashboard", scopeKey] });
+          } else {
+            await api.patch(`/api/content/${payload.noteId}`, {
+              title: payload.title,
+              body: payload.body,
+              tags,
+              note_type: payload.noteType,
+            });
+            if (payload.epoch !== saveEpochRef.current || payload.accountId !== accountId) return;
+            qc.invalidateQueries({ queryKey: ["notes"] });
+            qc.invalidateQueries({ queryKey: ["note", payload.noteId] });
+          }
+          if (payload.epoch !== saveEpochRef.current) return;
+          setSaveError(null);
+          setAutoSaved(true);
+          setTimeout(() => setAutoSaved(false), 2000);
+        } catch (cause) {
+          if (payload.epoch === saveEpochRef.current) {
+            setSaveError(cause instanceof Error ? cause.message : String(cause));
+          }
+          throw cause;
+        } finally {
+          if (payload.epoch === saveEpochRef.current) setSaving(false);
+        }
+      });
+    saveQueueRef.current = queued.catch(() => undefined);
+    return queued;
+  }
+
+  function scheduleAutoSave(newTitle: string, newBody: string, newTags: string, nextNoteType = noteType) {
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-    autoSaveTimer.current = setTimeout(async () => {
-      const tags = newTags.split(/[\s,，#]+/).map((t) => t.trim()).filter(Boolean);
-      try {
-        await api.patch(`/api/content/${noteId}`, {
-          title: newTitle,
-          body: newBody,
-          tags,
-          note_type: noteType,
-        });
-        setAutoSaved(true);
-        setTimeout(() => setAutoSaved(false), 2000);
-        qc.invalidateQueries({ queryKey: ["notes"] });
-      } catch {/* silently ignore */}
+    const saveEpoch = saveEpochRef.current;
+    const originAccountId = accountId;
+    const originNoteId = noteId;
+    const itemIds = note?.item_ids?.length ? note.item_ids : (note?.item_id ? [note.item_id] : []);
+    autoSaveTimer.current = setTimeout(() => {
+      void enqueueSave({
+        title: newTitle,
+        body: newBody,
+        tagsInput: newTags,
+        noteType: nextNoteType,
+        itemIds,
+        epoch: saveEpoch,
+        accountId: originAccountId,
+        noteId: originNoteId,
+      }).catch(() => undefined);
     }, AUTOSAVE_DELAY);
   }
 
@@ -762,44 +1030,87 @@ export function NoteEditor() {
   useEffect(() => () => { autoSaveTimer.current && clearTimeout(autoSaveTimer.current); }, []);
 
   async function save() {
-    if (localReadOnly) {
-      toast("本地笔记编辑写入仍在迁移中，当前页面只读", "info");
-      return;
-    }
-    setSaving(true);
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    const saveEpoch = saveEpochRef.current;
+    const originAccountId = accountId;
+    const originNoteId = noteId;
     try {
-      const tags = tagsInput.split(/[\s,，#]+/).map((t) => t.trim()).filter(Boolean);
-      // 存纯文本，兼容现有 body 字段和导出逻辑
-      await api.patch(`/api/content/${noteId}`, { title, body, tags, note_type: noteType });
-      qc.invalidateQueries({ queryKey: ["notes"] });
-      qc.invalidateQueries({ queryKey: ["note", noteId] });
+      await enqueueSave({
+        title,
+        body,
+        tagsInput,
+        noteType,
+        itemIds: note?.item_ids?.length ? note.item_ids : (note?.item_id ? [note.item_id] : []),
+        epoch: saveEpoch,
+        accountId: originAccountId,
+        noteId: originNoteId,
+      });
+      if (saveEpoch !== saveEpochRef.current || originAccountId !== accountId) return;
       toast("已保存", "success");
     } catch (e: unknown) {
-      toast((e as Error).message, "error");
-    } finally {
-      setSaving(false);
+      if (saveEpoch === saveEpochRef.current) toast((e as Error).message, "error");
     }
   }
 
+  useEffect(() => {
+    function handleShortcut(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void save();
+      }
+    }
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  });
+
   async function markReady() {
-    if (localReadOnly) {
-      toast("本地笔记状态写入仍在迁移中", "info");
+    if (!noteStatusWrite.available) {
+      toast(`${noteStatusWrite.reason}。${noteStatusWrite.nextStep}`, "info");
       return;
     }
     try {
-      await api.patch(`/api/content/${noteId}/status`, { status: "ready" });
-      qc.invalidateQueries({ queryKey: ["note", noteId] });
-      qc.invalidateQueries({ queryKey: ["notes"] });
+      if (localMode) {
+        if (accountId === null) throw new Error("当前账号尚未就绪");
+        const updated = await updateLocalNoteStatus({
+          noteId,
+          accountPoolId: accountId,
+          expectedVersion: noteVersionRef.current,
+          status: "ready",
+        });
+        const nextVersion = updated.contentVersion ?? noteVersionRef.current + 1;
+        noteVersionRef.current = nextVersion;
+        setNoteVersion(nextVersion);
+        setSaveError(null);
+        await qc.invalidateQueries({ queryKey: ["local-note", scopeKey, noteId] });
+        await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
+      } else {
+        await api.patch(`/api/content/${noteId}/status`, { status: "ready" });
+        qc.invalidateQueries({ queryKey: ["note", noteId] });
+        qc.invalidateQueries({ queryKey: ["notes"] });
+      }
     } catch (e: unknown) {
+      setSaveError((e as Error).message);
       toast((e as Error).message, "error");
     }
   }
 
   async function copyMarkdown() {
+    if (!noteExport.available) {
+      toast(`${noteExport.reason}。${noteExport.nextStep}`, "info");
+      return;
+    }
     try {
-      const res = await api.get(`/api/content/${noteId}/export`);
-      await navigator.clipboard.writeText(res.markdown);
+      const markdown = localMode
+        ? noteToMarkdown({
+            title,
+            body,
+            tags: tagsInput.split(/[\s,，#]+/).map((tag) => tag.trim()).filter(Boolean),
+            status: note?.status ?? "draft",
+            createdAt: note?.created_at,
+            coverDesc: note?.cover_desc,
+          })
+        : (await api.get(`/api/content/${noteId}/export`)).markdown;
+      await navigator.clipboard.writeText(markdown);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (e: unknown) {
@@ -813,23 +1124,59 @@ export function NoteEditor() {
     setShowPrompt(true);
   }
 
-  /** AIPanel 点击「应用到编辑器」时，将文本追加到正文（转为 HTML 段落） */
+  function adoptAIProposal(field: AIProposal["field"], value: string, apply: () => void) {
+    const previousValue = field === "title" ? title : field === "body" ? body : tagsInput;
+    const proposal = createProposal({
+      accountId,
+      noteId,
+      baseVersion: aiProposalBaseVersionRef.current,
+      field,
+      previousValue,
+      value,
+    });
+    if (!isProposalCurrent(proposal, { accountId, noteId, version: noteVersionRef.current })) {
+      const next = { ...proposal, status: "conflict" as const };
+      saveProposal(databaseIdentity, next);
+      setProposalHistory((current) => [next, ...current.filter((item) => item.id !== next.id)].slice(0, 40));
+      setLastAIProposal(next);
+      toast("AI 提案基于旧版本，原文已保留；请重新生成后再采用", "info");
+      return;
+    }
+    apply();
+    const next = { ...proposal, status: "applied" as const };
+    saveProposal(databaseIdentity, next);
+    setProposalHistory((current) => [next, ...current.filter((item) => item.id !== next.id)].slice(0, 40));
+    setLastAIProposal(next);
+  }
+
+  /** AIPanel 点击「应用到编辑器」时，将文本追加到正文。 */
   function handleAIApply(text: string) {
-    // AI 返回纯文本，直接拼接到现有内容
-    const newBody = body ? body + "\n" + text : text;
-    setBody(newBody);
-    scheduleAutoSave(title, newBody, tagsInput);
+    adoptAIProposal("body", text, () => {
+      const newBody = body ? body + "\n" + text : text;
+      setBody(newBody);
+      scheduleAutoSave(title, newBody, tagsInput);
+    });
   }
 
   if (isLoading) return <Spinner />;
   if (!note) return <div className="p-6 text-zinc-400">笔记不存在</div>;
 
+  const saveStatus = saving
+    ? "保存中…"
+    : saveError
+      ? "保存失败"
+      : autoSaved
+        ? "已保存"
+        : `已同步 · v${noteVersion}`;
+  const accountLabel = accountAlias || (accountId === null ? "未选择" : `账号 #${accountId}`);
+  const hasAIConflict = lastAIProposal?.status === "conflict";
+
   return (
-    <div className="flex h-full">
+    <div className="creator-note-editor flex h-full min-w-0">
       {/* Left: Phone Preview + Editor */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="creator-note-main flex-1 flex min-w-0 flex-col overflow-hidden">
         {/* Toolbar */}
-        <div className="flex items-center gap-3 px-6 py-3 border-b border-zinc-100 bg-white">
+          <div className="creator-note-toolbar flex items-center gap-3 px-6 py-3 border-b border-zinc-100 bg-white">
           <button
             onClick={() => navigate("/notes")}
             className="text-zinc-400 hover:text-zinc-700 text-sm"
@@ -837,18 +1184,32 @@ export function NoteEditor() {
             ← 返回
           </button>
           <StatusBadge status={note.status} />
-          {autoSaved && (
-            <span className="text-xs text-zinc-400 animate-pulse">已自动保存</span>
+          <span className="text-[11px] text-[var(--color-text-secondary)] border border-[var(--color-border)] rounded-full px-2 py-0.5 max-w-[180px] truncate" title={`当前账号：${accountLabel}`}>
+            当前账号：{accountLabel}
+          </span>
+          <span
+            className={`creator-note-save-status text-xs ${saveError ? "text-red-500" : saving ? "text-amber-600" : "text-zinc-400"}`}
+            aria-live="polite"
+            title={saveError ?? undefined}
+          >
+            {saveStatus}{saveError ? "，点击保存重试" : ""}
+          </span>
+          {hasAIConflict && (
+            <span className="creator-note-conflict text-xs text-amber-600" role="status">
+              内容已变化，AI 建议未采用
+            </span>
           )}
-          <div className="ml-auto flex gap-2">
+          <div className="creator-note-toolbar-actions ml-auto flex min-w-0 flex-wrap justify-end gap-2">
             <button
-              onClick={() => { setShowAI((v) => !v); setShowPrompt(false); }}
-              disabled={localReadOnly}
-              title={localReadOnly ? "本地笔记 AI 写入仍在迁移中" : "打开 AI 助手"}
+              onClick={() => { setShowAI(true); setShowPrompt(false); }}
+              aria-disabled={!aiGenerate.available}
+              title={aiGenerate.available ? "打开 AI 助手" : `${aiGenerate.reason}；${aiGenerate.nextStep}`}
               className={`flex items-center gap-1.5 text-xs border px-3 py-1.5 rounded-lg transition-colors ${
                 showAI
                   ? "bg-[#fff0f2] border-[#ff2442] text-[#ff2442]"
-                  : "border-zinc-200 text-zinc-500 hover:bg-zinc-50"
+                  : aiGenerate.available
+                    ? "border-zinc-200 text-zinc-500 hover:bg-zinc-50"
+                    : "border-amber-200 text-amber-600 hover:bg-amber-50"
               }`}
             >
               <Sparkles size={13} />
@@ -869,26 +1230,36 @@ export function NoteEditor() {
             )}
             <button
               onClick={copyMarkdown}
-              disabled={localReadOnly}
-              title={localReadOnly ? "本地笔记导出仍在迁移中" : "复制 Markdown"}
+              disabled={!noteExport.available}
+              title={noteExport.available ? "复制 Markdown" : `${noteExport.reason}；${noteExport.nextStep}`}
               className="flex items-center gap-1.5 text-xs border border-zinc-200 px-3 py-1.5 rounded-lg hover:bg-zinc-50"
             >
               <Copy size={13} />
               {copied ? "已复制!" : "复制 MD"}
             </button>
-            {note.status === "draft" && !localReadOnly && (
+            {note.status === "draft" && (
               <button
                 onClick={markReady}
+                disabled={!noteStatusWrite.available}
+                title={noteStatusWrite.available ? "标记待发" : `${noteStatusWrite.reason}；${noteStatusWrite.nextStep}`}
                 className="text-xs bg-amber-500 text-white px-3 py-1.5 rounded-lg hover:bg-amber-600"
               >
                 标记待发
               </button>
             )}
             <button
+              type="button"
+              onClick={() => setPublishPreparation(preparePublish({ ...note, title, body, tags: tagsInput.split(/[\s,，#]+/).map((tag) => tag.trim()).filter(Boolean) }, accountId))}
+              className="flex items-center gap-1.5 text-xs border border-zinc-200 px-3 py-1.5 rounded-lg text-zinc-500 hover:bg-zinc-50"
+              title="检查当前内容快照，不会提交到平台"
+            >
+              发布检查
+            </button>
+            <button
               onClick={save}
-              disabled={saving || localReadOnly}
-              title={localReadOnly ? "本地笔记编辑写入仍在迁移中" : "保存笔记"}
-              className="flex items-center gap-1.5 text-xs bg-[#ff2442] text-white px-3 py-1.5 rounded-lg hover:bg-[#e01f3a] disabled:opacity-50"
+              disabled={saving}
+              title={saveError ? `${saveError}；点击重试` : "保存笔记"}
+              className="creator-note-toolbar-save flex shrink-0 items-center gap-1.5 text-xs bg-[#ff2442] text-white px-3 py-1.5 rounded-lg hover:bg-[#e01f3a] disabled:opacity-50"
             >
               <Save size={13} />
               {saving ? "保存中..." : "保存"}
@@ -896,9 +1267,31 @@ export function NoteEditor() {
           </div>
         </div>
 
-        {localReadOnly && (
+        {lastAIProposal && (
+          <div className="creator-note-ai-diff mx-6 mt-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600" role="status">
+            <div className="flex items-center justify-between gap-2">
+              <span>AI 提案：{lastAIProposal.field === "title" ? "标题" : lastAIProposal.field === "body" ? "正文" : "标签"} · {lastAIProposal.status === "conflict" ? "未采用" : "已采用"} · 历史 {proposalHistory.length} 条</span>
+              <details>
+                <summary className="cursor-pointer text-[#ff2442]">查看差异</summary>
+                <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                  <div className="rounded bg-red-50 px-2 py-1"><span className="text-[10px] text-red-500">原值</span><p className="whitespace-pre-wrap break-words line-through decoration-red-300">{lastAIProposal.previousValue || "（空）"}</p></div>
+                  <div className="rounded bg-green-50 px-2 py-1"><span className="text-[10px] text-green-600">建议</span><p className="whitespace-pre-wrap break-words">{lastAIProposal.value || "（空）"}</p></div>
+                </div>
+              </details>
+            </div>
+          </div>
+        )}
+
+        {localMode && (
           <div className="border-b border-[var(--color-border)] bg-[var(--color-selected)] px-6 py-2 text-xs text-[var(--color-text-secondary)]">
-            当前笔记来自本地数据库，编辑和状态写入仍在迁移中；你可以查看内容，返回不会修改数据。
+            当前笔记来自本地数据库；{noteWrite.available ? "标题、正文、标签、类型和状态支持本地保存" : "本地笔记编辑仍需迁移"}；{noteItemsWrite.available ? "素材关联、排序与移除可用" : "素材关联仍需迁移"}；{noteExport.available ? "导出可用" : "导出仍需迁移"}，{aiGenerate.available ? "AI 可用" : "AI 仍需迁移"}。
+          </div>
+        )}
+        {publishPreparation && (
+          <div className={`border-b px-6 py-2 text-xs ${publishPreparation.ready ? "border-emerald-100 bg-emerald-50 text-emerald-700" : "border-amber-100 bg-amber-50 text-amber-700"}`} role="status">
+            <span className="font-medium">{publishPreparation.ready ? "内容检查通过" : "内容检查未通过"}</span>
+            <span className="ml-2">快照 {publishPreparation.snapshotKey}</span>
+            {!publishPreparation.ready && <span className="ml-2">{publishPreparation.issues.map((issue) => issue.message).join("；")}</span>}
           </div>
         )}
 
@@ -911,6 +1304,7 @@ export function NoteEditor() {
               title={title}
               body={body}
               tags={note.tags}
+              localItems={localWorkspace?.items.map(localItemToItem)}
             />
 
             {/* Text editor */}
@@ -920,9 +1314,36 @@ export function NoteEditor() {
                 <NoteImageStrip
                   itemIds={note.item_ids?.length ? note.item_ids : (note.item_id ? [note.item_id] : [])}
                   noteId={noteId}
-                  onItemIdsChange={(_ids) => qc.invalidateQueries({ queryKey: ["note", noteId] })}
-                  readOnly={localReadOnly}
+                  localItems={localWorkspace?.items.map(localItemToItem)}
+                  onItemIdsChange={async (itemIds) => {
+                    const saveEpoch = saveEpochRef.current;
+                    if (localMode) {
+                      if (!noteItemsWrite.available) throw new Error(`${noteItemsWrite.reason}。${noteItemsWrite.nextStep}`);
+                      if (accountId === null) throw new Error("当前账号尚未就绪");
+                      const updated = await updateLocalNoteItems({
+                        noteId,
+                        accountPoolId: accountId,
+                        expectedVersion: noteVersionRef.current,
+                        itemIds,
+                      });
+                      if (saveEpoch !== saveEpochRef.current) return;
+                      noteVersionRef.current = updated.contentVersion;
+                      setNoteVersion(updated.contentVersion);
+                      await qc.invalidateQueries({ queryKey: ["local-note", scopeKey, noteId] });
+                      await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
+                    } else {
+                      await api.patch(`/api/content/${noteId}`, { item_ids: itemIds });
+                      await qc.invalidateQueries({ queryKey: ["note", noteId] });
+                    }
+                  }}
+                  readOnly={false}
+                  allowAdd={!localMode}
                 />
+                {localMode && (
+                  <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">
+                    本地模式支持当前账号素材的关联、排序与移除；新增素材导入仍待迁移。
+                  </p>
+                )}
 
                 {/* Title */}
                 <input
@@ -932,7 +1353,7 @@ export function NoteEditor() {
                     setTitle(e.target.value);
                     scheduleAutoSave(e.target.value, body, tagsInput);
                   }}
-                  readOnly={localReadOnly}
+                  readOnly={false}
                   placeholder="笔记标题..."
                   className="w-full text-xl font-semibold text-zinc-900 outline-none bg-transparent placeholder:text-zinc-300 mb-3"
                 />
@@ -947,7 +1368,7 @@ export function NoteEditor() {
                 }}
                 tagsLength={tagsInput.length}
                 className="flex-1 min-h-0"
-                readOnly={localReadOnly}
+                readOnly={false}
               />
 
               {/* 话题标签 — 固定在底部，紧凑 */}
@@ -963,7 +1384,7 @@ export function NoteEditor() {
                     setTagsInput(e.target.value);
                     scheduleAutoSave(title, body, e.target.value);
                   }}
-                  readOnly={localReadOnly}
+                  readOnly={false}
                   placeholder="#出租屋改造 #租房好物 ..."
                   className="w-full text-xs text-[#ff2442] outline-none bg-transparent placeholder:text-zinc-300 leading-snug"
                 />
@@ -981,14 +1402,29 @@ export function NoteEditor() {
                       return (
                         <button
                           key={t.key}
-                          disabled={!t.available || localReadOnly}
+                          disabled={!t.available}
                           onClick={async () => {
                             if (!t.available) return;
                             setNoteType(t.key);
                             try {
-                              await api.patch(`/api/content/${noteId}`, { note_type: t.key });
-                              qc.invalidateQueries({ queryKey: ["note", noteId] });
-                            } catch {/* ignore */}
+                              if (localMode) {
+                                await enqueueSave({
+                                  title,
+                                  body,
+                                  tagsInput,
+                                  noteType: t.key,
+                                  itemIds: note.item_ids?.length ? note.item_ids : (note.item_id ? [note.item_id] : []),
+                                  epoch: saveEpochRef.current,
+                                  accountId,
+                                  noteId,
+                                });
+                              } else {
+                                await api.patch(`/api/content/${noteId}`, { note_type: t.key });
+                                qc.invalidateQueries({ queryKey: ["note", noteId] });
+                              }
+                            } catch (cause) {
+                              toast((cause as Error).message, "error");
+                            }
                           }}
                           title={t.description}
                           className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors ${
@@ -1016,14 +1452,29 @@ export function NoteEditor() {
                         {group.types.map((t) => (
                           <button
                             key={t.key}
-                            disabled={!t.available || localReadOnly}
-                            onClick={async () => {
-                              if (!t.available) return;
-                              setNoteType(t.key);
-                              try {
+                            disabled={!t.available}
+                          onClick={async () => {
+                            if (!t.available) return;
+                            setNoteType(t.key);
+                            try {
+                              if (localMode) {
+                                await enqueueSave({
+                                  title,
+                                  body,
+                                  tagsInput,
+                                  noteType: t.key,
+                                  itemIds: note.item_ids?.length ? note.item_ids : (note.item_id ? [note.item_id] : []),
+                                  epoch: saveEpochRef.current,
+                                  accountId,
+                                  noteId,
+                                });
+                              } else {
                                 await api.patch(`/api/content/${noteId}`, { note_type: t.key });
                                 qc.invalidateQueries({ queryKey: ["note", noteId] });
-                              } catch {/* ignore */}
+                              }
+                            } catch (cause) {
+                              toast((cause as Error).message, "error");
+                            }
                             }}
                             title={t.description}
                             className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors ${
@@ -1052,26 +1503,37 @@ export function NoteEditor() {
         <AIPanel
           noteId={noteId}
           itemId={note.item_id}
+          accountId={accountId}
+          available={aiGenerate.available}
+          unavailableReason={aiGenerate.reason}
+          unavailableNextStep={aiGenerate.nextStep}
+          sourceNotice={`AI 提案仅基于当前笔记、已选素材和已注入经验；只有带正文的真实来源才可用于摘要。${lastAIProposal?.status === "conflict" ? "上次提案版本已变化，未覆盖原文。" : ""}`}
           onApply={handleAIApply}
           onApplyTitle={(t) => {
-            setTitle(t);
-            scheduleAutoSave(t, body, tagsInput);
+            adoptAIProposal("title", t, () => {
+              setTitle(t);
+              scheduleAutoSave(t, body, tagsInput);
+            });
           }}
           onApplyTags={(tags) => {
-            setTagsInput(tags);
-            scheduleAutoSave(title, body, tags);
+            adoptAIProposal("tags", tags, () => {
+              setTagsInput(tags);
+              scheduleAutoSave(title, body, tags);
+            });
           }}
           onApplyBody={(text, mode) => {
-            const newBody = mode === "replace" ? text : (body ? body + "\n\n" + text : text);
-            setBody(newBody);
-            scheduleAutoSave(title, newBody, tagsInput);
+            adoptAIProposal("body", text, () => {
+              const newBody = mode === "replace" ? text : (body ? body + "\n\n" + text : text);
+              setBody(newBody);
+              scheduleAutoSave(title, newBody, tagsInput);
+            });
           }}
           onClose={() => setShowAI(false)}
         />
       )}
       {showPrompt && prompt && (
         <div
-          className="border-l border-zinc-100 bg-white flex flex-col shrink-0 relative select-none"
+          className="creator-note-aux-panel creator-note-prompt-panel border-l border-zinc-100 bg-white flex flex-col shrink-0 relative select-none"
           style={{ width: promptWidth, cursor: promptDragging ? "col-resize" : undefined }}
         >
           {/* 拖拽条 */}
@@ -1091,7 +1553,7 @@ export function NoteEditor() {
               <FileText size={14} className="text-[#ff2442]" />
               创作 Prompt
             </div>
-            <button onClick={() => setShowPrompt(false)} className="text-zinc-400 hover:text-zinc-700 text-xs">
+            <button onClick={() => setShowPrompt(false)} aria-label="收起创作 Prompt" className="creator-note-aux-collapse text-zinc-400 hover:text-zinc-700 text-xs">
               收起
             </button>
           </div>
@@ -1374,21 +1836,25 @@ async function uploadAndLink(
 // ── NoteImagePanel ────────────────────────────────────────────────────────────
 // 仿小红书编辑页左侧预览区：「笔记预览」和「封面预览」两种视图切换
 
-function NoteImagePanel({ itemIds, title, body, tags }: {
+function NoteImagePanel({ itemIds, title, body, tags, localItems }: {
   itemIds: number[];
   title: string;
   body: string;
   tags: string[];
+  localItems?: Item[];
 }) {
   const { imgStyle } = useHDRSetting();
+  const localItemsById = new Map((localItems ?? []).map((item) => [item.id, item]));
   const results = useQueries({
     queries: itemIds.map((id) => ({
       queryKey: ["item", id],
       queryFn: () => api.get(`/api/library/${id}`) as Promise<Item>,
-      enabled: !!id,
+      enabled: !!id && !localItemsById.has(id),
     })),
   });
-  const images = results.map((r) => r.data).filter((d): d is Item => !!d);
+  const images = itemIds
+    .map((id, index) => localItemsById.get(id) ?? results[index]?.data)
+    .filter((d): d is Item => !!d);
 
   // 拉取账号人设（头像 + 名称）
   const { data: profile } = useQuery({
@@ -1657,11 +2123,13 @@ function NoteImagePanel({ itemIds, title, body, tags }: {
 // ── NoteImageStrip ────────────────────────────────────────────────────────────
 // 右侧编辑区标题上方的横向图片缩略条，仿小红书发布页多图选择器
 
-function NoteImageStrip({ itemIds, noteId, onItemIdsChange, readOnly = false }: {
+function NoteImageStrip({ itemIds, noteId, localItems, onItemIdsChange, readOnly = false, allowAdd = true }: {
   itemIds: number[];
   noteId: number;
-  onItemIdsChange: (ids: number[]) => void;
+  localItems?: Item[];
+  onItemIdsChange: (ids: number[]) => Promise<void> | void;
   readOnly?: boolean;
+  allowAdd?: boolean;
 }) {
   const { imgStyle } = useHDRSetting();
   const { toast } = useToast();
@@ -1675,14 +2143,20 @@ function NoteImageStrip({ itemIds, noteId, onItemIdsChange, readOnly = false }: 
   const dragIdxRef = useRef<number | null>(null);
   const overIdxRef = useRef<number | null>(null);
   const isDraggingRef = useRef(false);
+  const localItemsById = new Map((localItems ?? []).map((item) => [item.id, item]));
+  async function persistItemIds(nextItemIds: number[]) {
+    await onItemIdsChange(nextItemIds);
+  }
   const results = useQueries({
     queries: itemIds.map((id) => ({
       queryKey: ["item", id],
       queryFn: () => api.get(`/api/library/${id}`) as Promise<Item>,
-      enabled: !!id,
+      enabled: !!id && !localItemsById.has(id),
     })),
   });
-  const images = results.map((r) => r.data).filter((d): d is Item => !!d);
+  const images = itemIds
+    .map((id, index) => localItemsById.get(id) ?? results[index]?.data)
+    .filter((d): d is Item => !!d);
 
   // ESC 关闭灯箱
   useEffect(() => {
@@ -1741,8 +2215,7 @@ function NoteImageStrip({ itemIds, noteId, onItemIdsChange, readOnly = false }: 
                 const [moved] = newIds.splice(from, 1);
                 newIds.splice(to, 0, moved);
                 try {
-                  await api.patch(`/api/content/${noteId}`, { item_ids: newIds });
-                  onItemIdsChange(newIds);
+                  await persistItemIds(newIds);
                 } catch (e: unknown) { toast((e as Error).message, "error"); }
               };
 
@@ -1775,15 +2248,14 @@ function NoteImageStrip({ itemIds, noteId, onItemIdsChange, readOnly = false }: 
               onClick={async () => {
                 const newIds = itemIds.filter((id) => id !== img.id);
                 try {
-                  await api.patch(`/api/content/${noteId}`, { item_ids: newIds });
-                  onItemIdsChange(newIds);
+                  await persistItemIds(newIds);
                 } catch (e: unknown) { toast((e as Error).message, "error"); }
               }}
               className="absolute -top-1 -right-1 z-10 w-5 h-5 rounded-full bg-zinc-800 text-white text-[10px] items-center justify-center hidden group-hover:flex hover:bg-red-500 transition-colors"
             >✕</button>}
           </div>
         ))}
-        {images.length < 9 && !readOnly && (
+        {images.length < 9 && !readOnly && allowAdd && (
           <>
             <input ref={fileRef} type="file" accept="image/*" className="hidden"
               onChange={async (e) => {
@@ -1832,8 +2304,7 @@ function NoteImageStrip({ itemIds, noteId, onItemIdsChange, readOnly = false }: 
           onConfirm={async (newIds) => {
             const merged = [...itemIds, ...newIds].slice(0, 9);
             try {
-              await api.patch(`/api/content/${noteId}`, { item_ids: merged });
-              onItemIdsChange(merged);
+              await persistItemIds(merged);
             } catch (e: unknown) { toast((e as Error).message, "error"); }
           }}
         />

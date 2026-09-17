@@ -9,6 +9,7 @@ import {
   readLocalAccountPool,
   type LocalPoolAccount,
 } from "../lib/local";
+import { emitAccountChanged } from "../lib/accountContext";
 import { useToast } from "./Toast";
 
 interface PoolAccount {
@@ -67,6 +68,8 @@ export default function ActiveAccountSwitcher() {
       } else {
         await api.post(`/api/account-pool/${id}/activate`, {});
       }
+      // 先通知各页面清理旧选中项/未完成的本地回调，再让对应 query key 重新读取。
+      emitAccountChanged(id);
       toast("已切换激活账号", "success");
       qc.invalidateQueries({ queryKey: IS_TAURI_RUNTIME ? ["local-account-pool"] : ["account-pool"] });
       if (IS_TAURI_RUNTIME) qc.invalidateQueries({ queryKey: ["local-dashboard"] });

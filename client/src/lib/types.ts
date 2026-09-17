@@ -4,6 +4,7 @@ export interface Item {
   id: number;
   title: string;
   image_path: string;
+  thumbnail_path?: string;
   style?: string;
   material?: string;
   scene?: string;
@@ -13,6 +14,12 @@ export interface Item {
   note_count: number;
   created_at?: string;
   deleted_at?: string;
+  /** 本地图片内容版本；用于缓存失效，旧 HTTP 响应缺失时按 1 兼容。 */
+  image_version?: number;
+  /** 本地文件内容摘要；导入/替换后变化时使图片缓存失效。 */
+  content_hash?: string;
+  /** 本地素材元数据乐观并发版本；不改变图片内容缓存版本。 */
+  metadata_version?: number;
 }
 
 export interface Note {
@@ -36,6 +43,9 @@ export interface Note {
   use_as_reference?: boolean;
   created_at?: string;
   updated_at?: string;
+  deleted_at?: string;
+  /** 本地 SQLite 乐观并发版本；旧 HTTP 响应没有此字段时按 1 兼容。 */
+  content_version?: number;
 }
 
 export interface Profile {

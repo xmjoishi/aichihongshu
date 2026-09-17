@@ -4,17 +4,25 @@ import { useAIStream } from "../hooks/useAIStream";
 import { MdContent } from "./MdContent";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { IS_TAURI_RUNTIME } from "../lib/local";
+import { probeLocalAIProviders, type LocalAIProviderStatus } from "../lib/localAi";
 import { usePanelResize } from "../hooks/usePanelResize";
 
 interface AIPanelProps {
   noteId?: number;
   itemId?: number;
+  accountId?: number | null;
   systemExtra?: string;
+  /** 面板可以在能力未接入时打开，用于展示准确的不可用原因。 */
+  available?: boolean;
+  unavailableReason?: string;
+  unavailableNextStep?: string;
   onApply?: (text: string) => void;
   onApplyTitle?: (title: string) => void;
   onApplyTags?: (tags: string) => void;
   onApplyBody?: (text: string, mode: "replace" | "append") => void;
   onClose?: () => void;
+  sourceNotice?: string;
 }
 
 interface QuickAction {
@@ -208,18 +216,43 @@ function StructuredOutput({
 
 // ── 主组件 ────────────────────────────────────────────────────────
 export default function AIPanel({
-  noteId, itemId, systemExtra,
-  onApply, onApplyTitle, onApplyTags, onApplyBody, onClose,
+  noteId, itemId, accountId, systemExtra,
+  available = true, unavailableReason, unavailableNextStep,
+  onApply, onApplyTitle, onApplyTags, onApplyBody, onClose, sourceNotice,
 }: AIPanelProps) {
-  const { messages, streaming, loading, error, send, clear, abort } = useAIStream({ noteId, itemId, systemExtra });
+  const { messages, streaming, loading, error, send, clear, abort } = useAIStream({ noteId, itemId, accountId, systemExtra });
   const [input, setInput] = useState("");
   const [copied, setCopied] = useState<number | null>(null);
+  const [localProvider, setLocalProvider] = useState<LocalAIProviderStatus | null>(null);
+  const [checkingLocalProvider, setCheckingLocalProvider] = useState(IS_TAURI_RUNTIME && !available);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!IS_TAURI_RUNTIME || available) return;
+    let active = true;
+    setCheckingLocalProvider(true);
+    probeLocalAIProviders()
+      .then((providers) => {
+        if (!active) return;
+        setLocalProvider(providers.find((provider) => provider.state === "present") ?? null);
+      })
+      .catch(() => {
+        if (active) setLocalProvider(null);
+      })
+      .finally(() => {
+        if (active) setCheckingLocalProvider(false);
+      });
+    return () => { active = false; };
+  }, [available]);
+
+  const localReady = localProvider?.state === "present";
+  const aiReady = available || localReady;
 
   // 从后端加载快捷操作
   const { data: quickActions = [] } = useQuery<QuickAction[]>({
     queryKey: ["quick-actions"],
     queryFn: () => api.get("/api/settings/prompts"),
+    enabled: available && !IS_TAURI_RUNTIME,
     staleTime: 30_000,
   });
   const enabledActions = quickActions.filter((a) => a.enabled);
@@ -228,16 +261,19 @@ export default function AIPanel({
   const { data: knowledgeRules = [] } = useQuery<{ enabled: boolean }[]>({
     queryKey: ["knowledge-rules"],
     queryFn: () => api.get("/api/knowledge/rules"),
+    enabled: available && !IS_TAURI_RUNTIME,
     staleTime: 60_000,
   });
   const { data: knowledgeSamples = [] } = useQuery<{ use_as_reference: boolean }[]>({
     queryKey: ["knowledge-my-samples"],
     queryFn: () => api.get("/api/knowledge/my-samples"),
+    enabled: available && !IS_TAURI_RUNTIME,
     staleTime: 60_000,
   });
   const { data: knowledgeRefGroups = [] } = useQuery<{ notes: unknown[] }[]>({
     queryKey: ["knowledge-ref-samples"],
     queryFn: () => api.get("/api/knowledge/ref-samples"),
+    enabled: available && !IS_TAURI_RUNTIME,
     staleTime: 60_000,
   });
   const knowledgeSummary = (() => {
@@ -265,7 +301,7 @@ export default function AIPanel({
   }, [messages, streaming]);
 
   function handleSend() {
-    if (!input.trim()) return;
+    if (!aiReady || !input.trim()) return;
     send(input);
     setInput("");
   }
@@ -282,7 +318,7 @@ export default function AIPanel({
 
   return (
     <div
-      className="flex flex-col h-full bg-white border-l border-zinc-100 relative shrink-0 select-none"
+      className="creator-note-aux-panel creator-note-ai-panel flex flex-col h-full bg-white border-l border-zinc-100 relative shrink-0 select-none"
       style={{ width, cursor: dragging ? "col-resize" : undefined }}
     >
       {/* 左侧拖拽条：视觉 4px，热区 12px（负 margin 扩展左侧） */}
@@ -306,19 +342,53 @@ export default function AIPanel({
           <Sparkles size={15} className="text-[#ff2442]" />
           <span className="text-sm font-semibold text-zinc-800">AI 助手</span>
         </div>
-        <div className="flex gap-1">
+        <div className="flex items-center gap-1">
           {messages.length > 0 && (
             <button onClick={clear} title="清空对话" className="p-1 text-zinc-400 hover:text-zinc-600 rounded transition-colors">
               <RotateCcw size={13} />
             </button>
           )}
           {onClose && (
-            <button onClick={onClose} className="p-1 text-zinc-400 hover:text-zinc-600 rounded transition-colors">
-              <X size={14} />
-            </button>
+            <>
+              <button
+                onClick={onClose}
+                aria-label="收起 AI 助手"
+                className="creator-note-aux-collapse px-1.5 py-1 text-[11px] text-zinc-400 hover:text-zinc-700 rounded transition-colors"
+              >
+                收起
+              </button>
+              <button onClick={onClose} aria-label="关闭 AI 助手" className="p-1 text-zinc-400 hover:text-zinc-600 rounded transition-colors">
+                <X size={14} />
+              </button>
+            </>
           )}
         </div>
       </div>
+
+      {sourceNotice && (
+        <div className="px-4 py-1.5 bg-[var(--color-selected)] border-b border-[var(--color-border)] shrink-0">
+          <p className="text-[10px] text-[var(--color-text-secondary)] leading-relaxed">{sourceNotice}</p>
+        </div>
+      )}
+
+      {!aiReady && (
+        <div className="mx-3 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 shrink-0" role="status">
+          <p className="text-xs font-medium text-amber-800">AI 生成暂未可用</p>
+          <p className="mt-1 text-[10px] leading-relaxed text-amber-700">
+            {checkingLocalProvider ? "正在检测本地 AI CLI" : unavailableReason ?? "当前运行环境没有可用的 AI Provider"}。
+            {unavailableNextStep ? ` ${unavailableNextStep}。` : ""}
+          </p>
+        </div>
+      )}
+
+      {localReady && (
+        <div className="mx-3 mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 shrink-0" role="status">
+          <p className="text-xs font-medium text-emerald-800">本地 AI CLI：{localProvider.label}</p>
+          <p className="mt-1 text-[10px] leading-relaxed text-emerald-700">
+            已发现命令，发送一次真实文本后才会确认文本能力；图片和工具能力仍未声明。
+          </p>
+        </div>
+      )}
 
       {/* 经验库注入状态 */}
       {knowledgeSummary && (
@@ -410,7 +480,7 @@ export default function AIPanel({
       </div>
 
       {/* 快捷操作 — 常驻横向滚动，位于输入框上方 */}
-      {enabledActions.length > 0 && (
+      {available && enabledActions.length > 0 && (
         <QuickActionBar actions={enabledActions} onSend={send} loading={loading} hasMessages={messages.length > 0} />
       )}
 
@@ -421,11 +491,12 @@ export default function AIPanel({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            disabled={!aiReady}
             placeholder="输入指令… (Enter 发送，Shift+Enter 换行)"
             rows={2}
             className="flex-1 border border-zinc-200 rounded-xl px-3 py-2 text-xs resize-none
                        focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442]
-                       placeholder:text-zinc-300 leading-relaxed"
+                       placeholder:text-zinc-300 leading-relaxed disabled:bg-zinc-50 disabled:text-zinc-400 disabled:cursor-not-allowed"
           />
           {loading ? (
             <button onClick={abort} className="p-2 text-zinc-400 hover:text-red-500 transition-colors shrink-0" title="停止生成">
@@ -434,7 +505,7 @@ export default function AIPanel({
           ) : (
             <button
               onClick={handleSend}
-              disabled={!input.trim()}
+              disabled={!aiReady || !input.trim()}
               className="p-2 bg-[#ff2442] text-white rounded-xl hover:bg-[#e01f3a] disabled:opacity-30 transition-colors shrink-0"
             >
               <Send size={15} />

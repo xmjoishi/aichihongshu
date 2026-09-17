@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
   LayoutGrid, FileText, Users, User, BarChart2, Settings, TrendingUp, Sparkles,
-  ShieldCheck, PanelLeftClose, PanelLeftOpen,
+  ShieldCheck, PanelLeftClose, PanelLeftOpen, Search, Send,
 } from "lucide-react";
 
 // 顶部：当前运营账号上下文（跟着激活账号切换）
@@ -10,7 +10,9 @@ const accountNav = [
   { to: "/", icon: BarChart2, label: "看板" },
   { to: "/library", icon: LayoutGrid, label: "图库" },
   { to: "/notes", icon: FileText, label: "笔记" },
+  { to: "/publish", icon: Send, label: "发布" },
   { to: "/inspire", icon: Sparkles, label: "灵感" },
+  { to: "/search", icon: Search, label: "搜索" },
   { to: "/data", icon: TrendingUp, label: "数据" },
   { to: "/accounts", icon: Users, label: "榜样" },
   { to: "/profile", icon: User, label: "账号" },

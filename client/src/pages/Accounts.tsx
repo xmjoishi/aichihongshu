@@ -14,10 +14,15 @@ import remarkGfm from "remark-gfm";
 import { usePanelResize } from "../hooks/usePanelResize";
 import {
   IS_TAURI_RUNTIME,
+  createLocalReferenceAccount,
+  deleteLocalReferenceAccount,
   localReferenceAccountToReferenceAccount,
   readLocalWorkspaceSnapshot,
+  updateLocalReferenceAccount,
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
+import { useAccountChange, useAccountContext } from "../lib/accountContext";
+import { useSearchParams } from "react-router-dom";
 
 // ── 解析 content_style JSON → keywords 数组 ─────────────────────────────────
 function stripFence(raw: string): string {
@@ -77,7 +82,7 @@ function parseStyleFull(raw?: string): { keywords: string[]; tone?: string; form
 }
 
 // ── 爬虫触发 Modal ──────────────────────────────────────────────────────────
-function CrawlerModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+function CrawlerModal({ onClose, onDone, accountPoolId }: { onClose: () => void; onDone: () => void; accountPoolId: number | null }) {
   const [url, setUrl] = useState("");
   const [name, setName] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
@@ -94,10 +99,32 @@ function CrawlerModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
 
   function start() {
     if (!url.trim()) return;
+    if (IS_TAURI_RUNTIME && accountPoolId === null) return;
     setLogs([]);
     setRunning(true);
     setDone(false);
     setDetectedName(null);
+
+    if (IS_TAURI_RUNTIME) {
+      if (accountPoolId === null) return;
+      void createLocalReferenceAccount({
+        accountPoolId,
+        accountId: url.trim(),
+        name: name.trim() || null,
+        followers: 0,
+        })
+        .then(() => {
+          setLogs(["已保存到当前账号的本地榜样库。平台主页抓取仍需浏览器链路。"]);
+          setRunning(false);
+          setDone(true);
+          onDone();
+        })
+        .catch((error) => {
+          setRunning(false);
+          setLogs([`保存失败: ${(error as Error).message}`]);
+        });
+      return;
+    }
 
     // v0.2: stream 启动前用 confirmAndRetry 处理 428 风险确认
     confirmAndRetry((ack) => {
@@ -138,7 +165,7 @@ function CrawlerModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
 
   function abort() { ctrlRef.current?.abort(); setRunning(false); }
 
-  const urlWarning = url.trim() && !url.trim().includes("xsec_token=");
+  const urlWarning = !IS_TAURI_RUNTIME && url.trim() && !url.trim().includes("xsec_token=");
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
@@ -150,11 +177,13 @@ function CrawlerModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
         </div>
         <div className="p-4 space-y-3">
           <div>
-            <label className="text-xs text-zinc-500 block mb-1">账号主页 URL</label>
+            <label className="text-xs text-zinc-500 block mb-1">{IS_TAURI_RUNTIME ? "账号 ID 或主页标识" : "账号主页 URL"}</label>
             <input type="text" value={url} onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://www.xiaohongshu.com/user/profile/...?xsec_token=..."
+              placeholder={IS_TAURI_RUNTIME ? "例如：creator_123 或 xhs 用户 ID" : "https://www.xiaohongshu.com/user/profile/...?xsec_token=..."}
               className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442] ${urlWarning ? "border-amber-400 bg-amber-50" : "border-zinc-200"}`} />
-            {urlWarning ? (
+            {IS_TAURI_RUNTIME ? (
+              <p className="text-xs text-zinc-400 mt-1">只保存账号标识、名称和手工元数据；不会复制 Cookie，也不会自动抓取平台资料。</p>
+            ) : urlWarning ? (
               <p className="text-xs text-amber-600 mt-1 font-medium">
                 ⚠️ URL 缺少 xsec_token！直接输入账号 URL 小红书会返回自己的数据。<br />
                 正确做法：在爬虫浏览器里<strong>搜索</strong>目标账号名 → 从搜索结果点击进入主页 → 再从地址栏复制完整 URL。
@@ -171,7 +200,7 @@ function CrawlerModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
               placeholder="留空则自动识别"
               className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442]" />
           </div>
-          {!running && !done && (
+          {!IS_TAURI_RUNTIME && !running && !done && (
             <p className="text-xs text-zinc-400 bg-zinc-50 rounded-lg px-3 py-2">
               首次运行会打开浏览器，需要扫码登录小红书。登录态会缓存，后续无需重复扫码。
             </p>
@@ -205,7 +234,7 @@ function CrawlerModal({ onClose, onDone }: { onClose: () => void; onDone: () => 
             ) : (
               <button onClick={done ? onClose : start} disabled={(!url.trim() && !done) || running}
                 className="flex items-center gap-1.5 text-sm bg-[#ff2442] text-white px-4 py-1.5 rounded-lg hover:bg-[#e01f3a] disabled:opacity-40">
-                {done ? "完成" : urlWarning ? "忽略警告，强行导入" : "开始导入"}
+                {done ? "完成" : IS_TAURI_RUNTIME ? "保存到本地" : urlWarning ? "忽略警告，强行导入" : "开始导入"}
               </button>
             )}
           </div>
@@ -346,6 +375,7 @@ function AccountDrawer({
   onUpdated: () => void;
 }) {
   const { toast } = useToast();
+  const { accountId } = useAccountContext();
   const { width, dragging, onDragStart } = usePanelResize({
     defaultWidth: 400,
     min: 300,
@@ -363,10 +393,14 @@ function AccountDrawer({
   async function saveInfo() {
     setSavingInfo(true);
     try {
-      await api.patch(`/api/accounts/${acc.account_id}`, {
-        name: editName.trim() || undefined,
-        followers: parseInt(editFollowers, 10) || 0,
-      });
+      const name = editName.trim() || null;
+      const followers = parseInt(editFollowers, 10) || 0;
+      if (IS_TAURI_RUNTIME) {
+        if (accountId === null) throw new Error("当前账号尚未就绪");
+        await updateLocalReferenceAccount({ id: acc.id, accountPoolId: accountId, accountId: acc.account_id, name, followers });
+      } else {
+        await api.patch(`/api/accounts/${acc.account_id}`, { name: name || undefined, followers });
+      }
       toast("已保存", "success");
       setEditingInfo(false);
       onUpdated();
@@ -408,7 +442,12 @@ function AccountDrawer({
   async function saveStyle() {
     setSavingStyle(true);
     try {
-      await api.patch(`/api/accounts/${acc.account_id}`, { content_style: styleText });
+      if (IS_TAURI_RUNTIME) {
+        if (accountId === null) throw new Error("当前账号尚未就绪");
+        await updateLocalReferenceAccount({ id: acc.id, accountPoolId: accountId, accountId: acc.account_id, name: acc.name ?? null, followers: acc.followers, contentStyle: styleText });
+      } else {
+        await api.patch(`/api/accounts/${acc.account_id}`, { content_style: styleText });
+      }
       toast("风格描述已保存", "success");
       setEditingStyle(false);
       onUpdated();
@@ -420,6 +459,10 @@ function AccountDrawer({
   }
 
   function startAnalyze() {
+    if (IS_TAURI_RUNTIME) {
+      toast("本地榜样账号暂未接入平台资料分析", "info");
+      return;
+    }
     setAnalyzing(true);
     setAnalyzeStream("");
     setEditingStyle(false);
@@ -443,6 +486,10 @@ function AccountDrawer({
   }
 
   function loadInsights(refresh = false) {
+    if (IS_TAURI_RUNTIME) {
+      toast("本地榜样账号暂未接入平台学习要点生成", "info");
+      return;
+    }
     setInsightsLoading(true);
     if (refresh) setInsights("");
     insightsCtrlRef.current = api.stream(
@@ -461,6 +508,10 @@ function AccountDrawer({
   }
 
   async function generateImitate(note: { title: string; likes: number }) {
+    if (IS_TAURI_RUNTIME) {
+      toast("本地榜样账号暂未接入仿写生成", "info");
+      return;
+    }
     setImitateNote(note);
     setImitateResult("");
     setImitateLoading(true);
@@ -479,6 +530,10 @@ function AccountDrawer({
   }
 
   async function addToRefLib(note: { title: string; likes: number }, idx: number) {
+    if (IS_TAURI_RUNTIME) {
+      toast("本地榜样样本暂未接入经验库", "info");
+      return;
+    }
     try {
       await api.post("/api/knowledge/ref-samples", {
         account_id: acc.account_id,
@@ -866,8 +921,15 @@ function AccountDrawer({
 export default function Accounts() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const { accountId, scopeKey } = useAccountContext();
+  const [searchParams] = useSearchParams();
   const [showModal, setShowModal] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  useAccountChange(() => {
+    setShowModal(false);
+    setSelectedId(null);
+  });
 
   const { data: remoteAccounts = [], isLoading: remoteLoading } = useQuery<ReferenceAccount[]>({
     queryKey: ["accounts"],
@@ -875,9 +937,9 @@ export default function Accounts() {
     enabled: !IS_TAURI_RUNTIME,
   });
   const { data: localWorkspace, isLoading: localLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-accounts"],
-    queryFn: readLocalWorkspaceSnapshot,
-    enabled: IS_TAURI_RUNTIME,
+    queryKey: ["local-accounts", scopeKey],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
   const accounts = IS_TAURI_RUNTIME
     ? (localWorkspace?.referenceAccounts ?? []).map(localReferenceAccountToReferenceAccount)
@@ -885,16 +947,30 @@ export default function Accounts() {
   const isLoading = IS_TAURI_RUNTIME ? localLoading : remoteLoading;
 
   const deleteMutation = useMutation({
-    mutationFn: (account_id: string) => api.delete(`/api/accounts/${account_id}`),
-    onSuccess: (_, account_id) => {
-      qc.invalidateQueries({ queryKey: ["accounts"] });
-      if (selectedId === account_id) setSelectedId(null);
+    mutationFn: (account: ReferenceAccount) => {
+      if (IS_TAURI_RUNTIME) {
+        if (accountId === null) throw new Error("当前账号尚未就绪");
+        return deleteLocalReferenceAccount(account.id, accountId);
+      }
+      return api.delete(`/api/accounts/${account.account_id}`);
+    },
+    onSuccess: (_, account) => {
+      if (IS_TAURI_RUNTIME) qc.invalidateQueries({ queryKey: ["local-accounts", scopeKey] });
+      else qc.invalidateQueries({ queryKey: ["accounts"] });
+      if (selectedId === account.account_id) setSelectedId(null);
       toast("账号已删除", "success");
     },
-    onError: () => toast("删除失败", "error"),
+    onError: (error) => toast(`删除失败：${(error as Error).message}`, "error"),
   });
 
   const selectedAcc = accounts.find((a) => a.account_id === selectedId) ?? null;
+
+  useEffect(() => {
+    const target = searchParams.get("account");
+    if (!target) return;
+    const account = accounts.find((candidate) => candidate.id.toString() === target || candidate.account_id === target);
+    if (account) setSelectedId(account.account_id);
+  }, [accounts, searchParams]);
 
   if (isLoading) return <Spinner />;
 
@@ -925,7 +1001,7 @@ export default function Accounts() {
                   acc={acc}
                   selected={selectedId === acc.account_id}
                   onClick={() => setSelectedId(selectedId === acc.account_id ? null : acc.account_id)}
-                  onDelete={() => deleteMutation.mutate(acc.account_id)}
+                  onDelete={() => deleteMutation.mutate(acc)}
                 />
               ))}
             </div>
@@ -939,15 +1015,16 @@ export default function Accounts() {
           key={selectedAcc.account_id}
           acc={selectedAcc}
           onClose={() => setSelectedId(null)}
-          onUpdated={() => qc.invalidateQueries({ queryKey: ["accounts"] })}
+          onUpdated={() => qc.invalidateQueries({ queryKey: IS_TAURI_RUNTIME ? ["local-accounts", scopeKey] : ["accounts"] })}
         />
       )}
 
       {showModal && (
         <CrawlerModal
           onClose={() => setShowModal(false)}
+          accountPoolId={accountId}
           onDone={() => {
-            qc.invalidateQueries({ queryKey: ["accounts"] });
+            qc.invalidateQueries({ queryKey: IS_TAURI_RUNTIME ? ["local-accounts", scopeKey] : ["accounts"] });
             toast("账号数据已导入", "success");
           }}
         />

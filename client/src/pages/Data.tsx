@@ -21,6 +21,7 @@ import {
   readLocalWorkspaceSnapshot,
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
+import { useAccountChange, useAccountContext } from "../lib/accountContext";
 
 // ─── 工具函数 ───────────────────────────────────────────────
 
@@ -487,12 +488,14 @@ function buildSystemExtra(summary: Analytics | null, insights: Insights | null):
 function DataAIDrawer({
   open, onClose,
   summary, insights,
+  accountId,
 }: {
   open: boolean; onClose: () => void;
   summary: Analytics | null; insights: Insights | null;
+  accountId: number | null;
 }) {
   const systemExtra = buildSystemExtra(summary, insights);
-  const { messages, streaming, loading, send, abort } = useAIStream({ systemExtra });
+  const { messages, streaming, loading, send, abort } = useAIStream({ systemExtra, accountId });
   const { width, dragging, onDragStart } = usePanelResize({
     defaultWidth: 384,
     min: 300,
@@ -670,6 +673,11 @@ const tabs: { key: Tab; label: string }[] = [
 export default function Data() {
   const [tab, setTab] = useState<Tab>("overview");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const { accountId, scopeKey } = useAccountContext();
+  useAccountChange(() => {
+    setTab("overview");
+    setDrawerOpen(false);
+  });
 
   // ── 基础实体 ──────────────────────────────────────────────────
   const { data: remoteNotes = [] } = useQuery<Note[]>({
@@ -683,9 +691,9 @@ export default function Data() {
     enabled: !IS_TAURI_RUNTIME,
   });
   const { data: localWorkspace } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-data"],
-    queryFn: readLocalWorkspaceSnapshot,
-    enabled: IS_TAURI_RUNTIME,
+    queryKey: ["local-data", scopeKey, tab],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
   const allNotes = IS_TAURI_RUNTIME
     ? (localWorkspace?.notes ?? []).map(localNoteToNote)
@@ -759,6 +767,7 @@ export default function Data() {
         onClose={() => setDrawerOpen(false)}
         summary={summary}
         insights={insights}
+        accountId={accountId}
       />
     </div>
   );

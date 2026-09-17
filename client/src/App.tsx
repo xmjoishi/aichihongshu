@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import Dashboard from "./pages/Dashboard";
 import Library from "./pages/Library";
@@ -9,6 +9,8 @@ import ProfilePage from "./pages/Profile";
 import Settings from "./pages/Settings";
 import Data from "./pages/Data";
 import Inspire from "./pages/Inspire";
+import WorkspaceSearch from "./pages/WorkspaceSearch";
+import Publish from "./pages/Publish";
 import { ToastProvider } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import ActiveAccountSwitcher from "./components/ActiveAccountSwitcher";
@@ -31,13 +33,14 @@ export default function App() {
                   <Route path="/library" element={<Library />} />
                   <Route path="/notes" element={<NoteList />} />
                   <Route path="/notes/:id" element={<NoteEditor />} />
-                  <Route path="/publish" element={<Navigate to="/notes" replace />} />
+                  <Route path="/publish" element={<Publish />} />
                   <Route path="/data" element={<Data />} />
                   <Route path="/accounts" element={<Accounts />} />
                   <Route path="/accounts/pool" element={<AccountPool />} />
                   <Route path="/profile" element={<ProfilePage />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route path="/inspire" element={<Inspire />} />
+                  <Route path="/search" element={<WorkspaceSearch />} />
                 </Routes>
               </div>
             </main>

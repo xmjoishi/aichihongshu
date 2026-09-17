@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   IS_TAURI_RUNTIME,
   readLocalRuntimeStatus,
@@ -6,22 +6,33 @@ import {
   type LocalRuntimeStatus as LocalRuntimeStatusData,
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
+import { useAccountChange, useAccountContext } from "../lib/accountContext";
 
 export default function LocalRuntimeStatus() {
+  const { accountId } = useAccountContext();
   const [runtime, setRuntime] = useState<LocalRuntimeStatusData | null>(null);
   const [snapshot, setSnapshot] = useState<LocalWorkspaceSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const requestSeqRef = useRef(0);
+
+  useAccountChange(() => {
+    requestSeqRef.current += 1;
+    setSnapshot(null);
+    setError(null);
+  });
 
   const refresh = useCallback(async () => {
-    if (!IS_TAURI_RUNTIME) return;
+    if (!IS_TAURI_RUNTIME || accountId === null) return;
+    const requestSeq = ++requestSeqRef.current;
     setLoading(true);
     setError(null);
     try {
       const [status, workspace] = await Promise.all([
         readLocalRuntimeStatus(),
-        readLocalWorkspaceSnapshot(),
+        readLocalWorkspaceSnapshot(accountId ?? undefined),
       ]);
+      if (requestSeq !== requestSeqRef.current) return;
       setRuntime(status);
       setSnapshot(workspace);
     } catch (cause) {
@@ -29,7 +40,7 @@ export default function LocalRuntimeStatus() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [accountId]);
 
   useEffect(() => {
     void refresh();

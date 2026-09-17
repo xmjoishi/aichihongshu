@@ -12,7 +12,18 @@ import { useHDRSetting } from "../hooks/useHDRSetting";
 import { useThemeSetting, type ThemePreference } from "../hooks/useThemeSetting";
 import { useNavigate } from "react-router-dom";
 import { Item } from "../lib/types";
-import { IS_TAURI_RUNTIME } from "../lib/local";
+import {
+  IS_TAURI_RUNTIME,
+  localItemToItem,
+  purgeLocalItems,
+  readLocalRuntimeStatus,
+  readLocalWorkspaceSnapshot,
+  restoreLocalItem,
+  type LocalRuntimeStatus,
+  type LocalWorkspaceSnapshot,
+} from "../lib/local";
+import { probeLocalAIProviders, type LocalAIProviderStatus } from "../lib/localAi";
+import { useAccountContext } from "../lib/accountContext";
 
 // ── 通用 Section 容器 ──────────────────────────────────────────────
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -75,10 +86,68 @@ export default function Settings() {
         <div className="max-w-2xl space-y-6">
           {activeTab === "general" && <GeneralTab />}
           {activeTab === "prompts" && <PromptsTab />}
-          {activeTab === "trash"   && <TrashSection />}
+          {activeTab === "trash"   && (IS_TAURI_RUNTIME ? <LocalTrashSection /> : <TrashSection />)}
         </div>
       </div>
     </div>
+  );
+}
+
+function LocalTrashSection() {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const { accountId, scopeKey } = useAccountContext();
+  const { data: workspace, isLoading } = useQuery<LocalWorkspaceSnapshot>({
+    queryKey: ["local-settings-trash", scopeKey],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    enabled: accountId !== null,
+  });
+  const items = (workspace?.trashItems ?? []).map(localItemToItem);
+
+  async function restore(id: number) {
+    if (accountId === null) return;
+    try {
+      await restoreLocalItem(id, accountId);
+      await qc.invalidateQueries({ queryKey: ["local-settings-trash", scopeKey] });
+      await qc.invalidateQueries({ queryKey: ["local-library", scopeKey] });
+      toast("已恢复到当前账号图库", "success");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), "error");
+    }
+  }
+
+  async function purge(id: number) {
+    if (accountId === null) return;
+    try {
+      const result = await purgeLocalItems([id], accountId);
+      await qc.invalidateQueries({ queryKey: ["local-settings-trash", scopeKey] });
+      await qc.invalidateQueries({ queryKey: ["local-library", scopeKey] });
+      toast(result.cleanupWarnings.length ? "记录已清理，部分文件需人工处理" : "已永久清理", result.cleanupWarnings.length ? "info" : "success");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), "error");
+    }
+  }
+
+  return (
+    <Section title={`本地回收站${items.length ? `（${items.length} 张素材）` : ""}`}>
+      <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
+        当前桌面端回收站按运营账号隔离。永久清理会检查笔记引用，并在文件落位失败时保留数据库记录。
+      </p>
+      {isLoading ? <Spinner /> : items.length === 0 ? (
+        <p className="py-6 text-center text-sm text-[var(--color-text-secondary)]">回收站为空</p>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item) => (
+            <div key={item.id} className="flex items-center gap-3 rounded-xl border border-[var(--color-border)] p-2.5">
+              <LocalImage itemId={item.id} src="" variant="thumbnail" alt={item.title} className="h-12 w-12 shrink-0 rounded-lg bg-zinc-100 object-cover" />
+              <p className="min-w-0 flex-1 truncate text-sm text-[var(--color-text-primary)]">{item.title}</p>
+              <button onClick={() => void restore(item.id)} className="rounded-lg px-2 py-1 text-xs text-amber-700 hover:bg-amber-50">恢复</button>
+              <button onClick={() => void purge(item.id)} className="rounded-lg px-2 py-1 text-xs text-red-600 hover:bg-red-50">永久清理</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
   );
 }
 
@@ -91,6 +160,12 @@ function GeneralTab() {
   const navigate = useNavigate();
   const { hdr, toggle: toggleHDR, imgStyle } = useHDRSetting();
   const { preference, setPreference } = useThemeSetting();
+  const { data: localProviders, isFetching: localProvidersFetching, refetch: refetchLocalProviders } = useQuery<LocalAIProviderStatus[]>({
+    queryKey: ["local-ai-providers"],
+    queryFn: probeLocalAIProviders,
+    enabled: IS_TAURI_RUNTIME,
+    staleTime: 30_000,
+  });
 
   const { data: envData, isLoading: envLoading } = useQuery<Record<string, string>>({
     queryKey: ["settings-env"],
@@ -129,6 +204,40 @@ function GeneralTab() {
 
   return (
     <>
+      {IS_TAURI_RUNTIME && <LocalDataMigrationSection />}
+      {IS_TAURI_RUNTIME && (
+        <Section title="本地 AI CLI">
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
+              仅检测当前桌面进程 PATH 中的 CLI，不读取或写入 API Key、全局配置和登录凭据。安装成功不等于已登录，文本调用仍以实际运行结果为准。
+            </p>
+            <button
+              type="button"
+              onClick={() => void refetchLocalProviders()}
+              disabled={localProvidersFetching}
+              aria-label="重新检测本地 AI CLI"
+              className="shrink-0 rounded-lg border border-[var(--color-border)] p-2 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={localProvidersFetching ? "animate-spin" : ""} />
+            </button>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            {(localProviders ?? []).map((provider) => (
+              <div key={provider.id} className="rounded-xl border border-[var(--color-border)] p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-medium text-[var(--color-text-primary)]">{provider.label}</p>
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] ${provider.state === "present" ? "bg-emerald-50 text-emerald-700" : provider.state === "missing" ? "bg-zinc-100 text-zinc-500" : "bg-amber-50 text-amber-700"}`}>
+                    {provider.state === "present" ? "已发现" : provider.state === "missing" ? "未安装" : "检测失败"}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-[var(--color-text-secondary)]">{provider.version ?? provider.reason}</p>
+              </div>
+            ))}
+          </div>
+          {!localProviders && <p className="text-xs text-[var(--color-text-secondary)]">正在检测当前 PATH…</p>}
+        </Section>
+      )}
+
       <Section title="外观主题">
         <Field label="应用主题" hint="跟随系统会在系统外观变化时自动切换">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3" role="radiogroup" aria-label="应用主题">
@@ -155,7 +264,7 @@ function GeneralTab() {
 
       {/* ── API 配置 */}
       <Section title={IS_TAURI_RUNTIME ? "API 配置（旧服务）" : "API 配置"}>
-        {IS_TAURI_RUNTIME && <p className="rounded-lg bg-[var(--color-selected)] px-3 py-2 text-xs text-[var(--color-text-secondary)]">桌面本地运行时的 Provider 配置仍在迁移中，当前保留字段仅供浏览器预览使用。</p>}
+        {IS_TAURI_RUNTIME && <p className="rounded-lg bg-[var(--color-selected)] px-3 py-2 text-xs text-[var(--color-text-secondary)]">桌面端文本 AI 通过上方本地 CLI 检测与运行；这里的 MiniMax 字段仅供浏览器预览使用，桌面端不会读取或保存。</p>}
         <Field label="MiniMax API Key" hint="Token Plan 密钥，sk-cp- 开头">
           <div className="relative">
             <KeyRound size={14} className="absolute left-3 top-2.5 text-zinc-400" />
@@ -245,6 +354,119 @@ function GeneralTab() {
         </button>
       </Section>
     </>
+  );
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function LocalDataMigrationSection() {
+  const { toast } = useToast();
+  const { data: runtime } = useQuery<LocalRuntimeStatus>({
+    queryKey: ["local-runtime-status"],
+    queryFn: readLocalRuntimeStatus,
+    enabled: IS_TAURI_RUNTIME,
+  });
+  const [source, setSource] = useState("");
+  const [assetsRoot, setAssetsRoot] = useState("");
+  const [target, setTarget] = useState(() => runtime?.databasePath ?? "");
+  const [backupOutput, setBackupOutput] = useState("");
+  const [restoreOutput, setRestoreOutput] = useState("");
+
+  useEffect(() => {
+    if (runtime?.databasePath && !target) setTarget(runtime.databasePath);
+  }, [runtime?.databasePath, target]);
+
+  const valuesReady = source.trim() && assetsRoot.trim() && target.trim();
+  const backupReady = source.trim() && assetsRoot.trim() && backupOutput.trim();
+  const restoreReady = backupOutput.trim() && restoreOutput.trim();
+  const projectCommand = (command: string, args: string[]) => `npm run ${command} -- ${args.map(shellQuote).join(" ")} --json`;
+
+  async function copyCommand(command: string) {
+    try {
+      await navigator.clipboard.writeText(command);
+      toast("命令已复制，请在项目根目录终端执行", "success");
+    } catch {
+      toast("无法访问剪贴板，请手动复制命令", "error");
+    }
+  }
+
+  return (
+    <Section title="本地数据迁移与恢复">
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs leading-relaxed text-amber-900">
+        <p className="font-medium">正式导入当前保持人工确认</p>
+        <p className="mt-1">此处只生成只读预检、备份和独立恢复校验命令，不会自动覆盖当前数据库。预检通过后仍需明确选择 replace、merge 或 cancel；当前应用不代替你执行正式写入。</p>
+      </div>
+
+      <Field label="当前数据库" hint="运行时只读路径">
+        <code className="block break-all rounded-lg bg-[var(--color-surface-2)] px-3 py-2 text-xs text-[var(--color-text-secondary)]">
+          {runtime?.databasePath ?? "正在读取…"}
+        </code>
+      </Field>
+      <Field label="历史源数据库" hint="填写绝对路径，不会被修改">
+        <input value={source} onChange={(event) => setSource(event.target.value)} placeholder="/path/to/old/data/app.db" className={inputCls} />
+      </Field>
+      <Field label="源素材目录" hint="必须覆盖源库 image_path 引用">
+        <input value={assetsRoot} onChange={(event) => setAssetsRoot(event.target.value)} placeholder="/path/to/old/assets" className={inputCls} />
+      </Field>
+      <Field label="目标数据库" hint="预检目标状态；已有内容不会被覆盖">
+        <input value={target} onChange={(event) => setTarget(event.target.value)} placeholder="/path/to/target/data/app.db" className={inputCls} />
+      </Field>
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={!valuesReady}
+          onClick={() => copyCommand(projectCommand("db:import-plan", ["--source", source.trim(), "--assets-root", assetsRoot.trim(), "--target", target.trim()]))}
+          className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-surface-2)] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          复制只读导入预检
+        </button>
+        <button
+          type="button"
+          disabled={!valuesReady}
+          onClick={() => copyCommand(projectCommand("db:preflight", ["--source", source.trim(), "--assets-root", assetsRoot.trim()]))}
+          className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-surface-2)] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          复制源库预检
+        </button>
+      </div>
+
+      <div className="border-t border-[var(--color-border)] pt-4 space-y-3">
+        <Field label="备份输出目录" hint="新目录；包含数据库和被引用素材">
+          <div className="flex gap-2">
+            <input value={backupOutput} onChange={(event) => setBackupOutput(event.target.value)} placeholder="/path/to/backup" className={inputCls} />
+            <button
+              type="button"
+              disabled={!backupReady}
+              onClick={() => copyCommand(projectCommand("db:backup", ["--source", source.trim(), "--assets-root", assetsRoot.trim(), "--output", backupOutput.trim()]))}
+              className="shrink-0 rounded-lg bg-[var(--color-brand)] px-3 py-2 text-xs font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              复制备份命令
+            </button>
+          </div>
+        </Field>
+        <Field label="恢复校验输出" hint="独立目录；只验证副本可读性">
+          <div className="flex gap-2">
+            <input value={restoreOutput} onChange={(event) => setRestoreOutput(event.target.value)} placeholder="/path/to/restore-check" className={inputCls} />
+            <button
+              type="button"
+              disabled={!restoreReady}
+              onClick={() => copyCommand(projectCommand("db:restore-check", ["--backup", backupOutput.trim(), "--output", restoreOutput.trim()]))}
+              className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-surface-2)] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              复制恢复校验
+            </button>
+          </div>
+        </Field>
+      </div>
+
+      <div className="rounded-xl bg-[var(--color-surface-2)] px-3 py-3 text-xs leading-relaxed text-[var(--color-text-secondary)]">
+        <p>执行顺序：源库预检 → 备份 → 独立恢复校验 → 再决定 replace / merge / cancel。</p>
+        <p className="mt-1">命令会拒绝符号链接、越界素材、缺失引用和已存在的非空输出；失败时保留暂存目录供定位。</p>
+      </div>
+    </Section>
   );
 }
 

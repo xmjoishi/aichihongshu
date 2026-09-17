@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "workspaceId": "aichihongshu-desktop-qa-v1",
+  "accounts": [
+    {
+      "id": 101,
+      "alias": "QA-A",
+      "displayName": "QA A 生活号",
+      "accountId": "qa-account-a",
+      "role": "operation",
+      "status": "active",
+      "niche": "小户型收纳"
+    },
+    {
+      "id": 202,
+      "alias": "QA-B",
+      "displayName": "QA B 实验号",
+      "accountId": "qa-account-b",
+      "role": "operation",
+      "status": "active",
+      "niche": "阳台改造"
+    }
+  ],
+  "items": [
+    {
+      "id": 1001,
+      "accountPoolId": 101,
+      "title": "QA-A 书桌角",
+      "imagePath": "fixtures/qa-a-desk.png",
+      "tags": ["QA-A", "书桌"]
+    },
+    {
+      "id": 2001,
+      "accountPoolId": 202,
+      "title": "QA-B 阳台角",
+      "imagePath": "fixtures/qa-b-balcony.png",
+      "tags": ["QA-B", "阳台"]
+    }
+  ],
+  "notes": [
+    {
+      "id": 1101,
+      "accountPoolId": 101,
+      "itemId": 1001,
+      "title": "QA-A 草稿",
+      "body": "A 账号草稿，仅供隔离测试。",
+      "tags": ["QA-A", "草稿"]
+    },
+    {
+      "id": 2201,
+      "accountPoolId": 202,
+      "itemId": 2001,
+      "title": "QA-B 草稿",
+      "body": "B 账号草稿，仅供隔离测试。",
+      "tags": ["QA-B", "草稿"]
+    }
+  ],
+  "expected": {
+    "activeAccountId": 101,
+    "accounts": 2,
+    "itemsPerAccount": 1,
+    "notesPerAccount": 1,
+    "imageFiles": 2
+  }
+}

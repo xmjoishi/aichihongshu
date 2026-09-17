@@ -6,18 +6,29 @@ import { Spinner, Tag } from "../components/ui";
 import LocalImage from "../components/LocalImage";
 import {
   Upload, Plus, X, FileText, ChevronLeft, ChevronRight,
-  LayoutGrid, Grid2x2, Grid3x3, Sparkles, Trash2, FolderOpen,
+  LayoutGrid, Grid2x2, Grid3x3, Sparkles, Trash2, FolderOpen, RotateCcw,
 } from "lucide-react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useToast } from "../components/Toast";
 import { useHDRSetting } from "../hooks/useHDRSetting";
 import {
   IS_TAURI_RUNTIME,
+  createLocalDraftFromItems,
+  deleteLocalItem,
+  fileToBase64,
+  fileToThumbnailBase64,
+  importLocalImage,
+  repairLocalImage,
   localItemToItem,
+  purgeLocalItems,
   readLocalWorkspaceSnapshot,
+  restoreLocalItem,
+  updateLocalItemMetadata,
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
+import { getCapability } from "../lib/capabilities";
+import { useAccountChange, useAccountContext } from "../lib/accountContext";
 
 // 列数 → Tailwind grid class
 const COLS_CLASS: Record<number, string> = {
@@ -32,6 +43,12 @@ const COLS_CLASS: Record<number, string> = {
 
 const PAGE_SIZE = 40;
 
+const LIBRARY_VIEW_KEY = "aichihongshu.library-view.v1";
+
+function libraryViewKey(scopeKey: string): string {
+  return `${LIBRARY_VIEW_KEY}:${encodeURIComponent(scopeKey)}`;
+}
+
 // 解析 analysis_raw JSON 字符串，安全返回
 function parseAnalysis(raw?: string): Record<string, unknown> {
   if (!raw) return {};
@@ -41,7 +58,16 @@ function parseAnalysis(raw?: string): Record<string, unknown> {
 export default function Library() {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
+  const { accountId, scopeKey } = useAccountContext();
+  const libraryImport = getCapability("library.import");
+  const libraryRepair = getCapability("library.repair");
+  const libraryMetadataWrite = getCapability("library.metadata.write");
+  const libraryRead = getCapability("library.read");
+  const libraryAnalyze = getCapability("library.analyze");
+  const libraryDelete = getCapability("library.delete");
+  const createNoteFromLibrary = getCapability("note.createFromLibrary");
   // hdr 必须解构（即使不直接使用），变化时会触发组件重渲染，imgStyle() 才能读到最新值
   const { hdr: _hdr, imgStyle } = useHDRSetting();
   const [selected, setSelected] = useState<Item | null>(null);
@@ -55,10 +81,68 @@ export default function Library() {
   const [analyzingIds, setAnalyzingIds] = useState<Set<number>>(new Set());
   const [hoveredItem, setHoveredItem] = useState<Item | null>(null);
   const [previewItem, setPreviewItem] = useState<Item | null>(null);
+  const [showTrash, setShowTrash] = useState(false);
+  const [editingMetadata, setEditingMetadata] = useState(false);
+  const [savingMetadata, setSavingMetadata] = useState(false);
+  const [repairing, setRepairing] = useState(false);
+  const [metadataDraft, setMetadataDraft] = useState({ title: "", tags: "", style: "", material: "", scene: "", color: "" });
   const fileRef = useRef<HTMLInputElement>(null);
+  const repairFileRef = useRef<HTMLInputElement>(null);
+  const libraryScrollRef = useRef<HTMLDivElement>(null);
+  const viewScopeRef = useRef<string | null>(null);
 
-  function explainLocalLimit() {
-    toast("当前为本地图库，只读能力已接入；导入、分析、删除和生成笔记仍在迁移中", "info");
+  useAccountChange(() => {
+    setSelected(null);
+    setMultiSelected(new Set());
+    setDraftingMulti(false);
+    setAnalyzingIds(new Set());
+    setHoveredItem(null);
+    setPreviewItem(null);
+    setShowTrash(false);
+    setEditingMetadata(false);
+    setPage(0);
+  });
+
+  useEffect(() => {
+    viewScopeRef.current = scopeKey;
+    try {
+      const saved = JSON.parse(localStorage.getItem(libraryViewKey(scopeKey)) ?? "null") as Partial<{ filterTag: string; filterUnanalyzed: boolean; page: number; cols: number }> | null;
+      if (saved) {
+        if (typeof saved.filterTag === "string") setFilterTag(saved.filterTag);
+        if (typeof saved.filterUnanalyzed === "boolean") setFilterUnanalyzed(saved.filterUnanalyzed);
+        if (typeof saved.page === "number" && Number.isInteger(saved.page) && saved.page >= 0) setPage(saved.page);
+        if (typeof saved.cols === "number" && Number.isInteger(saved.cols) && saved.cols >= 2 && saved.cols <= 8) setCols(saved.cols);
+      }
+      const scroll = Number(sessionStorage.getItem(`${libraryViewKey(scopeKey)}:scroll`));
+      if (Number.isFinite(scroll) && libraryScrollRef.current) libraryScrollRef.current.scrollTop = scroll;
+    } catch { /* preferences are optional */ }
+  }, [scopeKey]);
+
+  useEffect(() => {
+    if (!selected) {
+      setEditingMetadata(false);
+      return;
+    }
+    setMetadataDraft({
+      title: selected.title ?? "",
+      tags: selected.tags.join(", "),
+      style: selected.style ?? "",
+      material: selected.material ?? "",
+      scene: selected.scene ?? "",
+      color: selected.color ?? "",
+    });
+    setEditingMetadata(false);
+  }, [selected?.id, selected?.metadata_version]);
+
+  useEffect(() => {
+    if (viewScopeRef.current !== scopeKey) return;
+    try {
+      localStorage.setItem(libraryViewKey(scopeKey), JSON.stringify({ filterTag, filterUnanalyzed, page, cols }));
+    } catch { /* preferences are optional */ }
+  }, [scopeKey, filterTag, filterUnanalyzed, page, cols]);
+
+  function explainCapability(capability: ReturnType<typeof getCapability>) {
+    toast(`${capability.reason ?? "当前操作不可用"}。${capability.nextStep ?? "请稍后重试"}`, "info");
   }
 
   const { data: remoteItems = [], isLoading: remoteItemsLoading } = useQuery<Item[]>({
@@ -74,14 +158,32 @@ export default function Library() {
     refetchInterval: analyzingIds.size > 0 ? 3000 : false,
   });
   const { data: localWorkspace, isLoading: localItemsLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-library"],
-    queryFn: readLocalWorkspaceSnapshot,
-    enabled: IS_TAURI_RUNTIME,
+    queryKey: ["local-library", scopeKey, filterTag, filterUnanalyzed, page],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && libraryRead.available && accountId !== null,
   });
   const items: Item[] = IS_TAURI_RUNTIME
-    ? (localWorkspace?.items ?? []).map(localItemToItem)
+    ? (showTrash ? (localWorkspace?.trashItems ?? []) : (localWorkspace?.items ?? [])).map(localItemToItem)
     : remoteItems;
+  const missingImageIds = new Set(IS_TAURI_RUNTIME ? (localWorkspace?.missingImageIds ?? []) : []);
   const isLoading = IS_TAURI_RUNTIME ? localItemsLoading : remoteItemsLoading;
+
+  useEffect(() => {
+    const element = libraryScrollRef.current;
+    if (!element) return;
+    const save = () => { try { sessionStorage.setItem(`${libraryViewKey(scopeKey)}:scroll`, String(element.scrollTop)); } catch { /* optional */ } };
+    element.addEventListener("scroll", save, { passive: true });
+    return () => element.removeEventListener("scroll", save);
+  }, [scopeKey, items.length]);
+
+  useEffect(() => {
+    const rawTarget = searchParams.get("item");
+    if (!rawTarget) return;
+    const target = Number(rawTarget);
+    if (!Number.isFinite(target)) return;
+    const item = items.find((candidate) => candidate.id === target);
+    if (item) setSelected(item);
+  }, [items, searchParams]);
 
   // 轮询时检查哪些图片已完成分析，移除 analyzingIds
   useEffect(() => {
@@ -100,8 +202,46 @@ export default function Library() {
   // 导入后追踪哪些图片需要等待 AI 分析
   async function handleUpload(files: FileList | File[] | null) {
     if (!files || !files.length) return;
+    if (!libraryImport.available) {
+      explainCapability(libraryImport);
+      return;
+    }
     if (IS_TAURI_RUNTIME) {
-      explainLocalLimit();
+      if (accountId == null) {
+        toast("当前账号尚未就绪，无法导入素材", "error");
+        return;
+      }
+      setUploading(true);
+      let imported = 0;
+      const failures: string[] = [];
+      try {
+        for (const file of Array.from(files)) {
+          try {
+            await importLocalImage({
+              accountPoolId: accountId,
+              fileName: file.name,
+              mimeType: file.type || undefined,
+              dataBase64: await fileToBase64(file),
+              thumbnailDataBase64: await fileToThumbnailBase64(file),
+            });
+            imported += 1;
+          } catch (error: unknown) {
+            failures.push(`${file.name}: ${(error as Error)?.message ?? "导入失败"}`);
+          }
+        }
+        if (imported > 0) {
+          await qc.invalidateQueries({ queryKey: ["local-library"] });
+        }
+        if (failures.length === 0) {
+          toast(`已导入 ${imported} 张图片`, "success");
+        } else if (imported > 0) {
+          toast(`已导入 ${imported} 张，${failures.length} 张失败：${failures[0]}`, "info");
+        } else {
+          toast(failures[0] ?? "没有素材导入成功", "error");
+        }
+      } finally {
+        setUploading(false);
+      }
       return;
     }
     setUploading(true);
@@ -137,8 +277,25 @@ export default function Library() {
 
   async function draftNote() {
     if (!selected) return;
+    if (showTrash) {
+      toast("回收站素材需先恢复后才能生成草稿", "info");
+      return;
+    }
+    if (!createNoteFromLibrary.available) {
+      explainCapability(createNoteFromLibrary);
+      return;
+    }
     if (IS_TAURI_RUNTIME) {
-      explainLocalLimit();
+      if (accountId == null) {
+        toast("当前账号尚未就绪，无法创建草稿", "error");
+        return;
+      }
+      try {
+        const localNote = await createLocalDraftFromItems([selected.id], accountId);
+        navigate(`/notes/${localNote.id}`);
+      } catch (e: unknown) {
+        toast((e as Error).message, "error");
+      }
       return;
     }
     try {
@@ -149,25 +306,91 @@ export default function Library() {
     }
   }
 
+  async function saveMetadata() {
+    if (!selected || !IS_TAURI_RUNTIME || accountId == null) return;
+    if (!libraryMetadataWrite.available) {
+      explainCapability(libraryMetadataWrite);
+      return;
+    }
+    setSavingMetadata(true);
+    try {
+      const updated = await updateLocalItemMetadata({
+        itemId: selected.id,
+        accountPoolId: accountId,
+        expectedMetadataVersion: selected.metadata_version ?? 1,
+        title: metadataDraft.title,
+        tags: metadataDraft.tags.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean),
+        style: metadataDraft.style.trim() || undefined,
+        material: metadataDraft.material.trim() || undefined,
+        scene: metadataDraft.scene.trim() || undefined,
+        color: metadataDraft.color.trim() || undefined,
+      });
+      setSelected(localItemToItem(updated));
+      setEditingMetadata(false);
+      await qc.invalidateQueries({ queryKey: ["local-library"] });
+      toast("素材元数据已保存", "success");
+    } catch (e: unknown) {
+      toast((e as Error).message, "error");
+    } finally {
+      setSavingMetadata(false);
+    }
+  }
+
+  async function handleRepair(files: FileList | File[] | null) {
+    const file = files?.[0];
+    if (!file || !selected || !IS_TAURI_RUNTIME || accountId == null) return;
+    if (!libraryRepair.available) {
+      explainCapability(libraryRepair);
+      return;
+    }
+    setRepairing(true);
+    try {
+      const updated = await repairLocalImage({
+        itemId: selected.id,
+        accountPoolId: accountId,
+        expectedImageVersion: selected.image_version ?? 1,
+        fileName: file.name,
+        mimeType: file.type || undefined,
+        dataBase64: await fileToBase64(file),
+        thumbnailDataBase64: await fileToThumbnailBase64(file),
+      });
+      setSelected(localItemToItem(updated));
+      await qc.invalidateQueries({ queryKey: ["local-library"] });
+      toast("素材图片已修复，旧分析结果已清除", "success");
+    } catch (e: unknown) {
+      toast((e as Error).message, "error");
+    } finally {
+      setRepairing(false);
+    }
+  }
+
   const [tagsExpanded, setTagsExpanded] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deletingMulti, setDeletingMulti] = useState(false);
+  const [restoringMulti, setRestoringMulti] = useState(false);
+  const [purgingMulti, setPurgingMulti] = useState(false);
   const [deleteMultiConfirm, setDeleteMultiConfirm] = useState(false);
 
   async function deleteItem() {
     if (!selected) return;
-    if (IS_TAURI_RUNTIME) {
-      explainLocalLimit();
+    if (!libraryDelete.available) {
+      explainCapability(libraryDelete);
       return;
     }
     setDeleting(true);
     try {
-      await api.delete(`/api/library/${selected.id}`);
+      if (IS_TAURI_RUNTIME) {
+        if (accountId == null) throw new Error("当前账号尚未就绪");
+        await deleteLocalItem(selected.id, accountId);
+        await qc.invalidateQueries({ queryKey: ["local-library"] });
+      } else {
+        await api.delete(`/api/library/${selected.id}`);
+        qc.invalidateQueries({ queryKey: ["items"] });
+      }
       toast("已删除", "success");
       setSelected(null);
       setDeleteConfirm(false);
-      qc.invalidateQueries({ queryKey: ["items"] });
     } catch (e: unknown) {
       toast((e as Error).message, "error");
     } finally {
@@ -177,8 +400,8 @@ export default function Library() {
 
   async function deleteMulti() {
     if (multiSelected.size === 0) return;
-    if (IS_TAURI_RUNTIME) {
-      explainLocalLimit();
+    if (!libraryDelete.available) {
+      explainCapability(libraryDelete);
       return;
     }
     setDeletingMulti(true);
@@ -186,7 +409,12 @@ export default function Library() {
     let failed = 0;
     for (const id of ids) {
       try {
-        await api.delete(`/api/library/${id}`);
+        if (IS_TAURI_RUNTIME) {
+          if (accountId == null) throw new Error("当前账号尚未就绪");
+          await deleteLocalItem(id, accountId);
+        } else {
+          await api.delete(`/api/library/${id}`);
+        }
       } catch {
         failed++;
       }
@@ -194,7 +422,7 @@ export default function Library() {
     setDeletingMulti(false);
     setDeleteMultiConfirm(false);
     setMultiSelected(new Set());
-    qc.invalidateQueries({ queryKey: ["items"] });
+    await qc.invalidateQueries({ queryKey: [IS_TAURI_RUNTIME ? "local-library" : "items"] });
     if (failed === 0) {
       toast(`已删除 ${ids.length} 张图片`, "success");
     } else {
@@ -202,10 +430,67 @@ export default function Library() {
     }
   }
 
+  async function restoreMulti() {
+    if (multiSelected.size === 0 || !IS_TAURI_RUNTIME || !showTrash || accountId == null) return;
+    setRestoringMulti(true);
+    const ids = Array.from(multiSelected);
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        await restoreLocalItem(id, accountId);
+      } catch {
+        failed++;
+      }
+    }
+    setRestoringMulti(false);
+    setMultiSelected(new Set());
+    await qc.invalidateQueries({ queryKey: ["local-library"] });
+    if (failed === 0) {
+      toast(`已恢复 ${ids.length} 张图片`, "success");
+    } else {
+      toast(`恢复完成，${failed} 张失败`, "error");
+    }
+  }
+
+  async function purgeMulti() {
+    if (multiSelected.size === 0 || !IS_TAURI_RUNTIME || !showTrash || accountId == null) return;
+    setPurgingMulti(true);
+    try {
+      const result = await purgeLocalItems(Array.from(multiSelected), accountId);
+      setMultiSelected(new Set());
+      setDeleteMultiConfirm(false);
+      await qc.invalidateQueries({ queryKey: ["local-library"] });
+      toast(result.cleanupWarnings.length > 0
+        ? `已永久清理 ${result.purgedIds.length} 张图片，但有 ${result.cleanupWarnings.length} 个文件待清理`
+        : `已永久清理 ${result.purgedIds.length} 张图片`, result.cleanupWarnings.length > 0 ? "info" : "success");
+    } catch (e: unknown) {
+      toast((e as Error).message, "error");
+    } finally {
+      setPurgingMulti(false);
+    }
+  }
+
   async function draftMulti() {
     if (multiSelected.size === 0) return;
+    if (showTrash) {
+      toast("回收站素材需先恢复后才能生成草稿", "info");
+      return;
+    }
+    if (!createNoteFromLibrary.available) {
+      explainCapability(createNoteFromLibrary);
+      return;
+    }
     if (IS_TAURI_RUNTIME) {
-      explainLocalLimit();
+      if (accountId == null) {
+        toast("当前账号尚未就绪，无法创建草稿", "error");
+        return;
+      }
+      try {
+        const localNote = await createLocalDraftFromItems(Array.from(multiSelected), accountId);
+        navigate(`/notes/${localNote.id}`);
+      } catch (e: unknown) {
+        toast((e as Error).message, "error");
+      }
       return;
     }
     setDraftingMulti(true);
@@ -218,6 +503,21 @@ export default function Library() {
       toast((e as Error).message, "error");
     } finally {
       setDraftingMulti(false);
+    }
+  }
+
+  async function restoreItem() {
+    if (!selected || !IS_TAURI_RUNTIME || accountId == null || !showTrash) return;
+    setRepairing(true);
+    try {
+      await restoreLocalItem(selected.id, accountId);
+      setSelected(null);
+      await qc.invalidateQueries({ queryKey: ["local-library"] });
+      toast("素材已恢复到图库", "success");
+    } catch (e: unknown) {
+      toast((e as Error).message, "error");
+    } finally {
+      setRepairing(false);
     }
   }
 
@@ -271,8 +571,8 @@ export default function Library() {
   }
 
   async function analyzeMulti() {
-    if (IS_TAURI_RUNTIME) {
-      explainLocalLimit();
+    if (!libraryAnalyze.available) {
+      explainCapability(libraryAnalyze);
       return;
     }
     const ids = Array.from(multiSelected).filter(
@@ -323,7 +623,7 @@ export default function Library() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [uploading],
+    [uploading, accountId, libraryImport, qc, toast],
   );
 
   useEffect(() => {
@@ -411,12 +711,19 @@ export default function Library() {
               multiple
               accept="image/*"
               className="hidden"
-              onChange={(e) => handleUpload(e.target.files)}
+              onChange={(e) => { void handleUpload(e.target.files); e.currentTarget.value = ""; }}
+            />
+            <input
+              ref={repairFileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => { void handleRepair(e.target.files); e.currentTarget.value = ""; }}
             />
             <button
               onClick={() => fileRef.current?.click()}
-              disabled={uploading || IS_TAURI_RUNTIME}
-              title={IS_TAURI_RUNTIME ? "本地图库只读能力已接入" : "导入图片"}
+              disabled={uploading || !libraryImport.available}
+              title={libraryImport.available ? "导入图片" : `${libraryImport.reason}；${libraryImport.nextStep}`}
               className="flex items-center gap-1.5 text-sm bg-[#ff2442] text-white px-3 py-1.5 rounded-lg hover:bg-[#e01f3a] transition-colors disabled:opacity-50"
             >
               {uploading ? (
@@ -426,13 +733,22 @@ export default function Library() {
               )}
               导入图片
             </button>
+            {IS_TAURI_RUNTIME && (
+              <button
+                onClick={() => { setShowTrash((value) => !value); setSelected(null); setMultiSelected(new Set()); setDeleteMultiConfirm(false); }}
+                className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${showTrash ? "border-amber-400 bg-amber-50 text-amber-700" : "border-zinc-200 text-zinc-500 hover:bg-zinc-50"}`}
+                title={showTrash ? "返回当前账号图库" : `打开当前账号回收站（${localWorkspace?.trashItems?.length ?? 0}）`}
+              >
+                {showTrash ? "返回图库" : `回收站${localWorkspace?.trashItems?.length ? ` (${localWorkspace.trashItems.length})` : ""}`}
+              </button>
+            )}
             <span className="text-xs text-zinc-300 hidden lg:block">或 ⌘V 粘贴</span>
           </div>
         </div>
 
         {IS_TAURI_RUNTIME && (
           <div className="border-b border-[var(--color-border)] bg-[var(--color-selected)] px-6 py-2 text-xs text-[var(--color-text-secondary)]">
-            当前显示本地图库；导入、分析、删除和生成笔记仍需后续迁移。现有素材可以查看和选择。
+            当前显示{showTrash ? "本地素材回收站" : "本地图库"}；{libraryImport.available && !showTrash ? "可以导入素材。" : ""}{libraryRepair.available && !showTrash ? "缺失或需要替换的图片可用“修复/替换图片”。" : ""}{!showTrash && missingImageIds.size > 0 ? `当前发现 ${missingImageIds.size} 个素材文件缺失。` : ""}素材按当前账号隔离。
           </div>
         )}
 
@@ -505,6 +821,7 @@ export default function Library() {
 
         {/* Drop zone + Grid */}
         <div
+          ref={libraryScrollRef}
           className="flex-1 overflow-y-auto p-6 relative"
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDrop}
@@ -522,6 +839,7 @@ export default function Library() {
                   const isMulti = multiSelected.has(item.id);
                   const isSingle = selected?.id === item.id;
                   const isAnalyzing = analyzingIds.has(item.id);
+                  const isMissing = missingImageIds.has(item.id);
                   return (
                     <div
                       key={item.id}
@@ -548,6 +866,8 @@ export default function Library() {
                       <div className="aspect-square bg-zinc-100 overflow-hidden relative">
                         <LocalImage
                           itemId={item.id}
+                          variant="thumbnail"
+                          version={`${item.image_version ?? 1}:${item.content_hash ?? "unknown"}`}
                           src={`${API_BASE}/api/library/${item.id}/image`}
                           alt={item.title}
                           loading="lazy"
@@ -555,7 +875,11 @@ export default function Library() {
                           className="w-full h-full object-cover"
                         />
                         {/* AI 识别标识 / analyzing 遮罩 */}
-                        {isAnalyzing ? (
+                        {isMissing ? (
+                          <div className="absolute inset-0 flex items-center justify-center bg-amber-950/45 rounded-t-xl">
+                            <span className="text-white text-[10px] font-medium bg-amber-600/90 px-2 py-1 rounded">文件缺失</span>
+                          </div>
+                        ) : isAnalyzing ? (
                           <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-t-xl">
                             <div className="flex flex-col items-center gap-1.5">
                               <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -622,13 +946,13 @@ export default function Library() {
           <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2">
             {deleteMultiConfirm && (
               <div className="flex items-center gap-2 bg-red-600 text-white px-4 py-2.5 rounded-2xl shadow-2xl border border-red-500 text-sm">
-                <span>确认删除 {multiSelected.size} 张图片？</span>
+                <span>{showTrash ? `确认永久清理 ${multiSelected.size} 张图片？关联笔记会阻止清理。` : `确认删除 ${multiSelected.size} 张图片？`}</span>
                 <button
-                  onClick={deleteMulti}
-                  disabled={deletingMulti}
+                  onClick={showTrash ? purgeMulti : deleteMulti}
+                  disabled={showTrash ? purgingMulti : deletingMulti}
                   className="bg-white text-red-600 text-xs font-semibold px-3 py-1 rounded-xl hover:bg-red-50 disabled:opacity-50 transition-colors"
                 >
-                  {deletingMulti ? "删除中..." : "确认"}
+                  {showTrash ? (purgingMulti ? "清理中..." : "确认清理") : (deletingMulti ? "删除中..." : "确认")}
                 </button>
                 <button
                   onClick={() => setDeleteMultiConfirm(false)}
@@ -641,35 +965,62 @@ export default function Library() {
             <div className="flex items-center gap-3 bg-zinc-900 text-white px-5 py-3 rounded-2xl shadow-2xl border border-zinc-700">
               <span className="text-sm font-medium">已选 {multiSelected.size} 张</span>
               <div className="w-px h-4 bg-zinc-600" />
-              <button
-                onClick={draftMulti}
-                disabled={draftingMulti}
-                className="flex items-center gap-1.5 text-sm bg-[#ff2442] text-white px-3.5 py-1.5 rounded-xl hover:bg-[#e01f3a] transition-colors disabled:opacity-50 font-medium"
-              >
-                {draftingMulti ? (
-                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <Sparkles size={14} />
-                )}
-                合并生成草稿
-              </button>
-              <button
-                onClick={analyzeMulti}
-                className="flex items-center gap-1.5 text-sm text-zinc-200 hover:text-white px-3 py-1.5 rounded-xl hover:bg-zinc-800 transition-colors"
-                title="批量 AI 识别未识别的图片"
-              >
-                <Sparkles size={14} className="text-amber-400" />
-                批量识别
-              </button>
-              <button
-                onClick={() => setDeleteMultiConfirm(true)}
-                disabled={deletingMulti}
-                className="flex items-center gap-1.5 text-sm text-zinc-300 hover:text-red-400 px-2 py-1.5 rounded-xl hover:bg-zinc-800 transition-colors disabled:opacity-50"
-                title="批量删除"
-              >
-                <Trash2 size={14} />
-                删除
-              </button>
+              {showTrash ? (
+                <>
+                  <button
+                    onClick={restoreMulti}
+                    disabled={restoringMulti}
+                    className="flex items-center gap-1.5 text-sm bg-amber-500 text-white px-3.5 py-1.5 rounded-xl hover:bg-amber-600 transition-colors disabled:opacity-50 font-medium"
+                    title="批量恢复到当前账号图库"
+                  >
+                    {restoringMulti ? <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <RotateCcw size={14} />}
+                    批量恢复
+                  </button>
+                  <button
+                    onClick={() => setDeleteMultiConfirm(true)}
+                    disabled={purgingMulti}
+                    className="flex items-center gap-1.5 text-sm text-red-300 hover:text-red-100 px-2 py-1.5 rounded-xl hover:bg-red-900 transition-colors disabled:opacity-50"
+                    title="永久清理；仍被笔记引用的素材会整体拒绝"
+                  >
+                    <Trash2 size={14} />
+                    永久清理
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={draftMulti}
+                    disabled={draftingMulti || !createNoteFromLibrary.available}
+                    title={createNoteFromLibrary.available ? "合并生成草稿" : `${createNoteFromLibrary.reason}；${createNoteFromLibrary.nextStep}`}
+                    className="flex items-center gap-1.5 text-sm bg-[#ff2442] text-white px-3.5 py-1.5 rounded-xl hover:bg-[#e01f3a] transition-colors disabled:opacity-50 font-medium"
+                  >
+                    {draftingMulti ? (
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <Sparkles size={14} />
+                    )}
+                    合并生成草稿
+                  </button>
+                  <button
+                    onClick={analyzeMulti}
+                    disabled={!libraryAnalyze.available}
+                    className="flex items-center gap-1.5 text-sm text-zinc-200 hover:text-white px-3 py-1.5 rounded-xl hover:bg-zinc-800 transition-colors disabled:opacity-50"
+                    title={libraryAnalyze.available ? "批量 AI 识别未识别的图片" : `${libraryAnalyze.reason}；${libraryAnalyze.nextStep}`}
+                  >
+                    <Sparkles size={14} className="text-amber-400" />
+                    批量识别
+                  </button>
+                  <button
+                    onClick={() => setDeleteMultiConfirm(true)}
+                    disabled={deletingMulti || !libraryDelete.available}
+                    className="flex items-center gap-1.5 text-sm text-zinc-300 hover:text-red-400 px-2 py-1.5 rounded-xl hover:bg-zinc-800 transition-colors disabled:opacity-50"
+                    title={libraryDelete.available ? "批量删除" : `${libraryDelete.reason}；${libraryDelete.nextStep}`}
+                  >
+                    <Trash2 size={14} />
+                    删除
+                  </button>
+                </>
+              )}
               <button
                 onClick={() => { setMultiSelected(new Set()); setDeleteMultiConfirm(false); }}
                 className="text-zinc-400 hover:text-white transition-colors"
@@ -694,6 +1045,7 @@ export default function Library() {
 
           <LocalImage
             itemId={selected.id}
+            version={`${selected.image_version ?? 1}:${selected.content_hash ?? "unknown"}`}
             src={`${API_BASE}/api/library/${selected.id}/image`}
             alt={selected.title}
             style={imgStyle()}
@@ -701,19 +1053,36 @@ export default function Library() {
           />
 
           <div className="p-4 space-y-3 flex-1">
-            <InfoRow label="名称" value={selected.title} bold />
-            {selected.style && <InfoRow label="风格" value={selected.style} />}
-            {selected.scene && <InfoRow label="场景" value={selected.scene} />}
-            {selected.color && <InfoRow label="主色调" value={selected.color} />}
-            {selected.material && <InfoRow label="材质" value={selected.material} />}
-
-            {selected.tags.length > 0 && (
-              <div>
-                <p className="text-xs text-zinc-400 mb-1">标签</p>
-                <div className="flex flex-wrap gap-1">
-                  {selected.tags.map((t) => <Tag key={t} label={t} />)}
-                </div>
+            {IS_TAURI_RUNTIME && missingImageIds.has(selected.id) && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
+                素材记录仍在，但图片文件未找到。{showTrash ? "请先恢复素材，再选择“修复/替换图片”补回文件；" : "请选择“修复/替换图片”补回文件；"}修复成功后会清除旧的分析结果。
               </div>
+            )}
+            {editingMetadata && IS_TAURI_RUNTIME ? (
+              <div className="space-y-2">
+                <MetadataInput label="名称" value={metadataDraft.title} onChange={(value) => setMetadataDraft((draft) => ({ ...draft, title: value }))} />
+                <MetadataInput label="标签（逗号分隔）" value={metadataDraft.tags} onChange={(value) => setMetadataDraft((draft) => ({ ...draft, tags: value }))} />
+                <MetadataInput label="风格" value={metadataDraft.style} onChange={(value) => setMetadataDraft((draft) => ({ ...draft, style: value }))} />
+                <MetadataInput label="场景" value={metadataDraft.scene} onChange={(value) => setMetadataDraft((draft) => ({ ...draft, scene: value }))} />
+                <MetadataInput label="主色调" value={metadataDraft.color} onChange={(value) => setMetadataDraft((draft) => ({ ...draft, color: value }))} />
+                <MetadataInput label="材质" value={metadataDraft.material} onChange={(value) => setMetadataDraft((draft) => ({ ...draft, material: value }))} />
+              </div>
+            ) : (
+              <>
+                <InfoRow label="名称" value={selected.title} bold />
+                {selected.style && <InfoRow label="风格" value={selected.style} />}
+                {selected.scene && <InfoRow label="场景" value={selected.scene} />}
+                {selected.color && <InfoRow label="主色调" value={selected.color} />}
+                {selected.material && <InfoRow label="材质" value={selected.material} />}
+                {selected.tags.length > 0 && (
+                  <div>
+                    <p className="text-xs text-zinc-400 mb-1">标签</p>
+                    <div className="flex flex-wrap gap-1">
+                      {selected.tags.map((t) => <Tag key={t} label={t} />)}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
             {/* 分析结果扩展字段 */}
@@ -721,8 +1090,31 @@ export default function Library() {
           </div>
 
           <div className="p-4 border-t border-zinc-100 space-y-2">
+            {IS_TAURI_RUNTIME && !showTrash && libraryRepair.available && (
+              <button
+                onClick={() => repairFileRef.current?.click()}
+                disabled={repairing}
+                className="w-full flex items-center justify-center gap-1.5 text-sm text-zinc-500 py-2 rounded-xl border border-zinc-200 hover:bg-zinc-50 disabled:opacity-50"
+                title="选择一张图片替换当前素材；图片版本递增并清除旧分析结果"
+              >
+                <Upload size={13} />
+                {repairing ? "修复中…" : "修复/替换图片"}
+              </button>
+            )}
+            {IS_TAURI_RUNTIME && !showTrash && libraryMetadataWrite.available && (
+              editingMetadata ? (
+                <div className="flex gap-2">
+                  <button onClick={() => setEditingMetadata(false)} disabled={savingMetadata} className="flex-1 text-sm py-2 rounded-xl border border-zinc-200 text-zinc-500 hover:bg-zinc-50 disabled:opacity-50">取消</button>
+                  <button onClick={saveMetadata} disabled={savingMetadata} className="flex-1 text-sm py-2 rounded-xl bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50">{savingMetadata ? "保存中..." : "保存元数据"}</button>
+                </div>
+              ) : (
+                <button onClick={() => setEditingMetadata(true)} className="w-full text-sm py-2 rounded-xl border border-zinc-200 text-zinc-600 hover:bg-zinc-50">编辑素材元数据</button>
+              )
+            )}
             <button
               onClick={draftNote}
+              disabled={showTrash || !createNoteFromLibrary.available}
+              title={showTrash ? "回收站素材需先恢复" : createNoteFromLibrary.available ? "生成笔记草稿" : `${createNoteFromLibrary.reason}；${createNoteFromLibrary.nextStep}`}
               className="w-full bg-[#ff2442] text-white text-sm py-2.5 rounded-xl hover:bg-[#e01f3a] transition-colors font-medium"
             >
               ✨ 生成笔记草稿
@@ -740,7 +1132,8 @@ export default function Library() {
                   toast((e as Error).message, "error");
                 }
               }}
-              disabled={analyzingIds.has(selected.id)}
+              disabled={showTrash || analyzingIds.has(selected.id) || !libraryAnalyze.available}
+              title={showTrash ? "回收站素材需先恢复" : libraryAnalyze.available ? "触发图片识别" : `${libraryAnalyze.reason}；${libraryAnalyze.nextStep}`}
               className="w-full flex items-center justify-center gap-1.5 text-sm text-zinc-400
                          py-2 rounded-xl hover:bg-zinc-50 hover:text-zinc-600 transition-colors disabled:opacity-50"
             >
@@ -757,7 +1150,21 @@ export default function Library() {
               )}
             </button>
 
-            {!deleteConfirm ? (
+            {showTrash ? (
+              <div className="rounded-xl bg-amber-50 p-3 space-y-2">
+                <p className="text-xs text-amber-700 text-center">该素材在回收站，磁盘文件仍保留。</p>
+                {selected.note_count > 0 && (
+                  <p className="text-xs text-amber-700 text-center">仍关联 {selected.note_count} 篇笔记，恢复后再继续编辑或发布。</p>
+                )}
+                <button
+                  onClick={restoreItem}
+                  disabled={repairing}
+                  className="w-full text-xs py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50"
+                >
+                  {repairing ? "恢复中…" : "恢复到图库"}
+                </button>
+              </div>
+            ) : !deleteConfirm ? (
               <div className="flex gap-2">
                 <button
                   onClick={() => selected?.image_path && revealItemInDir(selected.image_path)}
@@ -769,8 +1176,10 @@ export default function Library() {
                 </button>
                 <button
                   onClick={() => setDeleteConfirm(true)}
+                  disabled={!libraryDelete.available}
+                  title={libraryDelete.available ? "删除物品" : `${libraryDelete.reason}；${libraryDelete.nextStep}`}
                   className="flex-1 flex items-center justify-center gap-1.5 text-sm text-zinc-400
-                             py-2 rounded-xl hover:bg-zinc-50 hover:text-red-500 transition-colors"
+                             py-2 rounded-xl hover:bg-zinc-50 hover:text-red-500 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Trash2 size={13} />
                   删除物品
@@ -809,6 +1218,7 @@ export default function Library() {
       >
         <LocalImage
           itemId={previewItem.id}
+          version={`${previewItem.image_version ?? 1}:${previewItem.content_hash ?? "unknown"}`}
           src={`${API_BASE}/api/library/${previewItem.id}/image`}
           alt={previewItem.title}
           style={imgStyle()}
@@ -833,6 +1243,19 @@ function InfoRow({ label, value, bold }: { label: string; value: string; bold?: 
       <p className="text-xs text-zinc-400">{label}</p>
       <p className={`text-sm text-zinc-700 ${bold ? "font-medium text-zinc-900" : ""}`}>{value}</p>
     </div>
+  );
+}
+
+function MetadataInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="block">
+      <span className="text-xs text-zinc-400">{label}</span>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-1 w-full rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-sm text-zinc-800 outline-none focus:border-[#ff2442]"
+      />
+    </label>
   );
 }
 

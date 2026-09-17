@@ -19,12 +19,21 @@ import { buildInsightsVM } from "../selectors/analytics";
 import { buildTopicsVM } from "../selectors/topics";
 import {
   IS_TAURI_RUNTIME,
+  createLocalDraft,
   localItemToItem,
   localNoteToNote,
   localReferenceAccountToReferenceAccount,
   readLocalWorkspaceSnapshot,
+  readLocalInspirations,
+  saveLocalInspiration,
+  convertLocalInspiration,
+  type LocalInspirationCreate,
+  type LocalInspirationSummary,
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
+import { useAccountChange, useAccountContext } from "../lib/accountContext";
+import { addInspiration, listInspirations, type Inspiration } from "../lib/inspirationCapture";
+import { validateBrowserCapture } from "../lib/browserCapture";
 
 type TopicItem = { word: string; count: number };
 type RefPost = { title: string; likes: number; url?: string };
@@ -35,6 +44,34 @@ type DraftParts = {
   cta: string;
   tags: string[];
 };
+
+function localInspirationToInspiration(item: LocalInspirationSummary): Inspiration {
+  return {
+    id: item.id,
+    accountId: item.accountPoolId,
+    title: item.title,
+    sourceUrl: item.sourceUrl,
+    body: item.body,
+    observedAt: item.observedAt,
+    reason: item.reason,
+    status: item.status,
+    ...(item.noteId != null ? { noteId: item.noteId } : {}),
+    ...(item.dedupeKey ? { dedupeKey: item.dedupeKey } : {}),
+  };
+}
+
+function inspirationToLocalCreate(item: Inspiration): LocalInspirationCreate {
+  return {
+    id: item.id,
+    accountPoolId: item.accountId,
+    title: item.title,
+    sourceUrl: item.sourceUrl,
+    body: item.body,
+    observedAt: item.observedAt,
+    reason: item.reason,
+    dedupeKey: item.dedupeKey,
+  };
+}
 
 function parseDraft(raw: string): DraftParts {
   const getSection = (name: string, next: string[]) => {
@@ -101,6 +138,7 @@ function pickRelatedImages(allItems: Item[], selectedIds: number[]): Item[] {
 
 export default function Inspire() {
   const { toast } = useToast();
+  const { accountId, databaseIdentity, scopeKey } = useAccountContext();
 
   const [topic, setTopic] = useState("");
   const [selectedTopicWords, setSelectedTopicWords] = useState<string[]>([]);
@@ -110,6 +148,11 @@ export default function Inspire() {
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
   // 抽屉里标签的选中状态（生成后默认全选，可手动取消）
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [captureTitle, setCaptureTitle] = useState("");
+  const [captureUrl, setCaptureUrl] = useState("");
+  const [captureBody, setCaptureBody] = useState("");
+  const [captureReason, setCaptureReason] = useState("");
+  const [inspirations, setInspirations] = useState<Inspiration[]>([]);
 
   const [topicPool, setTopicPool] = useState<TopicItem[]>([]);
   const [itemPool, setItemPool] = useState<Item[]>([]);
@@ -125,8 +168,104 @@ export default function Inspire() {
   // "closed" | "peek" | "open"
   const [drawerState, setDrawerState] = useState<"closed" | "peek" | "open">("peek");
   const ctrlRef = useRef<AbortController | null>(null);
+  const generationRef = useRef(0);
   const bannerRef = useRef<HTMLDivElement>(null);
   const [bannerHeight, setBannerHeight] = useState(48);
+
+  useAccountChange(() => {
+    generationRef.current += 1;
+    ctrlRef.current?.abort();
+    ctrlRef.current = null;
+    setTopic("");
+    setSelectedTopicWords([]);
+    setExtraImageDesc("");
+    setExtraInstruction("");
+    setSelectedItemIds([]);
+    setSelectedAccountIds([]);
+    setRawResult("");
+    setSelectedTitle(0);
+    setTitleText("");
+    setBody("");
+    setTags([]);
+    setSelectedTags([]);
+    setSavedNote(null);
+    setGenerating(false);
+    setDrawerState("peek");
+    setInspirations([]);
+  });
+
+  useEffect(() => {
+    if (!IS_TAURI_RUNTIME || accountId === null) {
+      setInspirations([]);
+      return;
+    }
+    let active = true;
+    void readLocalInspirations(accountId)
+      .then(async (items) => {
+        // 首次升级时把旧版 localStorage 中的手工灵感迁入 SQLite；
+        // 仅在数据库为空时执行，避免每次打开页面重复改写记录。
+        if (items.length === 0) {
+          const legacy = listInspirations(databaseIdentity, accountId);
+          for (const item of legacy) {
+            try {
+              await saveLocalInspiration(inspirationToLocalCreate(item));
+            } catch {
+              // 单条旧数据损坏时跳过，其他灵感仍可继续迁移。
+            }
+          }
+          if (legacy.length > 0) items = await readLocalInspirations(accountId);
+        }
+        if (active) setInspirations(items.map(localInspirationToInspiration));
+      })
+      .catch((error) => {
+        if (active) toast(`读取本地灵感失败：${(error as Error).message}`, "error");
+      });
+    return () => { active = false; };
+  }, [accountId, databaseIdentity, toast]);
+
+  // 受限浏览器宿主可通过 postMessage 或自定义事件发送当前页剪藏。
+  // 宿主消息仍由当前账号和统一校验重新确认，不信任扩展传入的账号/来源字段。
+  useEffect(() => {
+    if (!IS_TAURI_RUNTIME || accountId === null) return;
+    const acceptCapture = async (raw: unknown) => {
+      const validated = validateBrowserCapture(raw, accountId);
+      if (!validated.ok) {
+        toast(validated.message, "error");
+        return;
+      }
+      try {
+        const item = addInspiration({
+          accountId,
+          title: validated.value.title,
+          sourceUrl: validated.value.sourceUrl,
+          body: validated.value.body,
+          reason: validated.value.reason,
+          dedupeKey: validated.value.dedupeKey,
+        });
+        await saveLocalInspiration(inspirationToLocalCreate(item));
+        const saved = await readLocalInspirations(accountId);
+        setInspirations(saved.map(localInspirationToInspiration));
+        toast("浏览器剪藏已保存", "success");
+      } catch (error) {
+        toast((error as Error).message, "error");
+      }
+    };
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== window) return;
+      const data = event.data;
+      if (!data || data.type !== "AICHIHONGSHU_BROWSER_CAPTURE") return;
+      void acceptCapture(data.message ?? data.payload ?? data);
+    };
+    const onCaptureEvent = (event: Event) => {
+      void acceptCapture((event as CustomEvent).detail);
+    };
+    window.addEventListener("message", onMessage);
+    window.addEventListener("aichihongshu-browser-capture", onCaptureEvent);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      window.removeEventListener("aichihongshu-browser-capture", onCaptureEvent);
+    };
+  }, [accountId, databaseIdentity, toast]);
 
   useEffect(() => {
     const el = bannerRef.current;
@@ -156,9 +295,9 @@ export default function Inspire() {
     enabled: !IS_TAURI_RUNTIME,
   });
   const { data: localWorkspace, isLoading: localWorkspaceLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-inspire"],
-    queryFn: readLocalWorkspaceSnapshot,
-    enabled: IS_TAURI_RUNTIME,
+    queryKey: ["local-inspire", scopeKey],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
   // 这些转换必须缓存。否则每次 render 都会生成新数组，下面的随机池 effect
   // 会再次 setState，造成进入「灵感」页后持续随机重渲染。
@@ -269,8 +408,41 @@ export default function Inspire() {
     setDrawerState("peek");
   }
 
+  async function saveCapturedInspiration() {
+    if (!IS_TAURI_RUNTIME || accountId === null) return;
+    try {
+      const validated = validateBrowserCapture({
+        title: captureTitle,
+        sourceUrl: captureUrl,
+        body: captureBody,
+        reason: captureReason,
+        targetAccountId: accountId,
+        transport: "manual",
+      }, accountId);
+      if (!validated.ok) { toast(validated.message, "error"); return; }
+      const item = addInspiration({ accountId, title: validated.value.title, sourceUrl: validated.value.sourceUrl, body: validated.value.body, reason: validated.value.reason, dedupeKey: validated.value.dedupeKey });
+      await saveLocalInspiration(inspirationToLocalCreate(item));
+      const saved = await readLocalInspirations(accountId);
+      setInspirations(saved.map(localInspirationToInspiration));
+      setCaptureTitle(""); setCaptureUrl(""); setCaptureBody(""); setCaptureReason("");
+      toast("灵感已保存", "success");
+    } catch (error) { toast((error as Error).message, "error"); }
+  }
+
+  async function convertCapturedInspiration(item: Inspiration) {
+    if (!IS_TAURI_RUNTIME || accountId === null || item.status === "converted") return;
+    try {
+      const draft = await createLocalDraft(item.title, accountId);
+      await convertLocalInspiration(item.id, accountId, draft.id);
+      const converted = await readLocalInspirations(accountId);
+      setInspirations(converted.map(localInspirationToInspiration));
+      toast("已转为笔记草稿", "success");
+    } catch (error) { toast((error as Error).message, "error"); }
+  }
+
   function startGenerate() {
     ctrlRef.current?.abort();
+    const generation = ++generationRef.current;
     setSavedNote(null);
     setRawResult("");
     setGenerating(true);
@@ -288,6 +460,7 @@ export default function Inspire() {
     ctrlRef.current = inspireStream(
       params,
       (chunk) => {
+        if (generation !== generationRef.current) return;
         if (typeof chunk.text === "string") {
           setRawResult((prev) => prev + chunk.text);
         }
@@ -296,8 +469,9 @@ export default function Inspire() {
           setGenerating(false);
         }
       },
-      () => setGenerating(false),
+      () => { if (generation === generationRef.current) setGenerating(false); },
       (err) => {
+        if (generation !== generationRef.current) return;
         toast(err.message || "生成失败", "error");
         setGenerating(false);
       },
@@ -309,12 +483,15 @@ export default function Inspire() {
       toast("先生成一版内容再保存", "warning");
       return;
     }
+    const generation = generationRef.current;
     try {
       const created = await api.post("/api/content/", {
         title: selectedTitleText || undefined,
         body: body.trim() || undefined,
         tags: selectedTags,
       });
+      // 账号切换后不再用新账号的活动上下文继续 patch 旧账号对象。
+      if (generation !== generationRef.current) return;
       const note = await api.patch(`/api/content/${created.id}`, {
         title: selectedTitleText || undefined,
         body: body.trim() || undefined,
@@ -322,6 +499,7 @@ export default function Inspire() {
         item_ids: selectedItemIds,
         note_type: selectedItemIds.length > 1 ? "image" : "text",
       });
+      if (generation !== generationRef.current) return;
       setSavedNote(note);
       toast("已保存到笔记草稿", "success");
     } catch (err) {
@@ -378,6 +556,37 @@ export default function Inspire() {
           </div>
         </div>
       </div>
+
+      {IS_TAURI_RUNTIME && (
+        <div className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface-2)] px-6 py-3">
+          <div className="mx-auto max-w-5xl rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-sm font-medium text-[var(--color-text-primary)]">保存灵感 / 书签</div>
+              <span className="text-[11px] text-[var(--color-text-secondary)]">仅保存到当前账号</span>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <input value={captureTitle} onChange={(event) => setCaptureTitle(event.target.value)} placeholder="标题" className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm" />
+              <input value={captureUrl} onChange={(event) => setCaptureUrl(event.target.value)} placeholder="来源链接（可选，需 http(s)）" className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm" />
+            </div>
+            <textarea value={captureBody} onChange={(event) => setCaptureBody(event.target.value)} placeholder="你的观察或摘录（可留空，留空会标记为未获取正文）" className="mt-2 h-16 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm" />
+            <div className="mt-2 flex gap-2">
+              <input value={captureReason} onChange={(event) => setCaptureReason(event.target.value)} placeholder="为什么值得参考" className="min-w-0 flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm" />
+              <button type="button" onClick={() => void saveCapturedInspiration()} disabled={accountId === null || !captureTitle.trim()} className="shrink-0 rounded-lg bg-[#ff2442] px-3 py-2 text-sm text-white disabled:opacity-50">保存</button>
+            </div>
+            {inspirations.length > 0 && (
+              <div className="mt-3 space-y-1.5">
+                {inspirations.slice(0, 5).map((item) => (
+                  <div key={item.id} className="flex items-center gap-2 rounded-lg bg-[var(--color-surface-2)] px-3 py-2 text-xs">
+                    <span className="min-w-0 flex-1 truncate text-[var(--color-text-primary)]">{item.title}</span>
+                    <span className="text-[var(--color-text-secondary)]">{item.body ? "有正文" : "待补正文"}</span>
+                    {item.status === "converted" ? <span className="text-emerald-600">已转草稿</span> : <button type="button" onClick={() => void convertCapturedInspiration(item)} className="text-[#ff2442] hover:underline">转为草稿</button>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── 主内容区（可滚动，不受抽屉影响） ── */}
       <div className="relative flex-1 overflow-hidden">
@@ -479,7 +688,7 @@ export default function Inspire() {
                           onClick={() => toggleId(item.id, selectedItemIds, setSelectedItemIds)}
                           className={`overflow-hidden rounded-2xl border text-left transition ${active ? "border-[#ff2442] ring-2 ring-[#ffd3db]" : "border-zinc-200 hover:border-zinc-300"}`}
                         >
-                          <LocalImage itemId={item.id} src={api.imageUrl(item.id)} alt={item.title} className="aspect-square w-full object-cover" />
+                          <LocalImage itemId={item.id} version={`${item.image_version ?? 1}:${item.content_hash ?? "unknown"}`} src={api.imageUrl(item.id)} alt={item.title} className="aspect-square w-full object-cover" />
                           <div className="truncate px-2 py-2 text-xs text-zinc-700">{item.title}</div>
                         </button>
                       );
@@ -605,7 +814,7 @@ export default function Inspire() {
                             isSelected ? "border-[#ff2442] shadow-sm" : "border-transparent hover:border-zinc-300"
                           }`}
                         >
-                              <LocalImage itemId={img.id} src={api.imageUrl(img.id)} alt={img.title} className="w-full h-full object-cover" />
+                              <LocalImage itemId={img.id} version={`${img.image_version ?? 1}:${img.content_hash ?? "unknown"}`} src={api.imageUrl(img.id)} alt={img.title} className="w-full h-full object-cover" />
                           {isSelected && (
                             <div className="absolute inset-0 bg-[#ff2442]/15 flex items-end justify-end p-1">
                               <span className="w-5 h-5 rounded-full bg-[#ff2442] text-white text-[10px] font-bold flex items-center justify-center">

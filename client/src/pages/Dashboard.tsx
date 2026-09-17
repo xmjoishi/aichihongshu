@@ -20,6 +20,7 @@ import {
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
 import { createLocalDraft } from "../lib/local";
+import { useAccountContext } from "../lib/accountContext";
 
 // ── 今日建议行动卡片 ──────────────────────────────────────────────────────────
 function SuggestionCard({
@@ -56,12 +57,13 @@ function SuggestionCard({
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { accountId, scopeKey } = useAccountContext();
 
   // Tauri 桌面端只读取 Rust 本地快照，浏览器预览继续使用原 HTTP 数据源。
   const localWorkspaceQuery = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-dashboard"],
-    queryFn: readLocalWorkspaceSnapshot,
-    enabled: IS_TAURI_RUNTIME,
+    queryKey: ["local-dashboard", scopeKey],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
 
   // ── 基础实体查询（替代 analytics/summary + analytics/notes-trend）────────
@@ -115,7 +117,7 @@ export default function Dashboard() {
         </div>
       );
     }
-    return <LocalDashboardView snapshot={localWorkspaceQuery.data} />;
+    return <LocalDashboardView snapshot={localWorkspaceQuery.data} accountId={accountId ?? undefined} scopeKey={scopeKey} />;
   }
 
   if (isLoading) return <Spinner />;
@@ -353,7 +355,7 @@ export default function Dashboard() {
   );
 }
 
-function LocalDashboardView({ snapshot }: { snapshot: LocalWorkspaceSnapshot }) {
+function LocalDashboardView({ snapshot, accountId, scopeKey }: { snapshot: LocalWorkspaceSnapshot; accountId?: number; scopeKey: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -371,8 +373,8 @@ function LocalDashboardView({ snapshot }: { snapshot: LocalWorkspaceSnapshot }) 
     const title = draftTitle.trim() || "新建草稿";
     setCreating(true);
     try {
-      await createLocalDraft(title);
-      await queryClient.invalidateQueries({ queryKey: ["local-dashboard"] });
+      await createLocalDraft(title, accountId);
+      await queryClient.invalidateQueries({ queryKey: ["local-dashboard", scopeKey] });
       setDraftDialogOpen(false);
       setDraftTitle("");
       toast("草稿已创建", "success");

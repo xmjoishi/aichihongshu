@@ -15,7 +15,14 @@ import {
 import { api } from "../lib/api";
 import { Dialog, Spinner, Empty, primaryButtonClass, secondaryButtonClass } from "../components/ui";
 import { useToast } from "../components/Toast";
-import { IS_TAURI_RUNTIME, activateLocalAccount, readLocalAccountPool } from "../lib/local";
+import {
+  IS_TAURI_RUNTIME,
+  activateLocalAccount,
+  createLocalAccount,
+  readLocalAccountPool,
+  retireLocalAccount,
+  updateLocalAccount,
+} from "../lib/local";
 
 interface PoolAccount {
   id: number;
@@ -190,8 +197,8 @@ export default function AccountPool() {
       toast("无法删除当前激活账号，请先切换到其他运营账号", "error");
       return;
     }
-    if (IS_TAURI_RUNTIME) {
-      toast("桌面本地账号暂不支持删除，账号数据保持不变", "info");
+    if (IS_TAURI_RUNTIME && acc.status === "retired") {
+      toast("该账号已经退休，业务数据和登录态目录仍会保留", "info");
       return;
     }
     setDeleting(acc);
@@ -201,8 +208,12 @@ export default function AccountPool() {
     const acc = deleting;
     if (!acc) return;
     try {
-      await api.delete(`/api/account-pool/${acc.id}`);
-      toast("已删除", "success");
+      if (IS_TAURI_RUNTIME) {
+        await retireLocalAccount(acc.id);
+      } else {
+        await api.delete(`/api/account-pool/${acc.id}`);
+      }
+      toast(IS_TAURI_RUNTIME ? "账号已退休，业务数据和登录态目录已保留" : "已删除", "success");
       await reload();
     } catch (e) {
       toast(`删除失败：${(e as Error).message}`, "error");
@@ -225,8 +236,7 @@ export default function AccountPool() {
           </div>
           <button
             onClick={() => setShowAdd(true)}
-            disabled={IS_TAURI_RUNTIME}
-            title={IS_TAURI_RUNTIME ? "本地账号写入仍在迁移中" : "新建账号"}
+            title="新建账号"
             className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#ff2442] text-white text-sm font-medium hover:bg-[#e51d39] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Plus size={16} /> 新建账号
@@ -239,7 +249,7 @@ export default function AccountPool() {
         </div>
         {IS_TAURI_RUNTIME && (
           <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-selected)] p-4 text-sm text-[var(--color-text-secondary)]">
-            当前显示本地账号池；账号新增、编辑、删除和浏览器控制仍需后续迁移。激活账号切换已可用。
+            当前显示本地账号池；新增、编辑和退休已保存到本地数据库。浏览器打开/关闭仍需后续接入，不会调用旧服务。
           </div>
         )}
 
@@ -336,19 +346,20 @@ export default function AccountPool() {
 
                       <button
                         onClick={() => setEditing(acc)}
-                        disabled={IS_TAURI_RUNTIME}
                         className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
                         title="编辑账号"
                       >
                         <Pencil size={16} />
                       </button>
-                      <button
-                        onClick={() => handleDelete(acc)}
-                        className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-500 hover:bg-rose-50"
-                        title="删除账号"
-                      >
-                        <Trash2 size={16} />
-                      </button>
+                      {(!IS_TAURI_RUNTIME || acc.status !== "retired") && (
+                        <button
+                          onClick={() => handleDelete(acc)}
+                          className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-500 hover:bg-rose-50"
+                          title={IS_TAURI_RUNTIME ? "退休账号" : "删除账号"}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -381,10 +392,10 @@ export default function AccountPool() {
 
       {deleting && (
         <Dialog
-          title={`删除账号「${deleting.alias}」？`}
-          description="此操作只会标记为已退休，登录态目录会保留。"
+          title={`${IS_TAURI_RUNTIME ? "退休" : "删除"}账号「${deleting.alias}」？`}
+          description={IS_TAURI_RUNTIME ? "此操作只会标记为已退休，业务数据和登录态目录会保留。" : "此操作会删除账号。"}
           onClose={() => setDeleting(null)}
-          footer={<><button type="button" className={secondaryButtonClass} onClick={() => setDeleting(null)}>取消</button><button type="button" className={primaryButtonClass} onClick={() => void confirmDelete()}>确认删除</button></>}
+          footer={<><button type="button" className={secondaryButtonClass} onClick={() => setDeleting(null)}>取消</button><button type="button" className={primaryButtonClass} onClick={() => void confirmDelete()}>确认{IS_TAURI_RUNTIME ? "退休" : "删除"}</button></>}
         />
       )}
     </div>
@@ -405,7 +416,11 @@ function AddAccountDialog({ onClose, onCreated }: { onClose: () => void; onCreat
     }
     setSubmitting(true);
     try {
-      await api.post("/api/account-pool", { alias: alias.trim(), role, notes: notes.trim() || null });
+      if (IS_TAURI_RUNTIME) {
+        await createLocalAccount({ alias: alias.trim(), role });
+      } else {
+        await api.post("/api/account-pool", { alias: alias.trim(), role, notes: notes.trim() || null });
+      }
       toast("账号已创建，请在该卡片点击「打开浏览器」扫码登录", "success");
       onCreated();
     } catch (e) {
@@ -508,14 +523,24 @@ function EditAccountDialog({
     }
     setSubmitting(true);
     try {
-      await api.patch(`/api/account-pool/${account.id}`, {
-        alias: alias.trim(),
-        role,
-        display_name: displayName.trim() || null,
-        xhs_user_id: xhsUserId.trim() || null,
-        notes: notes.trim() || null,
-        status: statusVal,
-      });
+      if (IS_TAURI_RUNTIME) {
+        await updateLocalAccount({
+          accountId: account.id,
+          alias: alias.trim(),
+          role,
+          displayName: displayName.trim() || null,
+          status: statusVal,
+        });
+      } else {
+        await api.patch(`/api/account-pool/${account.id}`, {
+          alias: alias.trim(),
+          role,
+          display_name: displayName.trim() || null,
+          xhs_user_id: xhsUserId.trim() || null,
+          notes: notes.trim() || null,
+          status: statusVal,
+        });
+      }
       toast("已保存", "success");
       onSaved();
     } catch (e) {

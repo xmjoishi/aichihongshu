@@ -14,8 +14,10 @@ import {
   IS_TAURI_RUNTIME,
   localProfileToProfile,
   readLocalWorkspaceSnapshot,
+  updateLocalProfile,
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
+import { useAccountChange, useAccountContext } from "../lib/accountContext";
 
 // ── 工具函数 ──────────────────────────────────────────────────────
 function toArray(s: string): string[] {
@@ -275,6 +277,7 @@ function Tabs({ active, onChange }: { active: TabId; onChange: (t: TabId) => voi
 export default function ProfilePage() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const { accountId, scopeKey } = useAccountContext();
   const { confirmAndRetry, dialog: riskDialog } = useRiskConfirm();
   const [activeTab, setActiveTab] = useState<TabId>("account");
   const [editing, setEditing] = useState(false);
@@ -289,9 +292,9 @@ export default function ProfilePage() {
   });
 
   const { data: localWorkspace, isLoading: localProfileLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-profile"],
-    queryFn: readLocalWorkspaceSnapshot,
-    enabled: IS_TAURI_RUNTIME,
+    queryKey: ["local-profile", scopeKey],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
   const profile = IS_TAURI_RUNTIME
     ? (localWorkspace?.profile ? localProfileToProfile(localWorkspace.profile) : undefined)
@@ -306,6 +309,12 @@ export default function ProfilePage() {
 
   // 刷新爬虫轮询
   const [refreshing, setRefreshing] = useState(false);
+  useAccountChange(() => {
+    setEditing(false);
+    setForm(null);
+    setShowAI(false);
+    setRefreshing(false);
+  });
   useEffect(() => {
     if (!refreshing) return;
     const timer = setInterval(async () => {
@@ -330,6 +339,10 @@ export default function ProfilePage() {
   }, [refreshing, qc, toast]);
 
   async function handleRefresh() {
+    if (IS_TAURI_RUNTIME) {
+      toast("本地账号尚未接入平台资料抓取；可直接编辑并保存人设字段", "info");
+      return;
+    }
     try {
       await confirmAndRetry((ack) => api.post("/api/profile/refresh", {}, riskAckHeader(ack)));
       setRefreshing(true);
@@ -347,6 +360,25 @@ export default function ProfilePage() {
   const saveMutation = useMutation({
     mutationFn: () => {
       if (!form) throw new Error("no form");
+      if (IS_TAURI_RUNTIME) {
+        if (accountId === null) throw new Error("当前账号尚未就绪");
+        return updateLocalProfile({
+          accountPoolId: accountId,
+          accountId: form.account_id || null,
+          displayName: form.display_name || null,
+          niche: form.niche || null,
+          targetAudience: form.target_audience || null,
+          contentPillars: toArray(form.content_pillars),
+          personaName: form.persona_name || null,
+          personaBio: form.persona_bio || null,
+          personaTone: form.persona_tone || null,
+          personaTaboos: toArray(form.persona_taboos),
+          preferredStyles: toArray(form.preferred_styles),
+          preferredScenes: toArray(form.preferred_scenes),
+          hashtagPool: toArray(form.hashtag_pool),
+          postingRhythm: form.posting_rhythm || null,
+        });
+      }
       return api.patch("/api/profile", {
         account_id: form.account_id || undefined,
         display_name: form.display_name || undefined,
@@ -367,6 +399,7 @@ export default function ProfilePage() {
     onSuccess: () => {
       toast("已保存", "success");
       qc.invalidateQueries({ queryKey: ["profile"] });
+      if (IS_TAURI_RUNTIME) qc.invalidateQueries({ queryKey: ["local-profile", scopeKey] });
       qc.invalidateQueries({ queryKey: ["analytics"] });
       setEditing(false);
     },
@@ -613,6 +646,7 @@ export default function ProfilePage() {
       {/* AI 面板 */}
       {showAI && (
         <AIPanel
+          accountId={accountId}
           systemExtra="当前任务：帮助优化或生成账号人设内容，包括人设简介、语气风格、禁忌词、标签池等。"
           onApply={handleAIApply}
           onClose={() => setShowAI(false)}

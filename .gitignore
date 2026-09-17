@@ -46,3 +46,6 @@ data/publish_staging/
 
 # 多账号浏览器登录态（含 Chromium user_data_dir，体积大、含敏感 cookie）
 data/browser_profiles/
+
+# 隔离桌面 QA 工作区（由 scripts/prepare-desktop-qa-workspace.mjs 生成）
+.qa/
