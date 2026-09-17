@@ -24,6 +24,7 @@
     "check:browser-capture": "node ./scripts/check-browser-capture.mjs",
     "check:publish-preparation": "node ./scripts/check-publish-preparation.mjs",
     "check:workspace-search": "node ./scripts/check-workspace-search.mjs",
+    "check:local-knowledge": "node ./scripts/check-local-knowledge.mjs",
     "tauri:build": "npm --prefix client run tauri -- build",
     "build": "npm --prefix client run build"
   }

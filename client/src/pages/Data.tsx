@@ -744,7 +744,21 @@ export default function Data() {
         {tab === "overview" && <OverviewTab summary={summary} />}
         {tab === "ranking" && <RankingTab allNotes={allNotes} />}
         {tab === "insights" && <InsightsTab insights={insights} />}
-        {tab === "knowledge" && <KnowledgeTab />}
+        {tab === "knowledge" && (
+          <KnowledgeTab
+            notes={allNotes}
+            referenceAccounts={allAccounts.map((account) => ({
+              account_id: account.account_id,
+              name: account.name || account.account_id,
+              notes: (account.top_notes || []).map((note) => ({
+                title: note.title,
+                body: "",
+                likes: note.likes,
+                note_url: note.url,
+              })),
+            })).filter((group) => group.notes.length > 0)}
+          />
+        )}
       </div>
 
       {/* 悬浮「问数据」按钮 */}

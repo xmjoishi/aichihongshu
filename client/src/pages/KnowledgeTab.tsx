@@ -6,12 +6,19 @@ import {
   Sparkles, Check,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api, openInBrowser } from "../lib/api";
 import type {
   KnowledgeRule, KnowledgeMySample,
   KnowledgeRefGroup, KnowledgeInspiration, Note,
 } from "../lib/types";
 import { computeRulesFromNotes, mergeRules } from "../selectors/knowledge";
+import {
+  IS_TAURI_RUNTIME,
+  readLocalInspirations,
+  type LocalInspirationSummary,
+} from "../lib/local";
+import { useAccountContext } from "../lib/accountContext";
 
 // ─── 分区容器 ─────────────────────────────────────────────────────────────────
 
@@ -394,7 +401,97 @@ function InspirationsSection() {
 
 // ─── 主组件 ───────────────────────────────────────────────────────────────────
 
-export default function KnowledgeTab() {
+function LocalKnowledgeTab({
+  notes,
+  referenceAccounts,
+}: {
+  notes: Note[];
+  referenceAccounts: KnowledgeRefGroup[];
+}) {
+  const { accountId, scopeKey } = useAccountContext();
+  const rules = useMemo(
+    () => computeRulesFromNotes(notes).map((rule) => ({ ...rule, enabled: true })),
+    [notes],
+  );
+  const published = useMemo(
+    () => notes.filter((note) => note.status === "published").sort((a, b) => b.likes - a.likes),
+    [notes],
+  );
+  const { data: inspirations = [], isLoading } = useQuery<LocalInspirationSummary[]>({
+    queryKey: ["local-knowledge-inspirations", scopeKey],
+    queryFn: () => readLocalInspirations(accountId ?? undefined),
+    enabled: accountId !== null,
+  });
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold text-zinc-800">经验库</h2>
+        <p className="text-xs text-zinc-400 mt-0.5">当前账号的本地笔记、榜样样本与灵感；不会回退请求旧服务</p>
+      </div>
+      <Section icon={BarChart2} title="互动规律" badge={rules.length ? `${rules.length} 条` : undefined}>
+        {!rules.length ? (
+          <p className="text-xs text-zinc-400 py-2 text-center">暂无可计算的已发布笔记数据</p>
+        ) : (
+          <div className="space-y-2">
+            {rules.map((rule) => (
+              <div key={rule.key} className="px-3.5 py-2.5 rounded-xl border border-zinc-100 bg-zinc-50">
+                <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wide">{rule.key}</span>
+                <p className="text-xs text-zinc-700 mt-0.5">{rule.desc}</p>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="text-[10px] text-zinc-400 mt-3">本地规律由当前账号数据即时计算；启停偏好尚未迁移，暂不提供不可持久化的开关。</p>
+      </Section>
+      <Section icon={BookOpen} title="我的已发布样本" badge={published.length ? `${published.length} 篇` : undefined}>
+        {!published.length ? (
+          <p className="text-xs text-zinc-400 py-2 text-center">当前账号暂无已发布笔记</p>
+        ) : (
+          <div className="space-y-2">
+            {published.map((note) => (
+              <div key={note.id} className="px-3.5 py-2.5 rounded-xl border border-zinc-100">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium text-zinc-800 truncate">{note.title || "无标题"}</span>
+                  <span className="text-[10px] text-rose-500 shrink-0">赞 {note.likes}</span>
+                </div>
+                {note.body && <p className="text-[11px] text-zinc-400 mt-1 line-clamp-2">{note.body}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+      <Section icon={Users} title="榜样笔记样本" badge={referenceAccounts.reduce((sum, group) => sum + group.notes.length, 0) ? `${referenceAccounts.reduce((sum, group) => sum + group.notes.length, 0)} 条` : undefined}>
+        {!referenceAccounts.length ? (
+          <p className="text-xs text-zinc-400 py-2 text-center">当前账号暂无榜样笔记样本</p>
+        ) : referenceAccounts.map((group) => (
+          <div key={group.account_id} className="mb-3 last:mb-0">
+            <p className="text-[10px] font-semibold text-zinc-400 mb-1.5">@{group.name}</p>
+            {group.notes.map((note, index) => (
+              <div key={`${group.account_id}-${index}`} className="flex justify-between gap-3 px-3.5 py-2.5 rounded-xl border border-zinc-100 mb-1.5">
+                <span className="text-xs text-zinc-700">{note.title}</span>
+                <span className="text-[10px] text-rose-400 shrink-0">赞 {note.likes}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </Section>
+      <Section icon={Lightbulb} title="本地灵感" badge={inspirations.length ? `${inspirations.length} 条` : undefined}>
+        {isLoading ? <p className="text-xs text-zinc-400 py-2 text-center">加载中…</p> : inspirations.length ? (
+          <div className="flex flex-wrap gap-2">
+            {inspirations.map((item) => <span key={item.id} className="text-xs text-zinc-700 px-3 py-1.5 rounded-full border border-zinc-200">{item.title}</span>)}
+          </div>
+        ) : <p className="text-xs text-zinc-400 py-2 text-center">当前账号暂无本地灵感</p>}
+        <Link to="/inspire" className="inline-flex mt-3 text-xs text-[#ff2442] hover:underline">前往灵感页管理</Link>
+      </Section>
+    </div>
+  );
+}
+
+export default function KnowledgeTab({ notes = [], referenceAccounts = [] }: { notes?: Note[]; referenceAccounts?: KnowledgeRefGroup[] }) {
+  if (IS_TAURI_RUNTIME) {
+    return <LocalKnowledgeTab notes={notes} referenceAccounts={referenceAccounts} />;
+  }
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between">
