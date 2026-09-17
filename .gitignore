@@ -49,3 +49,6 @@ data/browser_profiles/
 
 # 隔离桌面 QA 工作区（由 scripts/prepare-desktop-qa-workspace.mjs 生成）
 .qa/
+
+# Noomd 本地工作区元数据，不属于本项目提交
+.noomd/
