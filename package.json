@@ -23,6 +23,7 @@
     "check:reference-account-local": "node ./scripts/check-reference-account-local.mjs",
     "check:inspiration-capture": "node ./scripts/check-inspiration-capture.mjs",
     "check:browser-capture": "node ./scripts/check-browser-capture.mjs",
+    "check:browser-capture-link": "node ./scripts/check-browser-capture-link.mjs",
     "check:publish-preparation": "node ./scripts/check-publish-preparation.mjs",
     "check:workspace-search": "node ./scripts/check-workspace-search.mjs",
     "check:local-knowledge": "node ./scripts/check-local-knowledge.mjs",

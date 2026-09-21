@@ -184,6 +184,23 @@ pub struct LocalPublishOutboxUpdate {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedImageFile {
+    pub index: i64,
+    pub filename: String,
+    pub item_id: i64,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedImagesSummary {
+    pub note_id: i64,
+    pub stage_dir: String,
+    pub files: Vec<StagedImageFile>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalNoteItemsUpdate {
@@ -497,6 +514,16 @@ impl LocalDb {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// 读取当前激活运营账号，供浏览器剪藏回传等宿主侧链路盖章使用。
+    /// 语义与其他读取一致：无激活账号时确保默认账号存在。
+    pub fn current_active_account(&self) -> Result<ActiveAccount, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取当前运营账号失败: {error}"))
     }
 
     /// 读取当前运营账号可见物品的本地图片，返回 data URL 供桌面 WebView 展示。
@@ -1990,6 +2017,146 @@ impl LocalDb {
             .collect::<SqlResult<Vec<_>>>()
             .map_err(|error| format!("解析发布历史失败: {error}"));
         result
+    }
+
+    /// 笔记的发布图片暂存目录，位于数据库同级的 publish_staging/{note_id}。
+    /// 只由本层根据账号归属的笔记计算，不接受前端传入的任意路径。
+    fn publish_stage_dir(&self, note_id: i64) -> PathBuf {
+        let data_dir = self.path.parent().unwrap_or_else(|| Path::new("."));
+        data_dir.join("publish_staging").join(note_id.to_string())
+    }
+
+    /// 校验笔记属于当前账号后返回其暂存目录路径，供宿主在文件管理器中打开。
+    pub fn local_note_stage_dir(
+        &self,
+        note_id: i64,
+        expected_account_id: Option<i64>,
+    ) -> Result<PathBuf, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取当前运营账号失败: {error}"))?;
+        ensure_expected_account(&active, expected_account_id)
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM notes WHERE id = ?1 AND account_pool_id = ?2 AND deleted_at IS NULL",
+                params![note_id, active.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取发布笔记失败: {error}"))?;
+        if exists.is_none() {
+            return Err("笔记不存在或不属于当前账号".to_string());
+        }
+        Ok(self.publish_stage_dir(note_id))
+    }
+
+    /// 把笔记关联素材按上传顺序复制到本地暂存目录，文件名带序号前缀，
+    /// 供用户按编号手动拖拽上传；不访问平台、不修改素材库。
+    pub fn stage_local_note_images(
+        &self,
+        note_id: i64,
+        expected_account_id: Option<i64>,
+    ) -> Result<StagedImagesSummary, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取当前运营账号失败: {error}"))?;
+        ensure_expected_account(&active, expected_account_id)
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+
+        let association: Option<(Option<i64>, Option<String>)> = conn
+            .query_row(
+                "SELECT item_id, item_ids FROM notes
+                 WHERE id = ?1 AND account_pool_id = ?2 AND deleted_at IS NULL",
+                params![note_id, active.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| format!("读取笔记素材关联失败: {error}"))?;
+        let Some((primary_item_id, item_ids_json)) = association else {
+            return Err("笔记不存在或不属于当前账号".to_string());
+        };
+        let mut item_ids = parse_json_vec::<i64>(item_ids_json);
+        if item_ids.is_empty() {
+            if let Some(item_id) = primary_item_id {
+                item_ids.push(item_id);
+            }
+        }
+
+        let stage_dir = self.publish_stage_dir(note_id);
+        // 每次准备都重建暂存目录，避免上一次更多图片时的残留文件混入本次上传。
+        if stage_dir.exists() {
+            fs::remove_dir_all(&stage_dir).map_err(|error| {
+                format!("清理旧暂存目录失败（{}）: {error}", stage_dir.display())
+            })?;
+        }
+        fs::create_dir_all(&stage_dir)
+            .map_err(|error| format!("创建暂存目录失败（{}）: {error}", stage_dir.display()))?;
+
+        let mut files = Vec::new();
+        for item_id in item_ids {
+            let record: Option<(Option<String>, String)> = conn
+                .query_row(
+                    "SELECT title, image_path FROM items
+                     WHERE id = ?1 AND account_pool_id = ?2 AND deleted_at IS NULL",
+                    params![item_id, active.id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|error| format!("读取暂存素材失败: {error}"))?;
+            let Some((title, stored_path)) = record else {
+                continue;
+            };
+            let source = self.resolve_image_path(&stored_path);
+            if !source.is_file() {
+                continue;
+            }
+            let source_name = source
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .unwrap_or("image");
+            // 序号前缀保证 Finder 按文件名排序即上传顺序。
+            let index = files.len() as i64 + 1;
+            let filename = format!("{index:02}_{source_name}");
+            fs::copy(&source, stage_dir.join(&filename)).map_err(|error| {
+                format!(
+                    "复制暂存图片失败（{} → {}）: {error}",
+                    source.display(),
+                    filename
+                )
+            })?;
+            files.push(StagedImageFile {
+                index,
+                filename,
+                item_id,
+                title: title.unwrap_or_default(),
+            });
+        }
+
+        Ok(StagedImagesSummary {
+            note_id,
+            stage_dir: stage_dir.display().to_string(),
+            files,
+        })
+    }
+
+    /// 确认发布后清理笔记暂存目录；目录不存在时视为已清理。
+    pub fn clear_local_note_stage(
+        &self,
+        note_id: i64,
+        expected_account_id: Option<i64>,
+    ) -> Result<(), String> {
+        let stage_dir = self.local_note_stage_dir(note_id, expected_account_id)?;
+        if stage_dir.exists() {
+            fs::remove_dir_all(&stage_dir)
+                .map_err(|error| format!("清理暂存目录失败（{}）: {error}", stage_dir.display()))?;
+        }
+        Ok(())
     }
 
     /// 原子更新本地笔记的素材关联顺序，复用笔记版本和账号归属校验。
@@ -5679,6 +5846,72 @@ mod tests {
             )
             .expect("read account scoped prompt config");
         assert!(stored.contains("legacy_prompt"));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn stages_note_images_in_upload_order_and_clears_after_confirm() {
+        let (db, dir) = temp_db();
+        let assets_dir = dir.join("assets").join("fixtures");
+        fs::create_dir_all(&assets_dir).expect("create fixture assets");
+        fs::write(assets_dir.join("a.png"), b"image-a").expect("write fixture a");
+        fs::write(assets_dir.join("b.png"), b"image-b").expect("write fixture b");
+
+        let conn = db.connect().expect("connect test db");
+        conn.execute(
+            "INSERT INTO items (id, title, image_path, account_pool_id) VALUES
+             (2001, '第一张', 'fixtures/a.png', 1),
+             (2002, '第二张', 'fixtures/b.png', 1)",
+            [],
+        )
+        .expect("insert items");
+        let note = db.create_local_draft("暂存顺序测试").expect("create draft");
+        // 关联顺序与素材 id 顺序相反，验证暂存序号跟随笔记关联顺序。
+        conn.execute(
+            "UPDATE notes SET item_ids = '[2002, 2001]' WHERE id = ?1",
+            params![note.id],
+        )
+        .expect("set note item order");
+
+        let stage_dir = dir.join("publish_staging").join(note.id.to_string());
+        // 模拟上一次暂存遗留的旧文件，重新准备时必须清理。
+        fs::create_dir_all(&stage_dir).expect("create stale stage dir");
+        fs::write(stage_dir.join("99_stale.png"), b"stale").expect("write stale file");
+        drop(conn);
+
+        let staged = db
+            .stage_local_note_images(note.id, None)
+            .expect("stage note images");
+        assert_eq!(staged.note_id, note.id);
+        assert_eq!(staged.stage_dir, stage_dir.display().to_string());
+        assert_eq!(staged.files.len(), 2);
+        assert_eq!(staged.files[0].index, 1);
+        assert_eq!(staged.files[0].item_id, 2002);
+        assert_eq!(staged.files[0].filename, "01_b.png");
+        assert_eq!(staged.files[0].title, "第二张");
+        assert_eq!(staged.files[1].index, 2);
+        assert_eq!(staged.files[1].item_id, 2001);
+        assert_eq!(staged.files[1].filename, "02_a.png");
+        assert!(stage_dir.join("01_b.png").is_file());
+        assert!(stage_dir.join("02_a.png").is_file());
+        assert!(
+            !stage_dir.join("99_stale.png").exists(),
+            "重新准备必须清掉上次遗留文件"
+        );
+
+        // 账号不匹配时既不能暂存，也不能解析暂存目录。
+        assert!(db.stage_local_note_images(note.id, Some(999)).is_err());
+        assert!(db.local_note_stage_dir(note.id, Some(999)).is_err());
+        // 不存在的笔记不能解析暂存目录。
+        assert!(db.local_note_stage_dir(987654, None).is_err());
+
+        db.clear_local_note_stage(note.id, None)
+            .expect("clear stage after confirm");
+        assert!(!stage_dir.exists());
+        // 重复清理幂等。
+        db.clear_local_note_stage(note.id, None)
+            .expect("clear stage again");
+
         fs::remove_dir_all(dir).ok();
     }
 }

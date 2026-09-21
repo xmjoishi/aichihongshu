@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, ExternalLink, Check, X, Send } from "lucide-react";
+import { Copy, ExternalLink, Check, X, Send, FolderOpen, Images, Loader2 } from "lucide-react";
 import { api, API_BASE, openInSystemBrowser } from "../lib/api";
 import { Note } from "../lib/types";
 import { Spinner, StatusBadge } from "../components/ui";
@@ -14,9 +14,13 @@ import {
   prepareLocalPublish,
   updateLocalPublish,
   updateLocalNoteStatus,
+  stageLocalNoteImages,
+  openLocalStageDir,
+  clearLocalNoteStage,
   type LocalWorkspaceSnapshot,
   type LocalPublishOutboxStatus,
   type LocalPublishOutboxSummary,
+  type LocalStagedImageFile,
 } from "../lib/local";
 import { useAccountContext } from "../lib/accountContext";
 import { createPublishAttempt, preparePublish, type PublishPreparation } from "../lib/publishPreparation";
@@ -492,6 +496,10 @@ function LocalPublishModal({
   const [saving, setSaving] = useState(false);
   const [outboxEntry, setOutboxEntry] = useState<LocalPublishOutboxSummary | null>(null);
   const [outboxError, setOutboxError] = useState<string | null>(null);
+  const [staging, setStaging] = useState(false);
+  const [stageFiles, setStageFiles] = useState<LocalStagedImageFile[] | null>(null);
+  const [stageError, setStageError] = useState<string | null>(null);
+  const [openingStage, setOpeningStage] = useState(false);
   const preparation: PublishPreparation = preparePublish(note, accountId);
   const attempt = useMemo(() => createPublishAttempt(preparation), [preparation.noteId, preparation.snapshotKey]);
   const tagLine = note.tags.length ? `\n\n${note.tags.map((tag) => `#${tag}`).join(" ")}` : "";
@@ -524,6 +532,40 @@ function LocalPublishModal({
     return () => { mounted = false; };
   }, [accountId, attempt.id, preparation.accountId, preparation.body, preparation.contentVersion, preparation.itemIds.join(","), preparation.noteId, preparation.snapshotKey, preparation.tags.join("\u0000"), preparation.title, preparation.ready]);
 
+  // 打开弹窗时自动把笔记图片按上传顺序暂存到本地文件夹，供一键打开后拖拽上传。
+  const hasImages = (note.item_ids?.length ?? 0) > 0;
+  const itemIdsKey = note.item_ids?.join(",") ?? "";
+  useEffect(() => {
+    let mounted = true;
+    if (!hasImages || accountId === null) return () => { mounted = false; };
+    setStaging(true);
+    setStageFiles(null);
+    setStageError(null);
+    void stageLocalNoteImages(note.id, accountId)
+      .then((summary) => {
+        if (mounted) setStageFiles(summary.files);
+      })
+      .catch((cause: unknown) => {
+        if (mounted) setStageError(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => {
+        if (mounted) setStaging(false);
+      });
+    return () => { mounted = false; };
+  }, [accountId, hasImages, note.id, itemIdsKey]);
+
+  async function openStageDir() {
+    if (accountId === null || !stageFiles?.length) return;
+    setOpeningStage(true);
+    try {
+      await openLocalStageDir(note.id, accountId);
+    } catch (cause: unknown) {
+      toast(cause instanceof Error ? cause.message : String(cause), "error");
+    } finally {
+      setOpeningStage(false);
+    }
+  }
+
   async function copy(type: "title" | "body" | "all") {
     const text = type === "title" ? (note.title ?? "") : type === "body" ? `${note.body ?? ""}${tagLine}` : fullText;
     try {
@@ -553,6 +595,10 @@ function LocalPublishModal({
         platformUrl: noteUrl.trim() || null,
       });
       setOutboxEntry(confirmed);
+      // 与旧发布助手保持一致：确认发布后清理暂存文件夹，失败不影响发布记录。
+      if (accountId !== null && stageFiles !== null) {
+        clearLocalNoteStage(note.id, accountId).catch(() => {});
+      }
       await onConfirmed(noteUrl.trim() || undefined);
     } finally {
       setSaving(false);
@@ -615,7 +661,57 @@ function LocalPublishModal({
             {outboxError && <p className="mt-1 text-red-600">无法持久化发布准备：{outboxError}</p>}
           </div>
           {history.length > 0 && <div className="rounded-xl border border-zinc-200 px-3 py-2 text-[11px] text-zinc-500"><p className="font-medium text-zinc-700 mb-1">历史状态</p>{history.slice(0, 5).map((entry) => <p key={entry.attemptId} className="flex justify-between gap-2"><span>{publishOutboxStatusLabel(entry.status)}</span><span>{entry.updatedAt}</span></p>)}</div>}
-          {note.item_ids?.length ? <div className="flex gap-2 overflow-x-auto">{note.item_ids.map((id) => <LocalImage key={id} itemId={id} src="" variant="thumbnail" className="h-16 w-16 shrink-0 rounded-lg object-cover bg-zinc-100" alt="" />)}</div> : null}
+          {note.item_ids?.length ? (
+            <div className="rounded-xl border border-zinc-200 overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2 bg-[var(--color-surface-2)] border-b border-zinc-100">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--color-text-secondary)]">
+                  <Images size={13} />
+                  配图暂存
+                  {stageFiles !== null && (
+                    <span className="font-normal text-zinc-400">（{stageFiles.length} 张，按序号顺序上传）</span>
+                  )}
+                </div>
+                {staging && (
+                  <span className="text-xs text-zinc-400 flex items-center gap-1">
+                    <Loader2 size={11} className="animate-spin" />准备中…
+                  </span>
+                )}
+              </div>
+              <div className="px-3 py-3 flex gap-2 overflow-x-auto">
+                {stageFiles !== null
+                  ? stageFiles.map((file) => (
+                      <div key={file.filename} className="shrink-0 relative">
+                        <LocalImage itemId={file.itemId} src="" variant="thumbnail" className="h-16 w-16 rounded-lg object-cover bg-zinc-100" alt={file.title || file.filename} />
+                        <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] rounded-md px-1 py-0.5 leading-none">{String(file.index).padStart(2, "0")}</span>
+                      </div>
+                    ))
+                  : note.item_ids!.map((id) => (
+                      <LocalImage key={id} itemId={id} src="" variant="thumbnail" className="h-16 w-16 shrink-0 rounded-lg object-cover bg-zinc-100" alt="" />
+                    ))}
+              </div>
+              {stageError && (
+                <div className="px-3 py-2 bg-amber-50 border-t border-amber-100">
+                  <p className="text-[11px] text-amber-700 leading-relaxed">图片暂存失败：{stageError}。可关闭弹窗后重试，或打开小红书发布页后手动选择原图。</p>
+                </div>
+              )}
+              {stageFiles !== null && stageFiles.length > 0 && (
+                <div className="px-3 py-2 bg-amber-50 border-t border-amber-100">
+                  <p className="text-[11px] text-amber-700 leading-relaxed">图片已复制到本地暂存文件夹，点击「打开文件夹」后按 01-NN 序号顺序拖拽上传到小红书；确认发布后自动清理。</p>
+                </div>
+              )}
+              {stageFiles !== null && stageFiles.length === 0 && (
+                <div className="px-3 py-2 bg-amber-50 border-t border-amber-100">
+                  <p className="text-[11px] text-amber-700 leading-relaxed">笔记关联的素材图片在本地找不到文件，无法生成待上传文件夹；请先到图库修复素材。</p>
+                </div>
+              )}
+            </div>
+          ) : null}
+          {stageFiles !== null && stageFiles.length > 0 && (
+            <button onClick={() => void openStageDir()} disabled={openingStage} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 border-dashed border-zinc-200 text-xs text-zinc-500 hover:border-[#ff2442] hover:text-[#ff2442] disabled:opacity-50">
+              {openingStage ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />}
+              {openingStage ? "正在打开…" : "一键打开待上传图片文件夹"}
+            </button>
+          )}
           <div className="rounded-xl bg-[var(--color-surface-2)] p-3"><div className="flex items-center justify-between mb-1.5"><span className="text-xs text-[var(--color-text-secondary)]">标题</span><button onClick={() => void copy("title")} className="text-xs text-zinc-400 hover:text-[#ff2442]">{copied === "title" ? "已复制" : "复制"}</button></div><p className="text-sm font-medium text-[var(--color-text-primary)]">{note.title || "（无标题）"}</p></div>
           <div className="rounded-xl bg-[var(--color-surface-2)] p-3"><div className="flex items-center justify-between mb-1.5"><span className="text-xs text-[var(--color-text-secondary)]">正文 + 标签</span><button onClick={() => void copy("body")} className="text-xs text-zinc-400 hover:text-[#ff2442]">{copied === "body" ? "已复制" : "复制"}</button></div><p className="text-xs text-[var(--color-text-primary)] whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto">{note.body || "（无正文）"}</p></div>
           <button onClick={() => void copy("all")} className="w-full rounded-xl border-2 border-dashed border-zinc-200 py-2.5 text-xs text-zinc-500 hover:border-[#ff2442] hover:text-[#ff2442]">{copied === "all" ? "已复制全文" : "一键复制全文（标题 + 正文 + 标签）"}</button>

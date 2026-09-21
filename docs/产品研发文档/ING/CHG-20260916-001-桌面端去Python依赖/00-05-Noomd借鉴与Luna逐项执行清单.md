@@ -43,7 +43,7 @@
 | N09 | 单篇笔记创作台 | N08 | 已实施最小当前账号/保存状态/辅助面板边界；原生尺寸验收待补 | 素材、正文、AI 在同一对象内协作 |
 | N10 | 灵感收集与选题转化 | N09 | 已实施 SQLite 本地书签/观察、账号隔离、去重与显式转草稿；真实来源抓取待补 | 参考有来源，转草稿有显式关联 |
 | N11 | 搜索、业务视图与导航恢复 | N10 | 已实施最小统一搜索与视图偏好；原生重启/大样本性能待验收 | 当前账号搜索、筛选/滚动恢复 |
-| N12 | 浏览器收集适配 | N11 | 已实施剪藏消息校验、账号作用域 pending/确认/失败重试和幂等队列；真实浏览器链路依赖 D4 | 先验证受限收集，后接正式入口 |
+| N12 | 浏览器收集适配 | N11 | 已实施剪藏消息校验、账号作用域 pending/确认/失败重试和幂等队列；2026-09-21 D4 定向后新增扩展+原生宿主+Rust 回传最小原型（仓库内链路），真实浏览器原生验收待用户操作 | 扩展剪藏原生验收后接正式入口 |
 | N13 | 发布准备、填充与结果核查 | N12 | 已实施内容准备检查与发布快照/幂等契约；平台填充与提交依赖 D4/另行授权 | 发布状态含结果不明且不重复提交 |
 | N14 | 全链回归与文档收口 | N13；可先回归已完成阶段 | 已完成自动回归与文档收口；原生 Tauri、D3/D4 和正式平台链路仍待验收 | AC 逐条记录，真实未完成项保留 |
 
@@ -213,6 +213,10 @@
 - AC 状态：N12-AC1 的消息格式、账号归属、大小、URL 边界、待确认、失败重试和幂等队列已有自动契约；真实扩展传输和原生窗口交互待 D4 方案与用户验收。N12-AC2 尚未声称浏览器支持矩阵，扩展/Native Messaging 仍未接入。
 - 未开放范围：不导出 Cookie、profile 或账号备份；不直接执行 Chromium；不把剪藏校验契约当作浏览器链路已完成。
 
+- 追加实施（2026-09-21，D4 定向后的真实链路最小原型）：新增 `browser-extension/`（MV3 扩展 + `host/host.cjs` 原生宿主 + `install-host.mjs` 用户级安装脚本）与 `client/src-tauri/src/browser_capture.rs`（owner-only Unix socket 监听、镜像再校验、以当前激活账号盖章 `targetAccountId`、`browser-capture://message` 事件）；`Inspire.tsx` 增加同名 Tauri 事件监听并复用既有 acceptCapture 队列。扩展权限最小集合为 `nativeMessaging`/`scripting`/`activeTab`，无常驻 content script、无 host 权限；账号字段一律由 Rust 盖章，不采纳扩展输入。
+- 追加自动验证：`npm run check:browser-capture-link`（静态权限门禁 + 临时 Unix socket 实测宿主封帧/转发 4 场景）、`npm run check:browser-capture`、`cargo test`（24 passed，含 browser_capture 4 项）、`npm run build` 通过。未安装宿主 manifest 到 `~/Library`、未在 Chrome 加载扩展、未用真实登录态剪藏。
+- AC 状态更新：N12-AC1 的消息格式、账号盖章与幂等契约在真实链路形态下已有自动契约（宿主↔socket↔Rust 校验）；真实扩展传输到灵感页确认入库的原生窗口证据待用户执行安装与剪藏。N12-AC2 的权限清单已固化为最小集合并由安装脚本强制（超集拒绝安装）；浏览器/版本支持矩阵仍待真实 Chrome 验收。
+
 ### N13 发布准备、填充与结果核查
 
 - 入口：Notes 发布助手、现有发布 API 契约、浏览器适配与任务记录。
@@ -226,6 +230,7 @@
 - 自动验证：`node --check scripts/check-publish-preparation.mjs`、`npm run check:publish-preparation`、`npm run build`、`git diff --check` 通过；未打开小红书发布页、未提交正式账号。
 - AC 状态：N13-AC1 的内容快照和账号/版本边界已落地；真实图片顺序预览、浏览器账号核对待 D4/原生验收。N13-AC2 的状态模型和提交闸门已定义，未连接真实平台，因此不宣称超时/断线运行时证据。
 - 未开放范围：平台填充、正式提交、发布成功核查和自动重试保持未启用；正式账号发布需要单独授权与可验证环境。
+- 追加修复（2026-09-21，用户验收发现回归）：本地「发布准备」弹窗此前丢了旧发布助手的图片暂存/一键打开文件夹能力，已用 Rust command 恢复——`stage_local_note_images` 按笔记关联顺序把原图复制到数据库同级 `publish_staging/{note_id}`（`01_` 序号前缀、每次准备重建目录）、`open_local_stage_dir` 由宿主经 opener 插件打开文件夹（不扩大前端 ACL）、`clear_local_note_stage` 在确认发布后清理；弹窗进入时自动暂存并显示序号缩略图与「一键打开待上传图片文件夹」按钮。自动验证与验收状态见 00-03 最新修复条目；Finder 实际打开与确认后清理待用户原生验收。
 
 ### N14 全链回归与文档收口
 

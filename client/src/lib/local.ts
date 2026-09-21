@@ -287,6 +287,19 @@ export interface LocalPublishOutboxSummary extends LocalPublishOutboxPrepare {
   updatedAt: string;
 }
 
+export interface LocalStagedImageFile {
+  index: number;
+  filename: string;
+  itemId: number;
+  title: string;
+}
+
+export interface LocalStagedImagesSummary {
+  noteId: number;
+  stageDir: string;
+  files: LocalStagedImageFile[];
+}
+
 export interface LocalNoteItemsUpdate {
   noteId: number;
   accountPoolId: number;
@@ -417,6 +430,42 @@ export function readLocalPublishOutbox(
   return invoke<LocalPublishOutboxSummary[]>("read_local_publish_outbox", {
     accountPoolId,
     noteId,
+  });
+}
+
+/** 把笔记关联素材按上传顺序复制到本地暂存目录，返回带序号的文件清单。 */
+export function stageLocalNoteImages(
+  noteId: number,
+  accountPoolId?: number,
+): Promise<LocalStagedImagesSummary> {
+  requireTauri();
+  return invoke<LocalStagedImagesSummary>("stage_local_note_images", {
+    noteId,
+    accountPoolId,
+  });
+}
+
+/** 在系统文件管理器中打开笔记暂存目录，返回目录路径。 */
+export function openLocalStageDir(
+  noteId: number,
+  accountPoolId?: number,
+): Promise<string> {
+  requireTauri();
+  return invoke<string>("open_local_stage_dir", {
+    noteId,
+    accountPoolId,
+  });
+}
+
+/** 确认发布后清理笔记暂存目录。 */
+export function clearLocalNoteStage(
+  noteId: number,
+  accountPoolId?: number,
+): Promise<void> {
+  requireTauri();
+  return invoke<void>("clear_local_note_stage", {
+    noteId,
+    accountPoolId,
   });
 }
 

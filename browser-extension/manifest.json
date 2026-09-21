@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "爱吃红薯剪藏",
+  "version": "0.1.0",
+  "description": "把当前页剪藏到爱吃红薯灵感队列（本地 Native Messaging，权限最小化）",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnyiofNSJE/tK4i11sIRTMKKnfa7DM3z7dGpFyELJlNorf6VFvax3vXF7l2rooDrbL9DXJ9AeNM1E1bwRF6YVSm9hamDP6CSrK54Gmq177prt7IhS/AAvFRaRiUSpqvHQsU1jyGqO5xh26iQp9R5GPWOgijh/KeAs4C6+7+6E/lnJMmloNqyTjZ2Smp2UQW2Z7ma7+Skbm8S/X6zjA2zxCBa+94hXCtsvyjYXabg2ZRTwmSviNlqtaJklEP+5naly4sx4V3LWX1AqUBmi91XsckAHO0InRYribd3RDYog18CHliJigNfOvm1n8L2K0tsN4JFIYFThusGtpkB1fmjedQIDAQAB",
+  "permissions": ["nativeMessaging", "scripting", "activeTab"],
+  "host_permissions": [],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "剪藏到爱吃红薯" }
+}

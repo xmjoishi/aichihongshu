@@ -1,3 +1,4 @@
+mod browser_capture;
 mod db;
 
 use serde::Serialize;
@@ -9,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-struct AppState {
-    db: db::LocalDb,
+pub(crate) struct AppState {
+    pub(crate) db: db::LocalDb,
     ai_processes: Arc<Mutex<HashMap<String, Child>>>,
 }
 
@@ -429,6 +430,46 @@ fn read_local_publish_outbox(
     state.db.local_publish_outbox(account_pool_id, note_id)
 }
 
+/// 把笔记关联素材按上传顺序复制到本地暂存目录，返回带序号的文件清单。
+#[tauri::command]
+fn stage_local_note_images(
+    state: State<'_, AppState>,
+    note_id: i64,
+    account_pool_id: Option<i64>,
+) -> Result<db::StagedImagesSummary, String> {
+    state.db.stage_local_note_images(note_id, account_pool_id)
+}
+
+/// 在系统文件管理器中打开笔记暂存目录；目录路径由宿主根据账号归属计算。
+#[tauri::command]
+fn open_local_stage_dir(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    note_id: i64,
+    account_pool_id: Option<i64>,
+) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    let stage_dir = state.db.local_note_stage_dir(note_id, account_pool_id)?;
+    if !stage_dir.is_dir() {
+        return Err("暂存目录不存在，请先暂存图片".to_string());
+    }
+    let stage_path = stage_dir.display().to_string();
+    app.opener()
+        .open_path(stage_path, None::<&str>)
+        .map_err(|error| format!("打开暂存文件夹失败: {error}"))?;
+    Ok(stage_dir.display().to_string())
+}
+
+/// 确认发布后清理笔记暂存目录。
+#[tauri::command]
+fn clear_local_note_stage(
+    state: State<'_, AppState>,
+    note_id: i64,
+    account_pool_id: Option<i64>,
+) -> Result<(), String> {
+    state.db.clear_local_note_stage(note_id, account_pool_id)
+}
+
 /// 保存当前账号笔记的素材关联顺序，并要求调用方带上内容版本。
 #[tauri::command]
 fn update_local_note_items(
@@ -798,6 +839,9 @@ pub fn run() {
                 db,
                 ai_processes: Arc::new(Mutex::new(HashMap::new())),
             });
+            // 浏览器剪藏回传链路（N12 最小原型）：owner-only Unix socket，
+            // 失败只记日志，不影响应用启动。
+            browser_capture::spawn(app.handle().clone());
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
@@ -811,6 +855,9 @@ pub fn run() {
             prepare_local_publish,
             update_local_publish,
             read_local_publish_outbox,
+            stage_local_note_images,
+            open_local_stage_dir,
+            clear_local_note_stage,
             update_local_note_items,
             delete_local_note,
             restore_local_note,

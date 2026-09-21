@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { listen } from "@tauri-apps/api/event";
 import {
   Lightbulb,
   Sparkles,
@@ -334,6 +335,7 @@ export default function Inspire() {
 
   // 受限浏览器宿主可通过 postMessage 或自定义事件发送当前页剪藏。
   // 宿主消息只进入当前账号的待确认队列，不直接写入数据库。
+  // Tauri 运行时还接收 Rust 回传模块（扩展→原生宿主→Unix socket）的事件。
   useEffect(() => {
     if (!IS_TAURI_RUNTIME || accountId === null) return;
     const acceptCapture = async (raw: unknown) => {
@@ -361,9 +363,25 @@ export default function Inspire() {
     };
     window.addEventListener("message", onMessage);
     window.addEventListener("aichihongshu-browser-capture", onCaptureEvent);
+    // Rust 侧浏览器链路事件：与窗口消息共用 acceptCapture，
+    // 账号字段由 Rust 以当前激活账号盖章，此处再次校验账号一致性。
+    let unlistenTauri: (() => void) | undefined;
+    let disposed = false;
+    void listen("browser-capture://message", (event) => {
+      void acceptCapture(event.payload);
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else unlistenTauri = unlisten;
+      })
+      .catch(() => {
+        // Tauri 事件桥不可用时保留窗口消息通道，不视为错误。
+      });
     return () => {
+      disposed = true;
       window.removeEventListener("message", onMessage);
       window.removeEventListener("aichihongshu-browser-capture", onCaptureEvent);
+      unlistenTauri?.();
     };
   }, [accountId, databaseIdentity, toast]);
 
