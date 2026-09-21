@@ -223,7 +223,7 @@ export default function Dashboard() {
       )}
 
       {/* ── Stats row ── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
         {/* 图库物品 */}
         <button
           onClick={() => navigate("/library")}
@@ -426,7 +426,7 @@ function LocalDashboardView({ snapshot, accountId, scopeKey }: { snapshot: Local
           </div>
         )}
 
-        <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+        <div className="mb-6 grid grid-cols-2 gap-4 xl:grid-cols-4">
           <LocalStat label="图库素材" value={snapshot.itemCount} action={() => navigate("/library")} />
           <LocalStat label="全部笔记" value={snapshot.noteCount} sub={`${draftCount} 篇草稿`} action={() => navigate("/notes")} />
           <LocalStat label="待处理草稿" value={draftCount} action={() => navigate("/notes?status=draft")} />

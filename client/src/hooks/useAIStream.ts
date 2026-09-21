@@ -3,7 +3,7 @@ import { api, API_BASE } from "../lib/api";
 import { ACCOUNT_CHANGED_EVENT, useAccountContext } from "../lib/accountContext";
 import { IS_TAURI_RUNTIME } from "../lib/local";
 import { readLocalAIRun, readLocalAIRunArtifacts, saveLocalAIRun, saveLocalAIRunArtifact, updateLocalAIRun } from "../lib/local";
-import { probeLocalAIProviders, streamLocalAI } from "../lib/localAi";
+import { markLocalAITextVerified, probeLocalAIProviders, streamLocalAI, type LocalAIProviderId } from "../lib/localAi";
 
 export interface AIMessage {
   role: "user" | "assistant";
@@ -15,6 +15,8 @@ interface UseAIStreamOptions {
   itemId?: number;
   accountId?: number | null;
   systemExtra?: string;
+  localProviderId?: LocalAIProviderId;
+  localProviderScope?: string;
 }
 
 export type AIRunStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -22,6 +24,7 @@ export type AIRunStatus = "running" | "completed" | "failed" | "cancelled" | "in
 export interface AIRunMetadata {
   runId: string;
   accountId: number | null;
+  provider?: string;
   noteId?: number;
   itemId?: number;
   startedAt: string;
@@ -132,6 +135,7 @@ function parseRunMetadata(value: unknown): AIRunMetadata | null {
   return {
     runId: run.runId,
     accountId: run.accountId ?? null,
+    ...(typeof run.provider === "string" ? { provider: run.provider } : {}),
     ...(typeof run.noteId === "number" ? { noteId: run.noteId } : {}),
     ...(typeof run.itemId === "number" ? { itemId: run.itemId } : {}),
     startedAt: run.startedAt,
@@ -151,7 +155,7 @@ function saveRunMetadata(databaseIdentity: string, run: AIRunMetadata): void {
       accountPoolId: run.accountId,
       noteId: run.noteId,
       itemId: run.itemId,
-      provider: "local-cli",
+      provider: run.provider ?? "local-cli",
       startedAt: run.startedAt,
       status: run.status,
       finishedAt: run.finishedAt ?? null,
@@ -284,6 +288,7 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
         const normalized: AIRunMetadata = {
           runId: stored.runId,
           accountId: stored.accountPoolId,
+          ...(typeof stored.provider === "string" ? { provider: stored.provider } : {}),
           ...(typeof stored.noteId === "number" ? { noteId: stored.noteId } : {}),
           ...(typeof stored.itemId === "number" ? { itemId: stored.itemId } : {}),
           startedAt: stored.startedAt,
@@ -352,6 +357,7 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
       const startedRun: AIRunMetadata = {
         runId: newRunId(),
         accountId: originAccountId,
+        ...(opts.localProviderId ? { provider: opts.localProviderId } : {}),
         ...(typeof originNoteId === "number" ? { noteId: originNoteId } : {}),
         ...(typeof originItemId === "number" ? { itemId: originItemId } : {}),
         startedAt: new Date().toISOString(),
@@ -377,12 +383,16 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
         const completedAt = new Date().toISOString();
         const currentRun = runRef.current;
         if (IS_TAURI_RUNTIME && currentRun && buffer.trim()) {
+          const providerId = currentRun.provider;
+          if (opts.localProviderScope && (providerId === "claude" || providerId === "codex" || providerId === "opencode")) {
+            markLocalAITextVerified(opts.localProviderScope, providerId);
+          }
           void saveLocalAIRun({
             runId: currentRun.runId,
             accountPoolId: currentRun.accountId,
             noteId: currentRun.noteId,
             itemId: currentRun.itemId,
-            provider: "local-cli",
+            provider: currentRun.provider ?? "local-cli",
             startedAt: currentRun.startedAt,
             status: "completed",
             finishedAt: completedAt,
@@ -419,11 +429,16 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
         void probeLocalAIProviders()
           .then((providers) => {
             if (!isCurrent() || placeholder.signal.aborted) return;
-            const provider = providers.find((candidate) => candidate.state === "present");
+            const provider = providers.find((candidate) => candidate.id === opts.localProviderId && candidate.state === "present")
+              ?? providers.find((candidate) => candidate.state === "present");
             if (!provider) {
               onError(new Error("未发现可用的本地 AI CLI（claude、codex、opencode）"));
               return;
             }
+            const runWithProvider: AIRunMetadata = { ...startedRun, provider: provider.id };
+            runRef.current = runWithProvider;
+            setRun(runWithProvider);
+            saveRunMetadata(databaseIdentity, runWithProvider);
             const controller = streamLocalAI(
               startedRun.runId,
               provider.id,
@@ -454,7 +469,7 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
         );
       }
     },
-    [databaseIdentity, effectiveAccountId, finishRun, loading, messages, opts.noteId, opts.itemId, opts.systemExtra],
+    [databaseIdentity, effectiveAccountId, finishRun, loading, messages, opts.localProviderId, opts.localProviderScope, opts.noteId, opts.itemId, opts.systemExtra],
   );
 
   const clear = useCallback(() => {

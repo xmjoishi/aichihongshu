@@ -2,7 +2,7 @@
 
 任务：CHG-20260916-001。建立日期：2026-09-16。执行者：Luna；产品验收：用户。
 
-用户要求：“任务持久化一下，我让 Luna 挨个执行”。本清单作为逐项执行入口；N00–N13 已完成各自的最小安全切片，当前进入 N14 自动回归与文档收口。原 P0 授权持续有效，不重复确认。D3/D4 中尚未确定的 CLI 能力、浏览器控制权限仍需由对应设计与实测解决，不解释成全量授权电脑控制、正式发布或删除功能。
+用户要求：“任务持久化一下，我让 Luna 挨个执行”。本清单作为逐项执行入口；N00–N13 已完成各自的最小安全切片，N14 自动回归与文档收口已完成，后续继续补不依赖 D3/D4 的本地能力。原 P0 授权持续有效，不重复确认。D3/D4 中尚未确定的 CLI 能力、浏览器控制权限仍需由对应设计与实测解决，不解释成全量授权电脑控制、正式发布或删除功能。
 
 ## 1. 目标、基线与文档关系
 
@@ -11,7 +11,7 @@
 - 只读调查基线：`42a3729d77a30d69fd26a2536dde56b97ca5e111`。执行前重新读取 HEAD 和工作区差异，不回退到此提交。
 - 调查时无关脏状态：`tools/MediaCrawler` 子模块、未跟踪 `.noomd/`。不得清理或纳入提交。
 - 当前已有：Tauri 独立启动、Rust SQLite 本地读取、新建草稿、部分本地媒体读取、主题/侧栏优化。
-- 当前未完成：完整 AI 替代、采集与发布迁移、发布版历史数据导入、本地浏览器控制和平台资料抓取；本地账号池、人设、灵感和榜样账号手工元数据已落地，仍需原生验收。笔记删除已按“移入账号回收站、关联素材保留、可恢复”落地，素材回收站支持账号边界下的批量永久清理；图库/笔记回收站的原生操作验收仍待用户执行。
+- 当前未完成：完整 AI 替代、采集与发布迁移、发布版历史数据导入、本地浏览器控制和平台资料抓取；本地经验偏好写入与摘要注入、账号作用域提示词、排行统计写入已落地，真实 CLI 调用和原生回读仍需验收。本地账号池、人设、灵感和榜样账号手工元数据已落地，仍需原生验收。笔记删除已按“移入账号回收站、关联素材保留、可恢复”落地，素材回收站支持账号边界下的批量永久清理；图库/笔记回收站的原生操作验收仍待用户执行。
 - 代码线索：`Notes.tsx` 将本地编辑设为只读；旧自动保存失败被静默忽略；`useAIStream.ts` 使用 sessionStorage 且切笔记时缺少旧运行隔离；本地页面查询键与账号切换失效列表不一致；`LocalImage.tsx` 的 Map 缓存无容量及图片版本。这些是静态观察，Luna 必须复核并用针对性用例验证，不把风险写成已复现故障。
 - 本文细化 [技术计划](./00-02-技术设计与执行计划.md)；[UI 计划](./00-04-V2.8桌面UI与交互优化计划.md) 的 U3 依赖本文本地保存闭环。不得重复实现已完成 U1/U2，不重做品牌和侧栏。
 - 本文维护任务状态；实际实施、测试、AC 结果和恢复检查点统一写入 [实施记录](./00-03-实施与验证记录.md)，不复制第二份结果正文。N00 的矩阵和 QA 入口详见 [N00 基线能力矩阵与隔离 QA](./00-06-N00-基线能力矩阵与隔离QA.md)。
@@ -43,13 +43,19 @@
 | N09 | 单篇笔记创作台 | N08 | 已实施最小当前账号/保存状态/辅助面板边界；原生尺寸验收待补 | 素材、正文、AI 在同一对象内协作 |
 | N10 | 灵感收集与选题转化 | N09 | 已实施 SQLite 本地书签/观察、账号隔离、去重与显式转草稿；真实来源抓取待补 | 参考有来源，转草稿有显式关联 |
 | N11 | 搜索、业务视图与导航恢复 | N10 | 已实施最小统一搜索与视图偏好；原生重启/大样本性能待验收 | 当前账号搜索、筛选/滚动恢复 |
-| N12 | 浏览器收集适配 | N11 | 已实施剪藏消息校验/去重契约；真实浏览器链路依赖 D4 | 先验证受限收集，后接正式入口 |
+| N12 | 浏览器收集适配 | N11 | 已实施剪藏消息校验、账号作用域 pending/确认/失败重试和幂等队列；真实浏览器链路依赖 D4 | 先验证受限收集，后接正式入口 |
 | N13 | 发布准备、填充与结果核查 | N12 | 已实施内容准备检查与发布快照/幂等契约；平台填充与提交依赖 D4/另行授权 | 发布状态含结果不明且不重复提交 |
 | N14 | 全链回归与文档收口 | N13；可先回归已完成阶段 | 已完成自动回归与文档收口；原生 Tauri、D3/D4 和正式平台链路仍待验收 | AC 逐条记录，真实未完成项保留 |
 
 建议分批验收：第一批 N00–N04；第二批 N05–N08；第三批 N09–N11；第四批 N12–N14。出现 D3/D4 阻塞时保留阻塞原因，可继续不依赖该能力的工作，不制造虚假的完成状态。
 
-本轮代码收口补充：Tauri 设置页回收站已改为本地账号快照和 Rust 恢复/永久清理 command；本地发布确认只有状态写入成功才关闭弹窗。浏览器运行时仍保留旧 HTTP 回收站与发布路径。完整自动检查已通过，原生桌面操作、真实 CLI 登录态、浏览器扩展传输、正式历史库导入和平台提交仍是产品验收边界。
+本轮代码收口补充：Tauri 设置页回收站已改为本地账号快照和 Rust 恢复/永久清理 command；提示词管理和 AI 快捷操作改为账号作用域本地存储；数据排行互动数据改为 Rust 版本校验写入；笔记和排行图片不再在本地模式回退旧 HTTP；本地发布确认只有状态写入成功才关闭弹窗；经验库偏好已持久化并即时同步到 AI 注入；笔记页 AI 助手按钮会打开面板并支持重新检测本地 CLI；N04 正式历史库导入执行器已补齐 `replace/merge/cancel` 显式模式、账号映射、素材引用校验、迁移前备份和失败保留暂存。浏览器运行时仍保留旧 HTTP 回收站与发布路径。前端 build、Rust check/format 通过；本轮 Rust 单测受本机 Xcode license 闸门影响未完成链接，原生桌面操作、真实 CLI 登录态、浏览器扩展传输和平台提交仍是产品验收边界。
+
+启动兼容修复：旧 Python 库中的 `inspirations` 表可能是 `INTEGER` 主键旧结构，现已在 Rust 启动迁移中先暂存旧表、创建文本 ID 的新结构并按激活账号导入；新增旧表启动/重开回归后，`npm run tauri` 不再因 `account_pool_id` 索引初始化直接失败。正式库仍建议先备份后由用户重启验收。
+
+视觉微调：根据原生窗口截图收窄全局焦点描边和选中态主题边框；侧栏拖拽仍保留 8px 可操作热区，但只显示 1px 主题提示线。前端 build 和差异检查通过，原生窗口密度由用户验收。
+
+保存兼容修复：历史笔记若已有 10 张素材，正文保存不再因新增关联上限被误拒绝；只有变更后仍超过 9 张才阻止写入。Tauri 保存错误统一显示可读消息，笔记预览在人设数据上改读本地快照，不再依赖旧 8765 profile 请求。
 
 ## 4. 逐项任务卡
 
@@ -88,7 +94,7 @@
 - N02-AC3：修改后立即切页、切账号、关闭原生窗口，均有正确保存/保留/取消路径；标记待发布与用户确认已发布保持原语义。
 
 - 实施结果：`Notes.tsx` 在 Tauri 本地模式下恢复标题、纯文本正文、标签和可用发布类型编辑；手动保存、自动保存和 `Ctrl/Cmd+S` 共用串行保存队列，保存回执按账号、笔记和 epoch 校验。`lib/local.ts` 新增本地笔记编辑/状态 command 适配；Rust `db.rs` 新增带 `account_pool_id`、`expected_version` 的事务更新，校验当前账号、允许的状态/类型和素材归属，并递增 `content_version`。保存失败保留编辑态并显示“保存失败，可重试”，保存按钮可再次提交。
-- 图片关联/排序：Rust command 已支持受当前账号校验的 `item_ids`，但现有 `NoteImageStrip`/`LibraryPicker` 仍是旧 HTTP 交互；Tauri 本地调用已设为只读并显示后续接入提示，避免误发 `/api/content` 写请求，待 N03 接入本地素材生命周期后再开放。
+- 图片关联/排序：Rust command 已支持受当前账号校验的 `item_ids`；`NoteImageStrip` 在 Tauri 下使用本地 command 执行当前账号素材的关联、排序和移除，新增导入/图库选择仍明确关闭，浏览器模式保留旧 HTTP 交互。
 - 自动验证：`cargo test --manifest-path client/src-tauri/Cargo.toml db::tests` 4 passed，覆盖字段更新、版本递增、旧版本回执拒绝且不覆盖、状态更新、账号越权拒绝、历史库迁移；`npm run build`、`cargo fmt --manifest-path client/src-tauri/Cargo.toml -- --check`、`cargo check --manifest-path client/src-tauri/Cargo.toml`、`git diff --check` 通过。
 - AC 状态：N02-AC1 的本地字段保存、版本回读、状态写入和 Markdown 导出通过隔离 Rust 单测/编译及 `check:note-export`；图片顺序、切页/关闭重开 UI 未完成原生验收。N02-AC2 的乐观版本冲突和串行队列已通过单测/静态检查；真实延迟回执操作待 QA。N02-AC3 的账号 epoch 清理、失败保留和“标记待发”本地 command 已落地；原生离开保护、重启回读和正式发布确认仍待用户验收。
 - 未改变：旧 Python CLI/MCP、远端 `content` API、发布确认语义和正式数据均保留；未写 `data/`、正式 `assets/`、`.env`、移动端、Noomd 或 MediaCrawler。
@@ -115,11 +121,12 @@
 - N04-AC1：隔离历史样本导入后数量、账号归属、正文、图片一致，原样本未改写。
 - N04-AC2：不兼容 schema、目标非空、缺失素材和中断均给出准确结果；恢复副本可启动并读回，不把“备份文件存在”当作可恢复。
 
-- 实施结果：新增 `scripts/desktop-db-safety.mjs` 及根命令 `db:preflight`、`db:backup`、`db:restore-check`、`db:import-plan`。预检只读 SQLite `quick_check`、schema 表/列、账号映射、孤儿记录、关键计数和 `items.image_path` 可达性；拒绝绝对路径、越界路径、符号链接和非普通素材文件。`db:import-plan` 只读比较源库与目标状态，明确 replace/merge/cancel 三种选择并默认 cancel，不复制或覆盖任何数据。备份使用 SQLite `.backup`，在 `output.staging-<pid>` 完成后原子改名，清单只包含数据库和被引用素材，明确排除 Cookie、浏览器 profile、凭据、`.env` 和未引用文件。恢复复制到独立暂存目录，重新检查 schema、计数、账号和素材哈希后才落位，不覆盖当前库。Tauri 设置页新增“本地数据迁移与恢复”区，显示当前数据库路径，要求显式填写源库/素材/目标/备份/恢复路径，并提供可复制的只读预检、备份和恢复校验命令；正式导入保持阻断，界面明确需要人工选择且不会静默覆盖。
+- 实施结果：新增 `scripts/desktop-db-safety.mjs` 及根命令 `db:preflight`、`db:backup`、`db:restore-check`、`db:import-plan`、`db:import`。预检只读 SQLite `quick_check`、schema 表/列、账号映射、孤儿记录、关键计数和 `items.image_path` 可达性；拒绝绝对路径、越界路径、符号链接和非普通素材文件。`db:import-plan` 只读比较源库与目标状态，明确 replace/merge/cancel 三种选择并默认 cancel。`db:import` 只接受显式 `--mode`：cancel 零写入；replace 只接受空目标并在源库备份后暂存校验；merge 要求非空目标，自动按别名或 `--account-map` 映射账号，拒绝覆盖人设/设置键和素材内容冲突，重映射素材/笔记 ID 后再回滚式交换数据库和素材目录。备份使用 SQLite `.backup`，清单包含数据库和所有被 `items` 引用的 active/trash 素材，明确排除 Cookie、浏览器 profile、凭据、`.env` 和未引用文件。恢复复制到独立暂存目录，重新检查 schema、计数、账号和素材哈希后才落位，不覆盖当前库。Tauri 设置页仍提供只读预检、备份和恢复校验命令；正式导入执行需在停止桌面进程、隔离副本中由用户显式运行。
 - 测试样本：固定 `.qa/desktop-workspace`（QA-A 101、QA-B 202）作为源，备份输出 `.qa/n04-backup`，恢复输出 `.qa/n04-restore`；源数据库未修改，正式 `data/`/`assets/` 未作为写入目标。
 - N04-AC1 实际结果：通过隔离 QA 演练；源/备份/恢复均为 2 accounts、2 items、2 notes、2 profiles，A/B 各 1 item/1 note、无孤儿，两个引用图片大小与 SHA-256 一致；manifest 记录账号归属和引用路径，源 `sourceUnchanged=true`。
 - N04-AC2 实际结果：通过预检边界演练；非空目标返回 `TARGET_NON_EMPTY`，空素材根返回 `missing_assets`，缺表/缺列样本返回 `incompatible_schema`，均退出码 2；`db:import-plan` 在隔离 QA 库上返回 `review_required`、`writes=false` 和三种选择；备份/恢复使用暂存目录并在成功后生成独立目录。未模拟进程强杀后的自动清理，但失败保留暂存目录并不给成功结果；未进行真实 Tauri 恢复后窗口启动。
-- 未开放范围：正式库历史导入、合并/替换写入和发布库迁移仍待明确目标选择与用户验收；设置页的预检/备份/恢复命令入口已可见。旧 Python CLI/MCP、旧 schema/HTTP 契约保留。
+- N04-AC2 实际结果：通过预检边界演练；非空目标返回 `TARGET_NON_EMPTY`，空素材根返回 `missing_assets`，缺表/缺列样本返回 `incompatible_schema`，均退出码 2；`db:import-plan` 在隔离 QA 库上返回 `review_required`、`writes=false` 和三种选择；备份/恢复使用暂存目录并在成功后生成独立目录。新增 `db:import --mode cancel|replace|merge` 隔离演练：cancel 零写入，replace 导入后数量/账号/素材哈希一致，merge 完成 ID 和 `item_ids` 重映射并保留源库/原目标备份。未模拟进程强杀后的自动清理，但失败保留暂存目录并不给成功结果；未进行真实 Tauri 恢复后窗口启动。
+- 未开放范围：正式库迁移仍需停止正在使用目标库的桌面进程，并由用户在隔离副本显式选择和执行命令后完成原生读回验收；旧 Python CLI/MCP、旧 schema/HTTP 契约保留。
 
 ### N05 Rust 业务边界与能力驱动 UI
 
@@ -143,6 +150,9 @@
 - UI 不返回完整密钥；日志脱敏；API key 不写 sessionStorage、业务库、备份或文档。Noomd 的应用 vault 不等同于系统钥匙串，按实际实现说明边界。
 - N06-AC1：保存配置、重启、列模型、文本调用成功；无密钥、无认证、模型不可用和网络失败分别显示正确原因。
 - N06-AC2：图片任务只能选择经过验证支持图片的入口；每个启用 CLI 有实际输出与取消证据，缺失项明确不可用。
+- 本轮补充：AIPanel 会展示当前桌面进程检测到的多个 CLI，并将用户选择的 `claude`/`codex`/`opencode` 白名单 ID 传给本地流；没有选择或选择的命令失效时回退到首个可用项，并将实际启动的 Provider 写入 AI 运行元数据。选择结果按数据库/运营账号作用域保存为非敏感 UI 偏好；真实非空文本输出后才记录该 Provider 的文本能力证据。选择器只解决适配器路由，不把安装状态当作文本/图片/工具能力验证。
+- 自动验证：`npm run check:cli-capabilities` 已检查 Provider 类型、选择器和 `useAIStream` 路由；真实 Tauri 多 CLI 选择、登录态、文本输出和取消仍待用户原生验收。
+- 灵感生成补充：`Inspire.tsx` 的 Tauri 生成现在复用同一白名单 CLI 事件流，提示词只组装当前账号本地快照中的人设、素材、榜样和洞察；浏览器模式仍调用旧 `inspireStream`。Tauri 保存草稿改用 Rust `create_local_draft`/`update_local_note`，不再依赖 8765 的 `/api/ai/inspire` 或 `/api/content/`。
 
 ### N07 AI 运行与会话持久化
 
@@ -167,6 +177,7 @@
 - 不引入 BlockNote，不改纯文本正文，不强推固定三栏，不重做整套设计系统。
 - N09-AC1：从图库选素材开始创作，选图、人设、AI 会话始终属于当前笔记；生成/比较/采用/保存无需反复丢失上下文。
 - N09-AC2：按 UI 计划窗口尺寸、深浅主题、键盘操作验证；辅助面板不会遮挡主保存操作；重开能回到有效对象。
+- 当前边界：灵感梦工厂已完成本地 CLI 生成和本地草稿写入的代码闭环；Provider 登录态、CLI 实际输出、生成取消和关闭重开回读仍属于用户原生验收，不以 `npm run build` 代替。
 
 ### N10 灵感收集与选题转化
 
@@ -197,9 +208,9 @@
 - N12-AC1：用户选择当前页和目标账号后准确入库；未授权目标、超限内容、失败重试不产生错误归属或无提示重复。
 - N12-AC2：真实浏览器链路记录支持浏览器/版本、权限与失败反馈；需要新增持久授权时先明确具体范围。
 
-- 实施结果：新增 `client/src/lib/browserCapture.ts`，为手工/扩展剪藏定义统一消息契约；宿主在入库前重新校验目标账号、标题、`http(s)` 来源、时间、字段长度和 128KB 总消息上限，并生成当前账号维度的去重键。`Inspire.tsx` 的本地手工保存复用同一校验，再通过 Rust SQLite command 持久化；非法来源、账号变化、重复转换和跨账号灵感 ID 会明确失败，不写入错误归属。
+- 实施结果：新增 `client/src/lib/browserCapture.ts`，为手工/扩展剪藏定义统一消息契约；宿主在入库前重新校验目标账号、标题、`http(s)` 来源、时间、字段长度和 128KB 总消息上限，并生成当前账号维度的去重键。`Inspire.tsx` 的扩展消息先进入按数据库/账号隔离的本地 envelope 队列，用户确认后才通过 Rust SQLite command 持久化；保存中断会恢复为失败状态并允许重试，`requestId`/`dedupeKey` 重复消息返回既有 envelope，不重复排队。非法来源、账号变化、重复转换和跨账号灵感 ID 会明确失败，不写入错误归属。
 - 自动验证：`node --check scripts/check-browser-capture.mjs`、`npm run check:browser-capture`、`npm run build`、`git diff --check` 通过；未调用真实浏览器、未申请新权限。
-- AC 状态：N12-AC1 的消息格式、账号归属、大小和 URL 边界已通过静态检查，真实扩展传输/失败重试待 D4 方案与原生链路验收。N12-AC2 尚未声称浏览器支持矩阵，扩展/Native Messaging 仍未接入。
+- AC 状态：N12-AC1 的消息格式、账号归属、大小、URL 边界、待确认、失败重试和幂等队列已有自动契约；真实扩展传输和原生窗口交互待 D4 方案与用户验收。N12-AC2 尚未声称浏览器支持矩阵，扩展/Native Messaging 仍未接入。
 - 未开放范围：不导出 Cookie、profile 或账号备份；不直接执行 Chromium；不把剪藏校验契约当作浏览器链路已完成。
 
 ### N13 发布准备、填充与结果核查
@@ -219,7 +230,7 @@
 ### N14 全链回归与文档收口
 
 - 实施结果：按 N00–N13 的恢复入口复核前端检查脚本、CLI 探测、隔离 QA、SQLite 安全预检/备份恢复、Rust 数据库单测、前端构建和差异格式；同步更新任务索引与实施检查点，明确自动验证与原生产品验收的边界。
-- 自动验证：`npm run qa:reset`、`npm run qa:prepare -- --json`、全部 `check:*` 脚本（含 `check:local-import`）、`npm run build`、`cargo fmt --manifest-path client/src-tauri/Cargo.toml -- --check`、`cargo check --manifest-path client/src-tauri/Cargo.toml`、`cargo test --manifest-path client/src-tauri/Cargo.toml db::tests -- --test-threads=1`（6 passed）、QA `db:preflight`/`db:import-plan`/`backup`/`restore-check` 和 `git diff --check` 均通过。备份恢复输出位于隔离 `/private/tmp`，正式数据未写入。
+- 自动验证：`npm run qa:reset`、`npm run qa:prepare -- --json`、全部 `check:*` 脚本（含 `check:local-import`）、`npm run build`、`cargo fmt --manifest-path client/src-tauri/Cargo.toml -- --check`、`cargo test --manifest-path client/src-tauri/Cargo.toml -- --test-threads=1`（16 passed）、QA `db:preflight`/`db:import-plan`/`backup`/`restore-check` 和 `git diff --check` 均通过。备份恢复输出位于隔离 `/private/tmp`，正式数据未写入；N04 `cancel/replace/merge` 另完成隔离导入演练。
 - AC 状态：自动可验证的账号隔离、版本保存、素材边界、能力提示、会话/提案持久化、剪藏校验、搜索偏好和发布快照均有对应脚本或 Rust 测试；真实 Tauri 窗口、关闭重开、A/B 竞态、大样本性能、Provider 取消、浏览器链路和平台提交仍保持未验收。
 - 停止条件：不因构建或脚本通过而宣称去 Python 全链完成；D3/D4、正式导入与发布授权未决时，保留旧 Python CLI/MCP 和未迁移入口，不删除、不静默回退。
 

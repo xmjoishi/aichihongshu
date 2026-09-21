@@ -8,6 +8,8 @@ const VERSION_PATTERN = /(?:^|\s)v?(\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?)(?
 const rustSource = readFileSync("client/src-tauri/src/lib.rs", "utf8");
 const rustDbSource = readFileSync("client/src-tauri/src/db.rs", "utf8");
 const localAiSource = readFileSync("client/src/lib/localAi.ts", "utf8");
+const aiPanelSource = readFileSync("client/src/components/AIPanel.tsx", "utf8");
+const aiStreamSource = readFileSync("client/src/hooks/useAIStream.ts", "utf8");
 for (const marker of [
   "probe_local_ai_providers",
   "start_local_ai",
@@ -22,6 +24,15 @@ for (const marker of [
 ]) {
   if (!rustSource.includes(marker) && !rustDbSource.includes(marker) && !localAiSource.includes(marker)) {
     throw new Error(`本地 Provider 门禁缺少: ${marker}`);
+  }
+}
+for (const [source, markers, label] of [
+  [localAiSource, ["LocalAIProviderId", "readPreferredLocalAIProvider", "savePreferredLocalAIProvider", "readVerifiedLocalAIProviders", "markLocalAITextVerified"], "本地 Provider 类型"],
+  [aiPanelSource, ["选择本地 AI CLI", "availableLocalProviders"], "AI Provider 选择"],
+  [aiStreamSource, ["localProviderId", "localProviderScope", "candidate.id === opts.localProviderId", "markLocalAITextVerified", "provider: currentRun.provider ?? \"local-cli\"", "runWithProvider"], "AI Provider 传递"],
+]) {
+  for (const marker of markers) {
+    if (!source.includes(marker)) throw new Error(`${label}门禁缺少: ${marker}`);
   }
 }
 console.log("local provider adapter markers: probe, non-interactive run, event stream, cancel, and run metadata checked");

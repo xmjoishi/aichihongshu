@@ -147,6 +147,43 @@ pub struct LocalNoteStatusUpdate {
     pub note_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishOutboxSummary {
+    pub attempt_id: String,
+    pub account_pool_id: i64,
+    pub note_id: i64,
+    pub snapshot_key: String,
+    pub content_version: i64,
+    pub snapshot_json: String,
+    pub status: String,
+    pub platform_url: Option<String>,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalPublishOutboxPrepare {
+    pub attempt_id: String,
+    pub account_pool_id: i64,
+    pub note_id: i64,
+    pub snapshot_key: String,
+    pub content_version: i64,
+    pub snapshot_json: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalPublishOutboxUpdate {
+    pub attempt_id: String,
+    pub account_pool_id: i64,
+    pub status: String,
+    pub platform_url: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalNoteItemsUpdate {
@@ -203,6 +240,58 @@ pub struct LocalInspirationCreate {
     pub observed_at: String,
     pub reason: String,
     pub dedupe_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalKnowledgePreferences {
+    pub account_pool_id: i64,
+    pub disabled_rule_keys: Vec<String>,
+    pub use_my_samples: bool,
+    pub use_reference_samples: bool,
+    pub use_inspirations: bool,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalKnowledgePreferencesUpdate {
+    pub account_pool_id: i64,
+    pub disabled_rule_keys: Vec<String>,
+    pub use_my_samples: bool,
+    pub use_reference_samples: bool,
+    pub use_inspirations: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptConfig {
+    pub key: String,
+    pub label: String,
+    pub prompt: String,
+    pub sort_order: i64,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptConfigUpsert {
+    pub account_pool_id: i64,
+    pub key: String,
+    pub label: String,
+    pub prompt: String,
+    pub sort_order: i64,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalNoteStatsUpdate {
+    pub note_id: i64,
+    pub account_pool_id: i64,
+    pub expected_version: i64,
+    pub field: String,
+    pub value: i64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -401,7 +490,8 @@ impl LocalDb {
         let db = Self { path };
         let mut conn = db.connect()?;
         migrate(&mut conn)?;
-        ensure_active_account(&mut conn, &db.path)?;
+        let active = ensure_active_account(&mut conn, &db.path)?;
+        import_legacy_inspirations(&mut conn, active.id)?;
         Ok(db)
     }
 
@@ -1600,9 +1690,6 @@ impl LocalDb {
         ) {
             return Err("不支持的笔记类型".to_string());
         }
-        if update.item_ids.len() > 9 {
-            return Err("一篇笔记最多关联 9 张图片".to_string());
-        }
         let mut conn = self
             .connect()
             .map_err(|error| format!("打开本地数据库失败: {error}"))?;
@@ -1614,16 +1701,20 @@ impl LocalDb {
         let tx = conn
             .transaction()
             .map_err(|error| format!("开始本地笔记保存失败: {error}"))?;
-        let current_version: i64 = tx
+        let (current_version, current_item_ids_raw): (i64, Option<String>) = tx
             .query_row(
-                "SELECT content_version FROM notes
+                "SELECT content_version, item_ids FROM notes
                  WHERE id = ?1 AND account_pool_id = ?2 AND deleted_at IS NULL",
                 params![update.note_id, active.id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|error| format!("读取本地笔记版本失败: {error}"))?
             .ok_or_else(|| "笔记不存在或不属于当前账号".to_string())?;
+        let current_item_ids: Vec<i64> = parse_json_vec(current_item_ids_raw);
+        if update.item_ids.len() > 9 && update.item_ids != current_item_ids {
+            return Err("一篇笔记最多关联 9 张图片；请先移除历史超限素材".to_string());
+        }
         if current_version != update.expected_version {
             return Err(format!(
                 "笔记版本冲突：当前为 {current_version}，保存请求为 {}，请刷新后重试",
@@ -1726,14 +1817,186 @@ impl LocalDb {
         Ok(updated)
     }
 
+    /// 将当前笔记的不可变发布快照写入本地 outbox。该操作只准备本地记录，永远不触发平台提交。
+    /// 对同一快照，submitted/confirmed/unknown 都会阻止再次准备，避免断线后自动重复发布。
+    pub fn prepare_local_publish(
+        &self,
+        input: LocalPublishOutboxPrepare,
+    ) -> Result<PublishOutboxSummary, String> {
+        validate_publish_outbox_prepare(&input)?;
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取当前运营账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(input.account_pool_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+
+        let note_version: Option<i64> = conn
+            .query_row(
+                "SELECT content_version FROM notes
+                 WHERE id = ?1 AND account_pool_id = ?2 AND deleted_at IS NULL",
+                params![input.note_id, active.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取发布笔记版本失败: {error}"))?;
+        let note_version = note_version.ok_or_else(|| "笔记不存在或不属于当前账号".to_string())?;
+        if note_version != input.content_version {
+            return Err(format!(
+                "发布快照版本过期：当前为 {note_version}，请求为 {}，请重新准备",
+                input.content_version
+            ));
+        }
+
+        if let Some(existing) = read_publish_outbox_by_id(&conn, &input.attempt_id)
+            .map_err(|error| format!("读取发布准备记录失败: {error}"))?
+        {
+            if existing.account_pool_id != active.id {
+                return Err("发布准备记录不属于当前账号".to_string());
+            }
+            return Ok(existing);
+        }
+
+        let previous: Option<PublishOutboxSummary> = conn
+            .query_row(
+                "SELECT attempt_id, account_pool_id, note_id, snapshot_key,
+                        content_version, snapshot_json, status, platform_url, error,
+                        created_at, updated_at
+                 FROM publish_outbox
+                 WHERE account_pool_id = ?1 AND snapshot_key = ?2
+                 ORDER BY rowid DESC LIMIT 1",
+                params![active.id, input.snapshot_key],
+                publish_outbox_from_row,
+            )
+            .optional()
+            .map_err(|error| format!("读取同快照发布状态失败: {error}"))?;
+        if let Some(previous) = previous {
+            match previous.status.as_str() {
+                "submitted" | "confirmed" | "unknown" => return Ok(previous),
+                "prepared" => return Ok(previous),
+                "failed" => {}
+                _ => return Err("发布准备记录状态无效".to_string()),
+            }
+        }
+
+        conn.execute(
+            "INSERT INTO publish_outbox (
+                attempt_id, account_pool_id, note_id, snapshot_key, content_version,
+                snapshot_json, status, platform_url, error, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'prepared', NULL, NULL,
+                       datetime('now', 'localtime'), datetime('now', 'localtime'))",
+            params![
+                input.attempt_id,
+                active.id,
+                input.note_id,
+                input.snapshot_key,
+                input.content_version,
+                input.snapshot_json,
+            ],
+        )
+        .map_err(|error| format!("保存发布准备记录失败: {error}"))?;
+        read_publish_outbox_by_id(&conn, &input.attempt_id)
+            .map_err(|error| format!("读取发布准备结果失败: {error}"))?
+            .ok_or_else(|| "发布准备记录写入后无法读取".to_string())
+    }
+
+    /// 更新本地 outbox 状态，仅记录平台外部动作结果，不执行任何平台请求。
+    pub fn update_local_publish(
+        &self,
+        input: LocalPublishOutboxUpdate,
+    ) -> Result<PublishOutboxSummary, String> {
+        validate_publish_outbox_update(&input)?;
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取当前运营账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(input.account_pool_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let current = read_publish_outbox_by_id(&conn, &input.attempt_id)
+            .map_err(|error| format!("读取发布记录失败: {error}"))?
+            .ok_or_else(|| "发布准备记录不存在".to_string())?;
+        if current.account_pool_id != active.id {
+            return Err("发布准备记录不属于当前账号".to_string());
+        }
+        if !valid_publish_transition(&current.status, &input.status) {
+            return Err(format!(
+                "不允许将发布状态从 {} 改为 {}",
+                current.status, input.status
+            ));
+        }
+        if matches!(input.status.as_str(), "submitted" | "confirmed") {
+            let duplicate: Option<String> = conn
+                .query_row(
+                    "SELECT attempt_id FROM publish_outbox
+                     WHERE account_pool_id = ?1 AND snapshot_key = ?2
+                       AND attempt_id <> ?3 AND status IN ('submitted', 'confirmed')
+                     LIMIT 1",
+                    params![active.id, current.snapshot_key, input.attempt_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| format!("检查重复发布状态失败: {error}"))?;
+            if duplicate.is_some() {
+                return Err("该快照已有提交或确认记录，禁止重复提交".to_string());
+            }
+        }
+        conn.execute(
+            "UPDATE publish_outbox SET status = ?1, platform_url = COALESCE(?2, platform_url),
+                error = ?3, updated_at = datetime('now', 'localtime')
+             WHERE attempt_id = ?4 AND account_pool_id = ?5",
+            params![
+                input.status,
+                input.platform_url,
+                input.error,
+                input.attempt_id,
+                active.id,
+            ],
+        )
+        .map_err(|error| format!("更新发布结果失败: {error}"))?;
+        read_publish_outbox_by_id(&conn, &input.attempt_id)
+            .map_err(|error| format!("读取更新后的发布结果失败: {error}"))?
+            .ok_or_else(|| "发布结果写入后无法读取".to_string())
+    }
+
+    /// 读取当前账号的发布 outbox，供发布页恢复上次准备、失败或待核查状态。
+    pub fn local_publish_outbox(
+        &self,
+        expected_account_id: Option<i64>,
+        note_id: Option<i64>,
+    ) -> Result<Vec<PublishOutboxSummary>, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取当前运营账号失败: {error}"))?;
+        ensure_expected_account(&active, expected_account_id)
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let mut statement = conn
+            .prepare(
+                "SELECT attempt_id, account_pool_id, note_id, snapshot_key,
+                        content_version, snapshot_json, status, platform_url, error,
+                        created_at, updated_at
+                 FROM publish_outbox
+                 WHERE account_pool_id = ?1 AND (?2 IS NULL OR note_id = ?2)
+                 ORDER BY updated_at DESC, rowid DESC
+                 LIMIT 500",
+            )
+            .map_err(|error| format!("读取发布历史失败: {error}"))?;
+        let result = statement
+            .query_map(params![active.id, note_id], publish_outbox_from_row)
+            .map_err(|error| format!("读取发布历史失败: {error}"))?
+            .collect::<SqlResult<Vec<_>>>()
+            .map_err(|error| format!("解析发布历史失败: {error}"));
+        result
+    }
+
     /// 原子更新本地笔记的素材关联顺序，复用笔记版本和账号归属校验。
     pub fn update_local_note_items(
         &self,
         update: LocalNoteItemsUpdate,
     ) -> Result<NoteSummary, String> {
-        if update.item_ids.len() > 9 {
-            return Err("一篇笔记最多关联 9 张图片".to_string());
-        }
         let mut conn = self
             .connect()
             .map_err(|error| format!("打开本地数据库失败: {error}"))?;
@@ -1744,16 +2007,20 @@ impl LocalDb {
         let tx = conn
             .transaction()
             .map_err(|error| format!("开始本地素材关联保存失败: {error}"))?;
-        let current_version: i64 = tx
+        let (current_version, current_item_ids_raw): (i64, Option<String>) = tx
             .query_row(
-                "SELECT content_version FROM notes
+                "SELECT content_version, item_ids FROM notes
                  WHERE id = ?1 AND account_pool_id = ?2 AND deleted_at IS NULL",
                 params![update.note_id, active.id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|error| format!("读取本地笔记版本失败: {error}"))?
             .ok_or_else(|| "笔记不存在或不属于当前账号".to_string())?;
+        let current_item_ids: Vec<i64> = parse_json_vec(current_item_ids_raw);
+        if update.item_ids.len() > 9 && update.item_ids != current_item_ids {
+            return Err("一篇笔记最多关联 9 张图片；请先移除历史超限素材".to_string());
+        }
         if current_version != update.expected_version {
             return Err(format!(
                 "笔记版本冲突：当前为 {current_version}，保存请求为 {}，请刷新后重试",
@@ -2054,6 +2321,250 @@ impl LocalDb {
         }
         .map_err(|error| format!("保存本地人设失败: {error}"))?;
         Ok(())
+    }
+
+    /// 读取当前运营账号的经验库开关。缺少记录时使用安全默认值：所有经验来源启用。
+    pub fn local_knowledge_preferences(
+        &self,
+        expected_account_id: Option<i64>,
+    ) -> Result<LocalKnowledgePreferences, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, expected_account_id)
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let key = knowledge_preferences_key(active.id);
+        let stored: Option<(Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT value, updated_at FROM app_settings WHERE key = ?1",
+                params![key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| format!("读取经验库偏好失败: {error}"))?;
+        if let Some((Some(raw), updated_at)) = stored {
+            if let Ok(mut preferences) = serde_json::from_str::<LocalKnowledgePreferences>(&raw) {
+                preferences.account_pool_id = active.id;
+                preferences.updated_at = updated_at;
+                if validate_local_knowledge_preferences(&preferences.disabled_rule_keys).is_ok() {
+                    return Ok(preferences);
+                }
+            }
+        }
+        Ok(default_local_knowledge_preferences(active.id, None))
+    }
+
+    /// 保存当前账号的经验库开关；仅写入 app_settings，不写入提示词、凭据或外部来源正文。
+    pub fn save_local_knowledge_preferences(
+        &self,
+        input: LocalKnowledgePreferencesUpdate,
+    ) -> Result<LocalKnowledgePreferences, String> {
+        let disabled_rule_keys = input
+            .disabled_rule_keys
+            .iter()
+            .map(|key| key.trim().to_string())
+            .collect::<Vec<_>>();
+        validate_local_knowledge_preferences(&disabled_rule_keys)?;
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(input.account_pool_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let key = knowledge_preferences_key(active.id);
+        let payload = LocalKnowledgePreferences {
+            account_pool_id: active.id,
+            disabled_rule_keys,
+            use_my_samples: input.use_my_samples,
+            use_reference_samples: input.use_reference_samples,
+            use_inspirations: input.use_inspirations,
+            updated_at: None,
+        };
+        let value = serde_json::to_string(&payload)
+            .map_err(|error| format!("序列化经验库偏好失败: {error}"))?;
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at)
+             VALUES (?1, ?2, datetime('now', 'localtime'))
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+             updated_at = excluded.updated_at",
+            params![key, value],
+        )
+        .map_err(|error| format!("保存经验库偏好失败: {error}"))?;
+        let updated_at: Option<String> = conn
+            .query_row(
+                "SELECT updated_at FROM app_settings WHERE key = ?1",
+                params![knowledge_preferences_key(active.id)],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取经验库偏好时间失败: {error}"))?
+            .flatten();
+        Ok(LocalKnowledgePreferences {
+            updated_at,
+            ..payload
+        })
+    }
+
+    /// 读取当前账号的本地 AI 快捷操作。运行时配置保存在账号作用域的
+    /// app_settings 中；仅在首次读取时兼容迁移旧 FastAPI 的 prompt_configs 表。
+    pub fn list_prompt_configs(
+        &self,
+        expected_account_id: Option<i64>,
+    ) -> Result<Vec<PromptConfig>, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, expected_account_id)
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let key = prompt_configs_key(active.id);
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取本地提示词失败: {error}"))?;
+        let prompts = if stored.is_some() {
+            read_prompt_configs_value(&conn, &key)?.unwrap_or_else(default_prompt_configs)
+        } else {
+            let prompts = legacy_prompt_configs(&conn).unwrap_or_else(default_prompt_configs);
+            write_prompt_configs_value(&conn, &key, &prompts)?;
+            prompts
+        };
+        validate_prompt_configs(&prompts)?;
+        Ok(prompts)
+    }
+
+    /// 新增或更新当前账号的本地 AI 快捷操作。
+    pub fn upsert_prompt_config(
+        &self,
+        input: PromptConfigUpsert,
+    ) -> Result<Vec<PromptConfig>, String> {
+        validate_prompt_config_fields(&input.key, &input.label, &input.prompt, input.sort_order)?;
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(input.account_pool_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let key = prompt_configs_key(active.id);
+        let mut prompts =
+            read_prompt_configs_value(&conn, &key)?.unwrap_or_else(default_prompt_configs);
+        if let Some(existing) = prompts.iter_mut().find(|prompt| prompt.key == input.key) {
+            existing.label = input.label;
+            existing.prompt = input.prompt;
+            existing.sort_order = input.sort_order;
+            existing.enabled = input.enabled;
+        } else {
+            prompts.push(PromptConfig {
+                key: input.key,
+                label: input.label,
+                prompt: input.prompt,
+                sort_order: input.sort_order,
+                enabled: input.enabled,
+            });
+        }
+        prompts.sort_by_key(|prompt| (prompt.sort_order, prompt.key.clone()));
+        validate_prompt_configs(&prompts)?;
+        write_prompt_configs_value(&conn, &key, &prompts)?;
+        Ok(prompts)
+    }
+
+    /// 删除当前账号的本地 AI 快捷操作。
+    pub fn delete_prompt_config(
+        &self,
+        key_to_delete: &str,
+        expected_account_id: i64,
+    ) -> Result<Vec<PromptConfig>, String> {
+        if key_to_delete.trim().is_empty() {
+            return Err("提示词标识不能为空".to_string());
+        }
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(expected_account_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let key = prompt_configs_key(active.id);
+        let mut prompts =
+            read_prompt_configs_value(&conn, &key)?.unwrap_or_else(default_prompt_configs);
+        prompts.retain(|prompt| prompt.key != key_to_delete);
+        validate_prompt_configs(&prompts)?;
+        write_prompt_configs_value(&conn, &key, &prompts)?;
+        Ok(prompts)
+    }
+
+    /// 更新当前账号笔记的互动统计。字段白名单和版本校验避免旧页面覆盖新数据。
+    pub fn update_local_note_stats(
+        &self,
+        input: LocalNoteStatsUpdate,
+    ) -> Result<NoteSummary, String> {
+        if input.value < 0 {
+            return Err("互动数据不能为负数".to_string());
+        }
+        let column = match input.field.as_str() {
+            "likes" | "comments" | "collects" => input.field.as_str(),
+            _ => return Err("不支持的互动数据字段".to_string()),
+        };
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(input.account_pool_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let tx = conn
+            .transaction()
+            .map_err(|error| format!("开始本地互动数据保存失败: {error}"))?;
+        let current_version: i64 = tx
+            .query_row(
+                "SELECT content_version FROM notes
+                 WHERE id = ?1 AND account_pool_id = ?2 AND deleted_at IS NULL",
+                params![input.note_id, active.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取本地笔记版本失败: {error}"))?
+            .ok_or_else(|| "笔记不存在或不属于当前账号".to_string())?;
+        if current_version != input.expected_version {
+            return Err(format!(
+                "笔记版本冲突：当前为 {current_version}，保存请求为 {}，请刷新后重试",
+                input.expected_version
+            ));
+        }
+        let sql = format!(
+            "UPDATE notes SET {column} = ?1, content_version = content_version + 1,
+             updated_at = datetime('now', 'localtime')
+             WHERE id = ?2 AND account_pool_id = ?3 AND deleted_at IS NULL
+               AND content_version = ?4"
+        );
+        let changed = tx
+            .execute(
+                &sql,
+                params![
+                    input.value,
+                    input.note_id,
+                    active.id,
+                    input.expected_version
+                ],
+            )
+            .map_err(|error| format!("保存本地互动数据失败: {error}"))?;
+        if changed != 1 {
+            return Err("笔记版本冲突，互动数据未写入，请刷新后重试".to_string());
+        }
+        let updated = read_note_summary(&tx, input.note_id, active.id)
+            .map_err(|error| format!("读取已保存互动数据失败: {error}"))?;
+        tx.commit()
+            .map_err(|error| format!("提交本地互动数据失败: {error}"))?;
+        Ok(updated)
     }
 
     /// 读取当前运营账号的本地灵感/剪藏，不依赖 WebView localStorage。
@@ -2671,6 +3182,204 @@ fn parse_json_vec<T: DeserializeOwned>(raw: Option<String>) -> Vec<T> {
         .unwrap_or_default()
 }
 
+fn knowledge_preferences_key(account_pool_id: i64) -> String {
+    format!("knowledge_preferences:{account_pool_id}")
+}
+
+fn prompt_configs_key(account_pool_id: i64) -> String {
+    format!("prompt_configs:{account_pool_id}")
+}
+
+fn default_prompt_configs() -> Vec<PromptConfig> {
+    vec![
+        PromptConfig {
+            key: "quick_title".to_string(),
+            label: "生成标题".to_string(),
+            prompt: "请为这篇笔记生成 5 个吸引人的标题，每行一个，格式：\n1. 标题一\n2. 标题二\n…\n不超过 20 字，带情绪词或反问，避免营销腔。".to_string(),
+            sort_order: 0,
+            enabled: true,
+        },
+        PromptConfig {
+            key: "quick_body".to_string(),
+            label: "优化正文".to_string(),
+            prompt: "请帮我优化这篇笔记的正文，保持口语化，短句换行，突出卖点，控制在 300 字以内。".to_string(),
+            sort_order: 1,
+            enabled: true,
+        },
+        PromptConfig {
+            key: "quick_tags".to_string(),
+            label: "生成标签".to_string(),
+            prompt: "请为这篇笔记生成 8 个小红书话题标签，格式：\n#标签1 #标签2 …\n贴合内容垂类，覆盖主话题/场景/风格/情绪四类。".to_string(),
+            sort_order: 2,
+            enabled: true,
+        },
+        PromptConfig {
+            key: "quick_cover".to_string(),
+            label: "写封面文案".to_string(),
+            prompt: "请为这篇笔记写一段封面图文字，不超过 15 字，大字报风格，有视觉冲击力。".to_string(),
+            sort_order: 3,
+            enabled: true,
+        },
+    ]
+}
+
+fn validate_prompt_config_fields(
+    key: &str,
+    label: &str,
+    prompt: &str,
+    sort_order: i64,
+) -> Result<(), String> {
+    if key.trim().is_empty() || key.chars().count() > 120 {
+        return Err("提示词标识无效".to_string());
+    }
+    if label.trim().is_empty() || label.chars().count() > 120 {
+        return Err("提示词名称不能为空且不能超过 120 个字符".to_string());
+    }
+    if prompt.trim().is_empty() || prompt.chars().count() > 16_000 {
+        return Err("提示词内容不能为空且不能超过 16000 个字符".to_string());
+    }
+    if !(0..=100_000).contains(&sort_order) {
+        return Err("提示词排序值无效".to_string());
+    }
+    Ok(())
+}
+
+fn validate_prompt_configs(prompts: &[PromptConfig]) -> Result<(), String> {
+    if prompts.len() > 128 {
+        return Err("提示词数量不能超过 128 条".to_string());
+    }
+    let mut seen = HashSet::new();
+    for prompt in prompts {
+        validate_prompt_config_fields(
+            &prompt.key,
+            &prompt.label,
+            &prompt.prompt,
+            prompt.sort_order,
+        )?;
+        if !seen.insert(prompt.key.clone()) {
+            return Err("提示词标识不能重复".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Read the old global prompt_configs table once when a database is upgraded.
+/// The table was created by the Python backend and may be absent in fresh
+/// databases, so all discovery/row errors deliberately fall back to defaults.
+fn legacy_prompt_configs(conn: &Connection) -> Option<Vec<PromptConfig>> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'prompt_configs'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .ok()?;
+    if !exists {
+        return None;
+    }
+
+    let mut statement = conn
+        .prepare(
+            "SELECT key, label, prompt, sort_order, enabled
+             FROM prompt_configs
+             ORDER BY sort_order, key",
+        )
+        .ok()?;
+    let rows = statement
+        .query_map([], |row| {
+            let enabled = row.get::<_, Option<i64>>(4)?.unwrap_or(1) != 0;
+            Ok(PromptConfig {
+                key: row.get(0)?,
+                label: row.get(1)?,
+                prompt: row.get(2)?,
+                sort_order: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                enabled,
+            })
+        })
+        .ok()?;
+    let mut prompts = Vec::new();
+    for row in rows {
+        prompts.push(row.ok()?);
+    }
+    if prompts.is_empty() {
+        None
+    } else {
+        Some(prompts)
+    }
+}
+
+fn read_prompt_configs_value(
+    conn: &Connection,
+    key: &str,
+) -> Result<Option<Vec<PromptConfig>>, String> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("读取本地提示词失败: {error}"))?;
+    stored
+        .map(|raw| {
+            serde_json::from_str::<Vec<PromptConfig>>(&raw)
+                .map_err(|error| format!("本地提示词格式损坏: {error}"))
+        })
+        .transpose()
+}
+
+fn write_prompt_configs_value(
+    conn: &Connection,
+    key: &str,
+    prompts: &[PromptConfig],
+) -> Result<(), String> {
+    let value =
+        serde_json::to_string(prompts).map_err(|error| format!("序列化本地提示词失败: {error}"))?;
+    conn.execute(
+        "INSERT INTO app_settings (key, value, updated_at)
+         VALUES (?1, ?2, datetime('now', 'localtime'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+         updated_at = excluded.updated_at",
+        params![key, value],
+    )
+    .map_err(|error| format!("保存本地提示词失败: {error}"))?;
+    Ok(())
+}
+
+fn default_local_knowledge_preferences(
+    account_pool_id: i64,
+    updated_at: Option<String>,
+) -> LocalKnowledgePreferences {
+    LocalKnowledgePreferences {
+        account_pool_id,
+        disabled_rule_keys: Vec::new(),
+        use_my_samples: true,
+        use_reference_samples: true,
+        use_inspirations: true,
+        updated_at,
+    }
+}
+
+fn validate_local_knowledge_preferences(disabled_rule_keys: &[String]) -> Result<(), String> {
+    if disabled_rule_keys.len() > 32 {
+        return Err("经验规律开关最多保存 32 项".to_string());
+    }
+    let mut seen = HashSet::new();
+    for key in disabled_rule_keys {
+        let trimmed = key.trim();
+        if trimmed.is_empty() || trimmed.chars().count() > 80 {
+            return Err("经验规律标识无效".to_string());
+        }
+        if !seen.insert(trimmed.to_string()) {
+            return Err("经验规律开关不能重复".to_string());
+        }
+    }
+    Ok(())
+}
+
 struct ValidatedLocalImage {
     extension: String,
     bytes: Vec<u8>,
@@ -2966,6 +3675,97 @@ fn read_note_summaries(
     rows.collect()
 }
 
+fn stage_legacy_inspirations(conn: &Connection) -> SqlResult<()> {
+    let mut statement = conn.prepare("PRAGMA table_info(\"inspirations\")")?;
+    let mut rows = statement.query([])?;
+    let mut id_type = None;
+    let mut has_account_scope = false;
+    let mut has_body = false;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        let column_type: String = row.get(2)?;
+        match name.as_str() {
+            "id" => id_type = Some(column_type),
+            "account_pool_id" => has_account_scope = true,
+            "body" => has_body = true,
+            _ => {}
+        }
+    }
+    drop(rows);
+    drop(statement);
+
+    let is_current_schema = id_type
+        .as_deref()
+        .is_some_and(|column_type| column_type.eq_ignore_ascii_case("TEXT"))
+        && has_account_scope
+        && has_body;
+    if id_type.is_none() || is_current_schema {
+        return Ok(());
+    }
+
+    let legacy_exists: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'inspirations_legacy_v1'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if legacy_exists {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "检测到未完成的 inspirations 迁移：inspirations_legacy_v1 已存在".to_string(),
+        ));
+    }
+
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_inspirations_pool;
+         DROP INDEX IF EXISTS idx_inspirations_dedupe;
+         ALTER TABLE inspirations RENAME TO inspirations_legacy_v1;",
+    )
+}
+
+fn import_legacy_inspirations(conn: &mut Connection, account_pool_id: i64) -> SqlResult<()> {
+    let legacy_exists: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'inspirations_legacy_v1'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !legacy_exists {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT OR IGNORE INTO inspirations (
+             id, account_pool_id, title, source_url, body, observed_at, reason,
+             status, note_id, dedupe_key, created_at, updated_at
+         )
+         SELECT
+             'legacy-' || CAST(id AS TEXT),
+             ?1,
+             COALESCE(title, ''),
+             CASE
+                 WHEN source LIKE 'http://%' OR source LIKE 'https://%' THEN source
+                 ELSE ''
+             END,
+             COALESCE(keyword, ''),
+             COALESCE(created_at, datetime('now', 'localtime')),
+             COALESCE(source, ''),
+             'saved',
+             NULL,
+             NULL,
+             COALESCE(created_at, datetime('now', 'localtime')),
+             COALESCE(created_at, datetime('now', 'localtime'))
+         FROM inspirations_legacy_v1",
+        params![account_pool_id],
+    )?;
+    tx.execute_batch("DROP TABLE inspirations_legacy_v1;")?;
+    tx.commit()
+}
+
 fn migrate(conn: &mut Connection) -> SqlResult<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -2976,6 +3776,10 @@ fn migrate(conn: &mut Connection) -> SqlResult<()> {
     )?;
 
     let tx = conn.transaction()?;
+    // Python 旧版已经创建过一个同名的 inspirations 表，但其主键是
+    // INTEGER 且字段语义不同。先把它移到待导入表名，让下面的完整表
+    // 定义真正落地；数据会在 active account 建立后再导入。
+    stage_legacy_inspirations(&tx)?;
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS account_pool (
              id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3103,6 +3907,19 @@ fn migrate(conn: &mut Connection) -> SqlResult<()> {
              content TEXT NOT NULL,
              created_at TEXT DEFAULT (datetime('now', 'localtime')),
              UNIQUE(run_id, kind)
+         );
+         CREATE TABLE IF NOT EXISTS publish_outbox (
+             attempt_id TEXT PRIMARY KEY,
+             account_pool_id INTEGER NOT NULL REFERENCES account_pool(id) ON DELETE CASCADE,
+             note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+             snapshot_key TEXT NOT NULL,
+             content_version INTEGER NOT NULL,
+             snapshot_json TEXT NOT NULL,
+             status TEXT NOT NULL CHECK(status IN ('prepared', 'submitted', 'confirmed', 'failed', 'unknown')),
+             platform_url TEXT,
+             error TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
          );",
     )?;
 
@@ -3195,6 +4012,61 @@ fn migrate(conn: &mut Connection) -> SqlResult<()> {
         ("reference_accounts", "analyzed_at", "TEXT"),
         ("reference_accounts", "insights", "TEXT"),
         ("reference_accounts", "insights_at", "TEXT"),
+        ("inspirations", "account_pool_id", "INTEGER"),
+        ("inspirations", "source_url", "TEXT NOT NULL DEFAULT ''"),
+        ("inspirations", "body", "TEXT NOT NULL DEFAULT ''"),
+        ("inspirations", "observed_at", "TEXT NOT NULL DEFAULT ''"),
+        ("inspirations", "reason", "TEXT NOT NULL DEFAULT ''"),
+        ("inspirations", "status", "TEXT NOT NULL DEFAULT 'saved'"),
+        ("inspirations", "note_id", "INTEGER"),
+        ("inspirations", "dedupe_key", "TEXT"),
+        ("inspirations", "created_at", "TEXT"),
+        ("inspirations", "updated_at", "TEXT"),
+        ("ai_runs", "run_id", "TEXT"),
+        ("ai_runs", "account_pool_id", "INTEGER"),
+        ("ai_runs", "note_id", "INTEGER"),
+        ("ai_runs", "item_id", "INTEGER"),
+        ("ai_runs", "provider", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ("ai_runs", "started_at", "TEXT NOT NULL DEFAULT ''"),
+        ("ai_runs", "status", "TEXT NOT NULL DEFAULT 'interrupted'"),
+        ("ai_runs", "finished_at", "TEXT"),
+        ("ai_runs", "error", "TEXT"),
+        ("ai_runs", "created_at", "TEXT"),
+        ("ai_runs", "updated_at", "TEXT"),
+        ("ai_run_artifacts", "run_id", "TEXT"),
+        ("ai_run_artifacts", "account_pool_id", "INTEGER"),
+        ("ai_run_artifacts", "note_id", "INTEGER"),
+        ("ai_run_artifacts", "item_id", "INTEGER"),
+        (
+            "ai_run_artifacts",
+            "kind",
+            "TEXT NOT NULL DEFAULT 'unknown'",
+        ),
+        ("ai_run_artifacts", "content", "TEXT NOT NULL DEFAULT ''"),
+        ("ai_run_artifacts", "created_at", "TEXT"),
+        ("publish_outbox", "attempt_id", "TEXT"),
+        ("publish_outbox", "account_pool_id", "INTEGER"),
+        ("publish_outbox", "note_id", "INTEGER"),
+        ("publish_outbox", "snapshot_key", "TEXT"),
+        (
+            "publish_outbox",
+            "content_version",
+            "INTEGER NOT NULL DEFAULT 1",
+        ),
+        (
+            "publish_outbox",
+            "snapshot_json",
+            "TEXT NOT NULL DEFAULT '{}'",
+        ),
+        (
+            "publish_outbox",
+            "status",
+            "TEXT NOT NULL DEFAULT 'prepared'",
+        ),
+        ("publish_outbox", "platform_url", "TEXT"),
+        ("publish_outbox", "error", "TEXT"),
+        ("publish_outbox", "created_at", "TEXT"),
+        ("publish_outbox", "updated_at", "TEXT"),
     ] {
         ensure_column(&tx, table, column, definition)?;
     }
@@ -3215,7 +4087,11 @@ fn migrate(conn: &mut Connection) -> SqlResult<()> {
          CREATE INDEX IF NOT EXISTS idx_ai_runs_scope
              ON ai_runs(account_pool_id, note_id, item_id, updated_at DESC);
          CREATE INDEX IF NOT EXISTS idx_ai_run_artifacts_scope
-             ON ai_run_artifacts(account_pool_id, note_id, item_id, id DESC);",
+             ON ai_run_artifacts(account_pool_id, note_id, item_id, id DESC);
+         CREATE INDEX IF NOT EXISTS idx_publish_outbox_scope
+             ON publish_outbox(account_pool_id, note_id, updated_at DESC);
+         CREATE INDEX IF NOT EXISTS idx_publish_outbox_snapshot
+             ON publish_outbox(account_pool_id, snapshot_key, updated_at DESC);",
     )?;
     tx.execute(
         "INSERT OR IGNORE INTO schema_migrations(version, name)
@@ -3552,6 +4428,98 @@ fn ai_run_artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AIRunAr
         content: row.get(6)?,
         created_at: row.get(7)?,
     })
+}
+
+fn publish_outbox_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PublishOutboxSummary> {
+    Ok(PublishOutboxSummary {
+        attempt_id: row.get(0)?,
+        account_pool_id: row.get(1)?,
+        note_id: row.get(2)?,
+        snapshot_key: row.get(3)?,
+        content_version: row.get(4)?,
+        snapshot_json: row.get(5)?,
+        status: row.get(6)?,
+        platform_url: row.get(7)?,
+        error: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn read_publish_outbox_by_id(
+    conn: &Connection,
+    attempt_id: &str,
+) -> SqlResult<Option<PublishOutboxSummary>> {
+    conn.query_row(
+        "SELECT attempt_id, account_pool_id, note_id, snapshot_key,
+                content_version, snapshot_json, status, platform_url, error,
+                created_at, updated_at
+         FROM publish_outbox WHERE attempt_id = ?1",
+        params![attempt_id],
+        publish_outbox_from_row,
+    )
+    .optional()
+}
+
+fn validate_publish_outbox_prepare(input: &LocalPublishOutboxPrepare) -> Result<(), String> {
+    if input.attempt_id.trim().is_empty() || input.attempt_id.chars().count() > 160 {
+        return Err("发布尝试 ID 无效".to_string());
+    }
+    if input.note_id <= 0 || input.account_pool_id <= 0 || input.content_version <= 0 {
+        return Err("发布准备的账号、笔记或版本无效".to_string());
+    }
+    if input.snapshot_key.trim().is_empty() || input.snapshot_key.chars().count() > 300 {
+        return Err("发布快照键无效".to_string());
+    }
+    if input.snapshot_json.trim().is_empty() || input.snapshot_json.chars().count() > 100_000 {
+        return Err("发布快照内容无效或过大".to_string());
+    }
+    Ok(())
+}
+
+fn validate_publish_outbox_update(input: &LocalPublishOutboxUpdate) -> Result<(), String> {
+    if input.attempt_id.trim().is_empty() || input.attempt_id.chars().count() > 160 {
+        return Err("发布尝试 ID 无效".to_string());
+    }
+    if input.account_pool_id <= 0 {
+        return Err("发布账号无效".to_string());
+    }
+    if !matches!(
+        input.status.as_str(),
+        "prepared" | "submitted" | "confirmed" | "failed" | "unknown"
+    ) {
+        return Err("发布状态无效".to_string());
+    }
+    if input
+        .platform_url
+        .as_deref()
+        .is_some_and(|value| value.chars().count() > 2_000)
+    {
+        return Err("平台链接不能超过 2000 个字符".to_string());
+    }
+    if input
+        .error
+        .as_deref()
+        .is_some_and(|value| value.chars().count() > 1_000)
+    {
+        return Err("发布错误信息不能超过 1000 个字符".to_string());
+    }
+    Ok(())
+}
+
+fn valid_publish_transition(from: &str, to: &str) -> bool {
+    matches!(
+        (from, to),
+        ("prepared", "submitted")
+            | ("prepared", "failed")
+            | ("prepared", "unknown")
+            | ("submitted", "confirmed")
+            | ("submitted", "failed")
+            | ("submitted", "unknown")
+            | ("unknown", "confirmed")
+            | ("unknown", "failed")
+            | ("failed", "prepared")
+    ) || from == to
 }
 
 fn ensure_expected_account(
@@ -4110,6 +5078,50 @@ mod tests {
     }
 
     #[test]
+    fn preserves_existing_note_with_legacy_over_limit_items_when_editing_text() {
+        let (db, dir) = temp_db();
+        let item_ids: Vec<i64> = (1..=10).collect();
+        let item_ids_json = serde_json::to_string(&item_ids).expect("serialize legacy item ids");
+        let conn = db.connect().expect("open local db");
+        for item_id in &item_ids {
+            conn.execute(
+                "INSERT INTO items (id, title, image_path, account_pool_id)
+                 VALUES (?1, ?2, ?3, 1)",
+                params![
+                    item_id,
+                    format!("素材 {item_id}"),
+                    format!("assets/{item_id}.jpg")
+                ],
+            )
+            .expect("seed legacy item");
+        }
+        conn.execute(
+            "INSERT INTO notes (item_id, item_ids, title, body, status, account_pool_id)
+             VALUES (?1, ?2, '历史十图笔记', '旧正文', 'draft', 1)",
+            params![item_ids[0], item_ids_json],
+        )
+        .expect("seed legacy note");
+        let note_id = conn.last_insert_rowid();
+        drop(conn);
+
+        let updated = db
+            .update_local_note(LocalNoteUpdate {
+                note_id,
+                account_pool_id: 1,
+                expected_version: 1,
+                title: "历史十图笔记".to_string(),
+                body: "只改正文也应能保存".to_string(),
+                tags: Vec::new(),
+                note_type: "text".to_string(),
+                item_ids,
+            })
+            .expect("preserve existing over-limit association");
+        assert_eq!(updated.body.as_deref(), Some("只改正文也应能保存"));
+        assert_eq!(updated.content_version, 2);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn rejects_stale_account_context_before_local_write() {
         let (db, dir) = temp_db();
         assert!(db.snapshot_for_account(Some(999)).is_err());
@@ -4118,6 +5130,57 @@ mod tests {
             .is_err());
         let snapshot = db.snapshot().expect("read unchanged snapshot");
         assert_eq!(snapshot.note_count, 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn persists_local_knowledge_preferences_with_account_boundary() {
+        let (db, dir) = temp_db();
+        let defaults = db
+            .local_knowledge_preferences(Some(1))
+            .expect("read default knowledge preferences");
+        assert!(defaults.use_my_samples);
+        assert!(defaults.use_reference_samples);
+        assert!(defaults.use_inspirations);
+
+        let saved = db
+            .save_local_knowledge_preferences(LocalKnowledgePreferencesUpdate {
+                account_pool_id: 1,
+                disabled_rule_keys: vec!["top_tag".to_string()],
+                use_my_samples: false,
+                use_reference_samples: true,
+                use_inspirations: false,
+            })
+            .expect("save knowledge preferences");
+        assert_eq!(saved.disabled_rule_keys, vec!["top_tag".to_string()]);
+        assert!(!saved.use_my_samples);
+        assert!(!saved.use_inspirations);
+        assert!(db
+            .save_local_knowledge_preferences(LocalKnowledgePreferencesUpdate {
+                account_pool_id: 1,
+                disabled_rule_keys: vec!["top_tag".to_string(), " top_tag ".to_string()],
+                use_my_samples: true,
+                use_reference_samples: true,
+                use_inspirations: true,
+            })
+            .is_err());
+
+        drop(db);
+        let reopened = LocalDb::open(dir.join("app.db")).expect("reopen local db");
+        let restored = reopened
+            .local_knowledge_preferences(Some(1))
+            .expect("restore knowledge preferences");
+        assert_eq!(restored.disabled_rule_keys, vec!["top_tag".to_string()]);
+        assert!(!restored.use_my_samples);
+        assert!(reopened
+            .save_local_knowledge_preferences(LocalKnowledgePreferencesUpdate {
+                account_pool_id: 999,
+                disabled_rule_keys: Vec::new(),
+                use_my_samples: true,
+                use_reference_samples: true,
+                use_inspirations: true,
+            })
+            .is_err());
         fs::remove_dir_all(dir).ok();
     }
 
@@ -4302,6 +5365,59 @@ mod tests {
     }
 
     #[test]
+    fn persists_publish_outbox_and_blocks_duplicate_snapshot_submission() {
+        let (db, dir) = temp_db();
+        let note = db
+            .create_local_draft_for_account("发布 outbox 测试", Some(1))
+            .expect("create note");
+        let snapshot = LocalPublishOutboxPrepare {
+            attempt_id: "publish-test-attempt-1".to_string(),
+            account_pool_id: 1,
+            note_id: note.id,
+            snapshot_key: format!("1:note:{}:v{}", note.id, note.content_version),
+            content_version: note.content_version,
+            snapshot_json: r#"{"title":"发布 outbox 测试","body":"正文","tags":[],"itemIds":[]}"#
+                .to_string(),
+        };
+        let prepared = db
+            .prepare_local_publish(snapshot.clone())
+            .expect("prepare local publish");
+        assert_eq!(prepared.status, "prepared");
+        let submitted = db
+            .update_local_publish(LocalPublishOutboxUpdate {
+                attempt_id: prepared.attempt_id.clone(),
+                account_pool_id: 1,
+                status: "submitted".to_string(),
+                platform_url: None,
+                error: None,
+            })
+            .expect("record submitted");
+        assert_eq!(submitted.status, "submitted");
+        let duplicate = db
+            .prepare_local_publish(LocalPublishOutboxPrepare {
+                attempt_id: "publish-test-attempt-2".to_string(),
+                ..snapshot
+            })
+            .expect("reuse submitted snapshot without creating duplicate");
+        assert_eq!(duplicate.attempt_id, prepared.attempt_id);
+        let history = db
+            .local_publish_outbox(Some(1), Some(note.id))
+            .expect("read publish history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].status, "submitted");
+        assert!(db
+            .update_local_publish(LocalPublishOutboxUpdate {
+                attempt_id: prepared.attempt_id,
+                account_pool_id: 2,
+                status: "confirmed".to_string(),
+                platform_url: None,
+                error: None,
+            })
+            .is_err());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn reads_existing_workspace_history_without_recreating_it() {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -4391,6 +5507,178 @@ mod tests {
             updated.profile.unwrap().display_name.as_deref(),
             Some("迁移后人设")
         );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn migrates_legacy_inspirations_before_creating_scope_indexes() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "aichihongshu-legacy-inspiration-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("app.db");
+        let legacy = Connection::open(&path).expect("open legacy db");
+        legacy
+            .execute_batch(
+                "CREATE TABLE account_pool (
+                     id INTEGER PRIMARY KEY, alias TEXT NOT NULL, role TEXT NOT NULL,
+                     user_data_dir TEXT NOT NULL, status TEXT NOT NULL
+                 );
+                 CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
+                 CREATE TABLE inspirations (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     title TEXT NOT NULL,
+                     keyword TEXT,
+                     source TEXT DEFAULT 'ai',
+                     likes_ref INTEGER DEFAULT 0,
+                     note_ref TEXT,
+                     saved INTEGER DEFAULT 1,
+                     created_at TEXT
+                 );
+                 INSERT INTO account_pool VALUES (1, '主号', 'operation', '/tmp/profile', 'active');
+                 INSERT INTO app_settings VALUES ('active_account_id', '1', NULL);
+                 INSERT INTO inspirations
+                   (id, title, keyword, source, saved, created_at)
+                 VALUES (7, '旧灵感', '旧观察', 'ai', 1, '2026-09-18 10:00:00');",
+            )
+            .expect("seed legacy inspirations");
+        drop(legacy);
+
+        let db = LocalDb::open(path.clone()).expect("migrate legacy inspirations");
+        let migrated = db
+            .local_inspirations(Some(1))
+            .expect("read migrated inspirations");
+        assert_eq!(migrated.len(), 1);
+        assert_eq!(migrated[0].id, "legacy-7");
+        assert_eq!(migrated[0].title, "旧灵感");
+        assert_eq!(migrated[0].body, "旧观察");
+        assert_eq!(migrated[0].reason, "ai");
+        assert_eq!(migrated[0].source_url, "");
+
+        db.save_local_inspiration(LocalInspirationCreate {
+            id: "new-inspiration".to_string(),
+            account_pool_id: 1,
+            title: "新灵感".to_string(),
+            source_url: "https://example.com/note".to_string(),
+            body: "新观察".to_string(),
+            observed_at: "2026-09-18T11:00:00Z".to_string(),
+            reason: "手工".to_string(),
+            dedupe_key: None,
+        })
+        .expect("write UUID-like inspiration id after migration");
+        drop(db);
+
+        let reopened = LocalDb::open(path.clone()).expect("reopen migrated inspirations");
+        let restored = reopened
+            .local_inspirations(Some(1))
+            .expect("read restored inspirations");
+        assert_eq!(restored.len(), 2);
+        let conn = reopened.connect().expect("open migrated database");
+        let legacy_table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'inspirations_legacy_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check legacy table cleanup");
+        assert_eq!(legacy_table_count, 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn persists_local_prompt_configs_and_note_stats_with_account_and_version_guards() {
+        let (db, dir) = temp_db();
+        let defaults = db
+            .list_prompt_configs(Some(1))
+            .expect("list default prompts");
+        assert_eq!(defaults.len(), 4);
+        db.upsert_prompt_config(PromptConfigUpsert {
+            account_pool_id: 1,
+            key: "custom_test".to_string(),
+            label: "测试动作".to_string(),
+            prompt: "请检查这篇笔记".to_string(),
+            sort_order: 10,
+            enabled: true,
+        })
+        .expect("save local prompt");
+        let prompts = db.list_prompt_configs(Some(1)).expect("read local prompts");
+        assert_eq!(
+            prompts.last().map(|prompt| prompt.key.as_str()),
+            Some("custom_test")
+        );
+        db.delete_prompt_config("custom_test", 1)
+            .expect("delete local prompt");
+        assert!(db
+            .list_prompt_configs(Some(1))
+            .expect("read prompts after delete")
+            .iter()
+            .all(|prompt| prompt.key != "custom_test"));
+
+        let draft = db
+            .create_local_draft("互动数据测试")
+            .expect("create stats note");
+        let updated = db
+            .update_local_note_stats(LocalNoteStatsUpdate {
+                note_id: draft.id,
+                account_pool_id: 1,
+                expected_version: draft.content_version,
+                field: "likes".to_string(),
+                value: 42,
+            })
+            .expect("update local stats");
+        assert_eq!(updated.likes, 42);
+        assert!(db
+            .update_local_note_stats(LocalNoteStatsUpdate {
+                note_id: draft.id,
+                account_pool_id: 1,
+                expected_version: draft.content_version,
+                field: "likes".to_string(),
+                value: 99,
+            })
+            .is_err());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn imports_legacy_prompt_configs_into_account_scoped_settings() {
+        let (db, dir) = temp_db();
+        let conn = db.connect().expect("open local db");
+        conn.execute_batch(
+            "CREATE TABLE prompt_configs (
+                 key TEXT PRIMARY KEY,
+                 label TEXT NOT NULL,
+                 prompt TEXT NOT NULL,
+                 sort_order INTEGER NOT NULL DEFAULT 0,
+                 enabled INTEGER NOT NULL DEFAULT 1
+             );
+             INSERT INTO prompt_configs (key, label, prompt, sort_order, enabled)
+             VALUES ('legacy_prompt', '旧提示词', '保留历史配置', 7, 0);",
+        )
+        .expect("seed legacy prompt configs");
+        drop(conn);
+
+        let prompts = db
+            .list_prompt_configs(Some(1))
+            .expect("import legacy prompt configs");
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].key, "legacy_prompt");
+        assert!(!prompts[0].enabled);
+
+        let conn = db.connect().expect("reopen local db");
+        let stored: String = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = 'prompt_configs:1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read account scoped prompt config");
+        assert!(stored.contains("legacy_prompt"));
         fs::remove_dir_all(dir).ok();
     }
 }

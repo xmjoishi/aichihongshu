@@ -18,8 +18,18 @@ const checks = [
     "writes: false",
     "function backup",
     "function restoreCheck",
+    "function migrationExecute",
+    "mode === \"cancel\"",
+    "mode === \"replace\"",
+    "mode === \"merge\"",
+    "ACCOUNT_MAPPING_REQUIRED",
+    "TARGET_NON_EMPTY",
+    "MISSING_ASSETS",
+    "backup(sourceReal",
+    "copyReferencedAssets",
+    "swapMigrationArtifacts",
   ]],
-  ["package.json", ["db:import-plan", "db:backup", "db:restore-check"]],
+  ["package.json", ["db:import-plan", "db:import", "db:backup", "db:restore-check"]],
 ];
 
 for (const [file, markers] of checks) {

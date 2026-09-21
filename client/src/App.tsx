@@ -22,12 +22,12 @@ export default function App() {
       <ErrorBoundary>
         <div className="flex h-screen overflow-hidden bg-[var(--color-canvas)] text-[var(--color-text-primary)]">
             <Sidebar />
-            <main className="flex h-full flex-1 flex-col overflow-hidden">
-              <div className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-6">
+            <main className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
+              <div className="app-topbar flex h-14 shrink-0 items-center justify-between gap-4 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-6">
                 <LocalRuntimeStatus />
                 <ActiveAccountSwitcher />
               </div>
-              <div className="flex-1 overflow-hidden flex flex-col">
+              <div className="app-route-shell flex min-h-0 flex-1 overflow-hidden flex-col">
                 <Routes>
                   <Route path="/" element={<Dashboard />} />
                   <Route path="/library" element={<Library />} />

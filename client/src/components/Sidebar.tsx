@@ -59,10 +59,28 @@ const itemClass = ({ isActive, collapsed }: { isActive: boolean; collapsed: bool
 
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(readCollapsedPreference);
+  const [compactViewport, setCompactViewport] = useState(() => (
+    typeof window !== "undefined" && window.matchMedia("(max-width: 959px)").matches
+  ));
+  // 窄窗口下的展开只作为当前会话的临时覆盖，不污染桌面端的折叠偏好。
+  const [compactExpanded, setCompactExpanded] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
   const [resizing, setResizing] = useState(false);
   const widthRef = useRef(sidebarWidth);
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const compact = compactViewport ? !compactExpanded : collapsed;
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 959px)");
+    const update = () => setCompactViewport(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (!compactViewport) setCompactExpanded(false);
+  }, [compactViewport]);
 
   useEffect(() => {
     widthRef.current = sidebarWidth;
@@ -100,6 +118,10 @@ export default function Sidebar() {
   }, [resizing]);
 
   function toggleCollapsed() {
+    if (compactViewport) {
+      setCompactExpanded((current) => !current);
+      return;
+    }
     setCollapsed((current) => {
       const next = !current;
       try {
@@ -112,14 +134,14 @@ export default function Sidebar() {
   }
 
   function startResize(event: React.PointerEvent<HTMLDivElement>) {
-    if (collapsed) return;
+    if (compact) return;
     event.preventDefault();
     resizeRef.current = { startX: event.clientX, startWidth: sidebarWidth };
     setResizing(true);
   }
 
   function resizeWithKeyboard(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (collapsed) return;
+    if (compact) return;
     const step = event.shiftKey ? 24 : 8;
     let next = sidebarWidth;
     if (event.key === "ArrowRight") next += step;
@@ -140,17 +162,17 @@ export default function Sidebar() {
 
   return (
     <aside
-      className={`group/sidebar relative flex shrink-0 flex-col overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-4 ${resizing ? "transition-none" : "transition-[width] duration-200"} ${collapsed ? "w-16" : ""}`}
-      style={{ width: collapsed ? 64 : sidebarWidth }}
+      className={`app-sidebar group/sidebar relative flex shrink-0 flex-col overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-4 ${resizing ? "transition-none" : "transition-[width] duration-200"} ${compact ? "w-16" : ""}`}
+      style={{ width: compact ? 64 : sidebarWidth }}
     >
-      <div className={`mb-5 flex items-center ${collapsed ? "flex-col gap-3" : "justify-between gap-1 px-0"}`}>
-        <div className={`flex min-w-0 items-center ${collapsed ? "justify-center" : "gap-1.5"}`}>
+      <div className={`mb-5 flex items-center ${compact ? "flex-col gap-3" : "justify-between gap-1 px-0"}`}>
+        <div className={`flex min-w-0 items-center ${compact ? "justify-center" : "gap-1.5"}`}>
           <img
             src="/logo.png"
             alt="爱吃红薯"
             className="hdr-ignore h-8 w-8 shrink-0 rounded-xl border border-[var(--color-border)] object-contain shadow-sm"
           />
-          {!collapsed && <div className="w-[4.5rem] shrink-0 whitespace-nowrap">
+          {!compact && <div className="w-[4.5rem] shrink-0 whitespace-nowrap">
             <p className="text-sm font-bold text-[var(--color-text-primary)]">爱吃红薯</p>
             <p className="text-[11px] text-[var(--color-text-secondary)]">AI 吃红书</p>
           </div>}
@@ -158,12 +180,12 @@ export default function Sidebar() {
         <button
           type="button"
           onClick={toggleCollapsed}
-          aria-label={collapsed ? "展开菜单" : "收起菜单"}
-          aria-expanded={!collapsed}
-          title={collapsed ? "展开菜单" : "收起菜单"}
+          aria-label={compact ? "展开菜单" : "收起菜单"}
+          aria-expanded={!compact}
+          title={compact ? "展开菜单" : "收起菜单"}
           className="rounded-lg p-1 text-[var(--color-text-secondary)] transition hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text-primary)]"
         >
-          {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+          {compact ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
         </button>
       </div>
 
@@ -173,11 +195,12 @@ export default function Sidebar() {
           key={to}
           to={to}
           end={to === "/" || to === "/accounts"}
-          title={collapsed ? label : undefined}
-          className={({ isActive }) => itemClass({ isActive, collapsed })}
+          title={compact ? label : undefined}
+          onClick={() => compactViewport && setCompactExpanded(false)}
+          className={({ isActive }) => itemClass({ isActive, collapsed: compact })}
         >
           <Icon size={20} />
-          <span className={collapsed ? "sr-only" : "whitespace-nowrap text-sm font-medium"}>{label}</span>
+          <span className={compact ? "sr-only" : "whitespace-nowrap text-sm font-medium"}>{label}</span>
         </NavLink>
       ))}
 
@@ -193,15 +216,16 @@ export default function Sidebar() {
           key={to}
           to={to}
           end={to === "/accounts/pool"}
-          title={collapsed ? label : undefined}
-          className={({ isActive }) => itemClass({ isActive, collapsed })}
+          title={compact ? label : undefined}
+          onClick={() => compactViewport && setCompactExpanded(false)}
+          className={({ isActive }) => itemClass({ isActive, collapsed: compact })}
         >
           <Icon size={20} />
-          <span className={collapsed ? "sr-only" : "whitespace-nowrap text-sm font-medium"}>{label}</span>
+          <span className={compact ? "sr-only" : "whitespace-nowrap text-sm font-medium"}>{label}</span>
         </NavLink>
       ))}
 
-      {!collapsed && (
+      {!compact && (
         <div
           role="separator"
           aria-orientation="vertical"
@@ -212,7 +236,7 @@ export default function Sidebar() {
           tabIndex={0}
           onPointerDown={startResize}
           onKeyDown={resizeWithKeyboard}
-          className="absolute inset-y-0 right-0 z-20 w-2 cursor-col-resize touch-none select-none bg-transparent transition-colors hover:bg-[var(--color-brand)]/30 focus:bg-[var(--color-brand)]/30 focus:outline-none"
+          className="sidebar-resize-handle absolute inset-y-0 right-0 z-20 w-2 cursor-col-resize touch-none select-none bg-transparent focus:outline-none"
         />
       )}
     </aside>

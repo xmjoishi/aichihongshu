@@ -663,13 +663,13 @@ export default function Library() {
 
   return (
     <>
-      <div className="flex h-full">
+      <div className="library-shell relative flex h-full min-h-0 min-w-0">
       {/* Main area */}
-      <div className="flex-1 flex flex-col overflow-hidden relative">
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* 第一行：操作栏 */}
-        <div className="flex items-center gap-3 px-6 py-3 border-b border-zinc-100 bg-white">
+        <div className="flex flex-wrap items-center gap-3 px-6 py-3 border-b border-zinc-100 bg-white">
           <h1 className="text-lg font-semibold text-zinc-900">图库</h1>
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-3">
             {/* 尺寸调节 */}
             <div className="flex items-center gap-1.5">
               <button
@@ -834,7 +834,7 @@ export default function Library() {
             </div>
           ) : (
             <>
-              <div className={`grid ${COLS_CLASS[cols] ?? "grid-cols-4"} gap-4`}>
+              <div className={`library-grid grid ${COLS_CLASS[cols] ?? "grid-cols-4"} gap-4`}>
                 {visibleItems.map((item) => {
                   const isMulti = multiSelected.has(item.id);
                   const isSingle = selected?.id === item.id;
@@ -846,7 +846,7 @@ export default function Library() {
                       onClick={(e) => handleCardClick(item, e)}
                       onMouseEnter={() => setHoveredItem(item)}
                       onMouseLeave={() => setHoveredItem(null)}
-                      className={`group cursor-pointer rounded-xl overflow-hidden border-2 transition-all relative ${
+                      className={`group cursor-pointer rounded-xl overflow-hidden border transition-all relative ${
                         isSingle
                           ? "border-[#ff2442] shadow-md"
                           : isMulti
@@ -943,7 +943,7 @@ export default function Library() {
 
         {/* 多选底部浮出操作栏 */}
         {multiSelected.size > 0 && (
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2">
+          <div className="library-bulk-bar absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2">
             {deleteMultiConfirm && (
               <div className="flex items-center gap-2 bg-red-600 text-white px-4 py-2.5 rounded-2xl shadow-2xl border border-red-500 text-sm">
                 <span>{showTrash ? `确认永久清理 ${multiSelected.size} 张图片？关联笔记会阻止清理。` : `确认删除 ${multiSelected.size} 张图片？`}</span>
@@ -1035,7 +1035,7 @@ export default function Library() {
 
       {/* Detail panel */}
       {selected && (
-        <div className="w-72 border-l border-zinc-100 bg-white flex flex-col overflow-y-auto">
+        <div className="library-detail-panel w-72 border-l border-zinc-100 bg-white flex min-h-0 flex-col overflow-y-auto">
           <div className="flex items-center justify-between p-4 border-b border-zinc-100">
             <span className="text-sm font-semibold">物品详情</span>
             <button onClick={() => setSelected(null)} className="text-zinc-400 hover:text-zinc-700">

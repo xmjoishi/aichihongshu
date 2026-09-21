@@ -180,7 +180,7 @@ function CrawlerModal({ onClose, onDone, accountPoolId }: { onClose: () => void;
             <label className="text-xs text-zinc-500 block mb-1">{IS_TAURI_RUNTIME ? "账号 ID 或主页标识" : "账号主页 URL"}</label>
             <input type="text" value={url} onChange={(e) => setUrl(e.target.value)}
               placeholder={IS_TAURI_RUNTIME ? "例如：creator_123 或 xhs 用户 ID" : "https://www.xiaohongshu.com/user/profile/...?xsec_token=..."}
-              className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442] ${urlWarning ? "border-amber-400 bg-amber-50" : "border-zinc-200"}`} />
+              className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#ff2442]/30 focus:border-[#ff2442] ${urlWarning ? "border-amber-400 bg-amber-50" : "border-zinc-200"}`} />
             {IS_TAURI_RUNTIME ? (
               <p className="text-xs text-zinc-400 mt-1">只保存账号标识、名称和手工元数据；不会复制 Cookie，也不会自动抓取平台资料。</p>
             ) : urlWarning ? (
@@ -198,7 +198,7 @@ function CrawlerModal({ onClose, onDone, accountPoolId }: { onClose: () => void;
             <label className="text-xs text-zinc-500 block mb-1">账号昵称（可选）</label>
             <input type="text" value={name} onChange={(e) => setName(e.target.value)}
               placeholder="留空则自动识别"
-              className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442]" />
+              className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#ff2442]/30 focus:border-[#ff2442]" />
           </div>
           {!IS_TAURI_RUNTIME && !running && !done && (
             <p className="text-xs text-zinc-400 bg-zinc-50 rounded-lg px-3 py-2">
@@ -555,7 +555,7 @@ function AccountDrawer({
 
   return (
     <div
-      className="flex flex-col h-full bg-white border-l border-zinc-100 relative shrink-0 select-none"
+      className="reference-account-drawer flex flex-col h-full bg-white border-l border-zinc-100 relative shrink-0 select-none"
       style={{ width, cursor: dragging ? "col-resize" : undefined }}
     >
       {/* 拖拽条 */}
@@ -777,7 +777,7 @@ function AccountDrawer({
                 value={styleText}
                 onChange={(e) => setStyleText(e.target.value)}
                 rows={8}
-                className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442] resize-none"
+                className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#ff2442]/30 focus:border-[#ff2442] resize-none"
                 placeholder='{"keywords":["标签1"],"tone":"语气","summary":"概述"}'
               />
               <div className="flex gap-2 justify-end">
@@ -840,7 +840,7 @@ function AccountDrawer({
                 value={imitateItemTitle}
                 onChange={(e) => setImitateItemTitle(e.target.value)}
                 placeholder="可选：填入要写的物品名，生成更精准的仿写 Prompt"
-                className="w-full border border-zinc-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442]"
+                className="w-full border border-zinc-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#ff2442]/30 focus:border-[#ff2442]"
               />
             </div>
             <div className="space-y-2">

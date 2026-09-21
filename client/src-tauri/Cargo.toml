@@ -4,6 +4,11 @@ version = "0.1.0"
 description = "爱吃红薯（AI吃红书）桌面客户端"
 authors = ["you"]
 edition = "2021"
+default-run = "aichihongshu"
+
+[[bin]]
+name = "aichihongshu"
+path = "src/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -25,3 +30,6 @@ serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 base64 = "0.22"
 sha2 = "0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }

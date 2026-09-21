@@ -149,7 +149,7 @@ export default function WorkspaceSearch() {
   return (
     <div className="flex h-full flex-col bg-[var(--color-canvas)]">
       <div className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-6 py-4">
-        <div className="flex items-center gap-3">
+        <div className="search-page-header flex items-center gap-3">
           <div>
             <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">统一搜索</h1>
             <p className="mt-0.5 text-xs text-[var(--color-text-secondary)]">只搜索当前账号的笔记、素材、灵感和榜样资料</p>
@@ -164,7 +164,7 @@ export default function WorkspaceSearch() {
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => event.key === "Escape" && setQuery("")}
             placeholder="搜索标题、正文、标签、观察或账号…"
-            className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] py-2.5 pl-10 pr-10 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)] focus:ring-2 focus:ring-[var(--color-brand)]/20"
+            className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] py-2.5 pl-10 pr-10 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)] focus:ring-1 focus:ring-[var(--color-brand)]/20"
           />
           {query && <button type="button" onClick={() => setQuery("")} aria-label="清除搜索" className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-700"><X size={15} /></button>}
         </div>

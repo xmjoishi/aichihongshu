@@ -2,6 +2,9 @@
 
 ## 规范状态
 
+- 2026-09-21 桌面图标适配：桌面打包源为 [desktop-icon.svg](desktop-icon.svg)，内嵌原始 `mark-white.png`，套用 Noomd 相同的连续圆角轮廓，等比缩放到 840×840 并置于 1024×1024 透明画布中央，四边留 92px。原品牌图与 Web 素材保持原样。以下旧“桌面纯白满画布”描述由此条更新。
+- 重生成：在项目根运行 `node client/node_modules/@tauri-apps/cli/tauri.js icon LOGO/v2.8/desktop-icon.svg --output /private/tmp/aichi-platform-icons`；仅将该目录的 `icon.icns`、`icon.ico`、`32x32.png`、`128x128.png`、`128x128@2x.png` 复制到 `client/src-tauri/icons/`。其余移动端生成物不用于本次变更。
+
 - 状态：已对齐，桌面/Web 资源已实现；移动端资源待实现
 - 设计依据：[brand-board.png](brand-board.png)
 - 实际图形主源（图 3 原稿）：[mark-image3-source.png](mark-image3-source.png)

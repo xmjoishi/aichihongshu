@@ -5,7 +5,7 @@ import {
   ChevronDown, ChevronUp, ExternalLink,
   Sparkles, Check,
 } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, openInBrowser } from "../lib/api";
 import type {
@@ -16,6 +16,9 @@ import { computeRulesFromNotes, mergeRules } from "../selectors/knowledge";
 import {
   IS_TAURI_RUNTIME,
   readLocalInspirations,
+  readLocalKnowledgePreferences,
+  saveLocalKnowledgePreferences,
+  type LocalKnowledgePreferences,
   type LocalInspirationSummary,
 } from "../lib/local";
 import { useAccountContext } from "../lib/accountContext";
@@ -162,7 +165,7 @@ function MySamplesSection() {
             onClick={() => toggle(s.id, !s.use_as_reference)}
           >
             {/* 勾选状态 */}
-            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 transition-colors
+            <div className={`w-4 h-4 rounded-full border flex items-center justify-center shrink-0 mt-0.5 transition-colors
               ${s.use_as_reference ? "border-[#ff2442] bg-[#ff2442]" : "border-zinc-300"}`}>
               {s.use_as_reference && <Check size={9} className="text-white" />}
             </div>
@@ -409,9 +412,54 @@ function LocalKnowledgeTab({
   referenceAccounts: KnowledgeRefGroup[];
 }) {
   const { accountId, scopeKey } = useAccountContext();
+  const queryClient = useQueryClient();
+  const defaultPreferences: LocalKnowledgePreferences = useMemo(() => ({
+    accountPoolId: accountId ?? 0,
+    disabledRuleKeys: [],
+    useMySamples: true,
+    useReferenceSamples: true,
+    useInspirations: true,
+  }), [accountId]);
+  const [preferences, setPreferences] = useState<LocalKnowledgePreferences>(defaultPreferences);
+  const [savingPreferences, setSavingPreferences] = useState(false);
+  const [preferenceError, setPreferenceError] = useState<string | null>(null);
+  const { data: storedPreferences } = useQuery<LocalKnowledgePreferences>({
+    queryKey: ["local-knowledge-preferences", scopeKey],
+    queryFn: () => readLocalKnowledgePreferences(accountId ?? undefined),
+    enabled: accountId !== null,
+    staleTime: 3_000,
+  });
+  useEffect(() => {
+    if (storedPreferences) setPreferences(storedPreferences);
+    else setPreferences(defaultPreferences);
+  }, [defaultPreferences, storedPreferences]);
+  async function updatePreferences(patch: Partial<LocalKnowledgePreferences>) {
+    if (accountId === null || savingPreferences) return;
+    const next = { ...preferences, ...patch, accountPoolId: accountId };
+    setSavingPreferences(true);
+    setPreferenceError(null);
+    try {
+      const saved = await saveLocalKnowledgePreferences({
+        accountPoolId: accountId,
+        disabledRuleKeys: next.disabledRuleKeys,
+        useMySamples: next.useMySamples,
+        useReferenceSamples: next.useReferenceSamples,
+        useInspirations: next.useInspirations,
+      });
+      setPreferences(saved);
+      queryClient.setQueryData(["local-knowledge-preferences", scopeKey], saved);
+    } catch (error) {
+      setPreferenceError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingPreferences(false);
+    }
+  }
   const rules = useMemo(
-    () => computeRulesFromNotes(notes).map((rule) => ({ ...rule, enabled: true })),
-    [notes],
+    () => computeRulesFromNotes(notes).map((rule) => ({
+      ...rule,
+      enabled: !preferences.disabledRuleKeys.includes(rule.key),
+    })),
+    [notes, preferences.disabledRuleKeys],
   );
   const published = useMemo(
     () => notes.filter((note) => note.status === "published").sort((a, b) => b.likes - a.likes),
@@ -435,14 +483,57 @@ function LocalKnowledgeTab({
         ) : (
           <div className="space-y-2">
             {rules.map((rule) => (
-              <div key={rule.key} className="px-3.5 py-2.5 rounded-xl border border-zinc-100 bg-zinc-50">
-                <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wide">{rule.key}</span>
-                <p className="text-xs text-zinc-700 mt-0.5">{rule.desc}</p>
+              <div key={rule.key} className={`flex items-start justify-between gap-3 px-3.5 py-2.5 rounded-xl border transition-colors ${rule.enabled ? "border-[#ff2442]/20 bg-[#ff2442]/5" : "border-zinc-100 bg-zinc-50"}`}>
+                <div>
+                  <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wide">{rule.key}</span>
+                  <p className="text-xs text-zinc-700 mt-0.5">{rule.desc}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => updatePreferences({
+                    disabledRuleKeys: rule.enabled
+                      ? [...preferences.disabledRuleKeys, rule.key]
+                      : preferences.disabledRuleKeys.filter((key) => key !== rule.key),
+                  })}
+                  disabled={savingPreferences}
+                  className="shrink-0 mt-0.5 disabled:opacity-50"
+                  title={rule.enabled ? "停用此规律的 AI 注入" : "启用此规律的 AI 注入"}
+                >
+                  {rule.enabled ? <ToggleRight size={22} className="text-[#ff2442]" /> : <ToggleLeft size={22} className="text-zinc-300" />}
+                </button>
               </div>
             ))}
           </div>
         )}
-        <p className="text-[10px] text-zinc-400 mt-3">本地规律由当前账号数据即时计算；启停偏好尚未迁移，暂不提供不可持久化的开关。</p>
+        <p className="text-[10px] text-zinc-400 mt-3">规律由当前账号数据即时计算；开关保存到本地账号偏好，并用于本地 AI 注入。</p>
+      </Section>
+      <Section icon={Sparkles} title="AI 注入来源" badge={savingPreferences ? "保存中…" : undefined}>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {([
+            ["useMySamples", "我的高赞样本", "生成时参考自己的语气和结构"],
+            ["useReferenceSamples", "榜样笔记", "生成时参考已保存榜样"],
+            ["useInspirations", "选题灵感", "生成时参考本地灵感方向"],
+          ] as const).map(([key, label, description]) => {
+            const enabled = preferences[key];
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => updatePreferences({ [key]: !enabled })}
+                disabled={savingPreferences}
+                className={`text-left rounded-xl border px-3 py-2.5 transition-colors disabled:opacity-50 ${enabled ? "border-[#ff2442]/20 bg-[#ff2442]/5" : "border-zinc-100 bg-zinc-50"}`}
+              >
+                <span className="flex items-center justify-between gap-2 text-xs font-medium text-zinc-700">
+                  {label}
+                  {enabled ? <ToggleRight size={19} className="text-[#ff2442]" /> : <ToggleLeft size={19} className="text-zinc-300" />}
+                </span>
+                <span className="block text-[10px] text-zinc-400 mt-1">{description}</span>
+              </button>
+            );
+          })}
+        </div>
+        {preferenceError && <p className="text-[10px] text-red-500 mt-2" role="alert">保存经验库偏好失败：{preferenceError}</p>}
+        <p className="text-[10px] text-zinc-400 mt-3">只注入当前账号的本地摘要，不发送来源链接或完整历史正文。</p>
       </Section>
       <Section icon={BookOpen} title="我的已发布样本" badge={published.length ? `${published.length} 篇` : undefined}>
         {!published.length ? (

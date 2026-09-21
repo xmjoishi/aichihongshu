@@ -401,6 +401,34 @@ fn update_local_note_status(
     state.db.update_local_note_status(update)
 }
 
+/// 将不可变发布快照写入本地 outbox；不访问平台、不提交内容。
+#[tauri::command]
+fn prepare_local_publish(
+    state: State<'_, AppState>,
+    preparation: db::LocalPublishOutboxPrepare,
+) -> Result<db::PublishOutboxSummary, String> {
+    state.db.prepare_local_publish(preparation)
+}
+
+/// 记录手工发布后的提交、确认、失败或结果不明状态；不执行平台请求。
+#[tauri::command]
+fn update_local_publish(
+    state: State<'_, AppState>,
+    update: db::LocalPublishOutboxUpdate,
+) -> Result<db::PublishOutboxSummary, String> {
+    state.db.update_local_publish(update)
+}
+
+/// 读取当前账号可恢复的本地发布历史。
+#[tauri::command]
+fn read_local_publish_outbox(
+    state: State<'_, AppState>,
+    account_pool_id: Option<i64>,
+    note_id: Option<i64>,
+) -> Result<Vec<db::PublishOutboxSummary>, String> {
+    state.db.local_publish_outbox(account_pool_id, note_id)
+}
+
 /// 保存当前账号笔记的素材关联顺序，并要求调用方带上内容版本。
 #[tauri::command]
 fn update_local_note_items(
@@ -612,6 +640,61 @@ fn delete_local_reference_account(
     state.db.delete_local_reference_account(id, account_pool_id)
 }
 
+/// 读取当前账号的经验库注入开关。
+#[tauri::command]
+fn read_local_knowledge_preferences(
+    state: State<'_, AppState>,
+    account_pool_id: Option<i64>,
+) -> Result<db::LocalKnowledgePreferences, String> {
+    state.db.local_knowledge_preferences(account_pool_id)
+}
+
+/// 保存当前账号的经验库注入开关。
+#[tauri::command]
+fn save_local_knowledge_preferences(
+    state: State<'_, AppState>,
+    preferences: db::LocalKnowledgePreferencesUpdate,
+) -> Result<db::LocalKnowledgePreferences, String> {
+    state.db.save_local_knowledge_preferences(preferences)
+}
+
+/// 读取当前账号的本地 AI 快捷操作。
+#[tauri::command]
+fn list_prompt_configs(
+    state: State<'_, AppState>,
+    account_pool_id: Option<i64>,
+) -> Result<Vec<db::PromptConfig>, String> {
+    state.db.list_prompt_configs(account_pool_id)
+}
+
+/// 新增或更新当前账号的本地 AI 快捷操作。
+#[tauri::command]
+fn upsert_prompt_config(
+    state: State<'_, AppState>,
+    payload: db::PromptConfigUpsert,
+) -> Result<Vec<db::PromptConfig>, String> {
+    state.db.upsert_prompt_config(payload)
+}
+
+/// 删除当前账号的本地 AI 快捷操作。
+#[tauri::command]
+fn delete_prompt_config(
+    state: State<'_, AppState>,
+    key: String,
+    account_pool_id: i64,
+) -> Result<Vec<db::PromptConfig>, String> {
+    state.db.delete_prompt_config(&key, account_pool_id)
+}
+
+/// 更新当前账号笔记的互动统计。
+#[tauri::command]
+fn update_local_note_stats(
+    state: State<'_, AppState>,
+    update: db::LocalNoteStatsUpdate,
+) -> Result<db::NoteSummary, String> {
+    state.db.update_local_note_stats(update)
+}
+
 /// 保存本地 AI 运行的脱敏元数据，不保存提示词或生成正文。
 #[tauri::command]
 fn save_local_ai_run(
@@ -725,6 +808,9 @@ pub fn run() {
             create_local_draft,
             update_local_note,
             update_local_note_status,
+            prepare_local_publish,
+            update_local_publish,
+            read_local_publish_outbox,
             update_local_note_items,
             delete_local_note,
             restore_local_note,
@@ -747,6 +833,12 @@ pub fn run() {
             create_local_reference_account,
             update_local_reference_account,
             delete_local_reference_account,
+            read_local_knowledge_preferences,
+            save_local_knowledge_preferences,
+            list_prompt_configs,
+            upsert_prompt_config,
+            delete_prompt_config,
+            update_local_note_stats,
             save_local_ai_run,
             update_local_ai_run,
             read_local_ai_run,

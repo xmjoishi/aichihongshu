@@ -18,6 +18,10 @@ import {
   purgeLocalItems,
   readLocalRuntimeStatus,
   readLocalWorkspaceSnapshot,
+  listPromptConfigs,
+  upsertPromptConfig,
+  deletePromptConfig,
+  type LocalPromptConfig,
   restoreLocalItem,
   type LocalRuntimeStatus,
   type LocalWorkspaceSnapshot,
@@ -38,7 +42,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 // ── 表单行 ─────────────────────────────────────────────────────────
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[160px_1fr] gap-4 items-start">
+    <div className="settings-field grid grid-cols-[160px_1fr] gap-4 items-start">
       <div>
         <p className="text-sm text-zinc-700">{label}</p>
         {hint && <p className="text-xs text-zinc-400 mt-0.5">{hint}</p>}
@@ -48,7 +52,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
-const inputCls = "w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand)]/30 focus:border-[var(--color-brand)]";
+const inputCls = "w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-brand)]/30 focus:border-[var(--color-brand)]";
 
 // ── 页签定义 ──────────────────────────────────────────────────────
 const TABS = [
@@ -65,7 +69,7 @@ export default function Settings() {
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* 页签栏 */}
-      <div className="flex shrink-0 items-center gap-1 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-6 py-3">
+      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--color-border)] bg-[var(--color-surface)] px-6 py-3">
         <h1 className="mr-4 text-lg font-semibold text-[var(--color-text-primary)]">设置</h1>
         {TABS.map((t) => (
           <button
@@ -484,11 +488,28 @@ interface PromptConfig {
 function PromptsTab() {
   const { toast } = useToast();
   const qc = useQueryClient();
+  const { accountId, scopeKey } = useAccountContext();
 
-  const { data: prompts = [], isLoading } = useQuery<PromptConfig[]>({
+  const { data: remotePrompts = [], isLoading: remoteLoading } = useQuery<PromptConfig[]>({
     queryKey: ["settings-prompts"],
     queryFn: () => api.get("/api/settings/prompts"),
+    enabled: !IS_TAURI_RUNTIME,
   });
+  const { data: localPrompts = [], isLoading: localLoading } = useQuery<LocalPromptConfig[]>({
+    queryKey: ["local-settings-prompts", scopeKey],
+    queryFn: () => listPromptConfigs(accountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && accountId !== null,
+  });
+  const prompts: PromptConfig[] = IS_TAURI_RUNTIME
+    ? localPrompts.map((prompt) => ({
+        key: prompt.key,
+        label: prompt.label,
+        prompt: prompt.prompt,
+        sort_order: prompt.sortOrder,
+        enabled: prompt.enabled ? 1 : 0,
+      }))
+    : remotePrompts;
+  const isLoading = IS_TAURI_RUNTIME ? localLoading : remoteLoading;
 
   // 弹窗状态：null = 关闭，"new" = 新增，string = 编辑中的 key
   const [modalMode, setModalMode] = useState<null | "new" | string>(null);
@@ -515,19 +536,45 @@ function PromptsTab() {
     try {
       if (modalMode === "new") {
         const key = `custom_${Date.now()}`;
-        await api.post("/api/settings/prompts", {
-          key,
-          label: form.label,
-          prompt: form.prompt,
-          sort_order: prompts.length,
-          enabled: true,
-        });
+        if (IS_TAURI_RUNTIME) {
+          if (accountId === null) throw new Error("当前账号尚未就绪");
+          await upsertPromptConfig({
+            accountPoolId: accountId,
+            key,
+            label: form.label.trim(),
+            prompt: form.prompt.trim(),
+            sortOrder: prompts.length,
+            enabled: true,
+          });
+        } else {
+          await api.post("/api/settings/prompts", {
+            key,
+            label: form.label,
+            prompt: form.prompt,
+            sort_order: prompts.length,
+            enabled: true,
+          });
+        }
         toast("已添加", "success");
       } else {
-        await api.put(`/api/settings/prompts/${modalMode}`, form);
+        const existing = prompts.find((prompt) => prompt.key === modalMode);
+        if (IS_TAURI_RUNTIME) {
+          if (accountId === null) throw new Error("当前账号尚未就绪");
+          await upsertPromptConfig({
+            accountPoolId: accountId,
+            key: String(modalMode),
+            label: form.label.trim(),
+            prompt: form.prompt.trim(),
+            sortOrder: existing?.sort_order ?? prompts.length,
+            enabled: existing?.enabled !== 0,
+          });
+        } else {
+          await api.put(`/api/settings/prompts/${modalMode}`, form);
+        }
         toast("已保存", "success");
       }
       qc.invalidateQueries({ queryKey: ["settings-prompts"] });
+      qc.invalidateQueries({ queryKey: ["local-settings-prompts", scopeKey] });
       qc.invalidateQueries({ queryKey: ["quick-actions"] });
       closeModal();
     } catch (e: unknown) {
@@ -539,8 +586,21 @@ function PromptsTab() {
 
   async function toggleEnabled(p: PromptConfig) {
     try {
-      await api.put(`/api/settings/prompts/${p.key}`, { enabled: p.enabled ? 0 : 1 });
+      if (IS_TAURI_RUNTIME) {
+        if (accountId === null) throw new Error("当前账号尚未就绪");
+        await upsertPromptConfig({
+          accountPoolId: accountId,
+          key: p.key,
+          label: p.label,
+          prompt: p.prompt,
+          sortOrder: p.sort_order,
+          enabled: !p.enabled,
+        });
+      } else {
+        await api.put(`/api/settings/prompts/${p.key}`, { enabled: p.enabled ? 0 : 1 });
+      }
       qc.invalidateQueries({ queryKey: ["settings-prompts"] });
+      qc.invalidateQueries({ queryKey: ["local-settings-prompts", scopeKey] });
       qc.invalidateQueries({ queryKey: ["quick-actions"] });
     } catch (e: unknown) {
       toast((e as Error).message, "error");
@@ -549,8 +609,14 @@ function PromptsTab() {
 
   async function deletePrompt(key: string) {
     try {
-      await api.delete(`/api/settings/prompts/${key}`);
+      if (IS_TAURI_RUNTIME) {
+        if (accountId === null) throw new Error("当前账号尚未就绪");
+        await deletePromptConfig(key, accountId);
+      } else {
+        await api.delete(`/api/settings/prompts/${key}`);
+      }
       qc.invalidateQueries({ queryKey: ["settings-prompts"] });
+      qc.invalidateQueries({ queryKey: ["local-settings-prompts", scopeKey] });
       qc.invalidateQueries({ queryKey: ["quick-actions"] });
       toast("已删除", "success");
     } catch (e: unknown) {
@@ -652,7 +718,7 @@ function PromptsTab() {
                   onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
                   placeholder="如：生成标题、改写开头"
                   autoFocus
-                  className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm text-zinc-800 focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442]"
+                  className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm text-zinc-800 focus:outline-none focus:ring-1 focus:ring-[#ff2442]/30 focus:border-[#ff2442]"
                 />
               </div>
               <div>
@@ -663,7 +729,7 @@ function PromptsTab() {
                   placeholder="输入发送给 AI 的指令..."
                   rows={12}
                   className="w-full border border-zinc-200 rounded-lg px-3 py-2.5 text-sm text-zinc-700
-                             focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442]
+                             focus:outline-none focus:ring-1 focus:ring-[#ff2442]/30 focus:border-[#ff2442]
                              resize-none leading-relaxed font-mono"
                 />
               </div>

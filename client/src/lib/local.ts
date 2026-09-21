@@ -121,6 +121,43 @@ export interface LocalReferenceAccountUpdate extends LocalReferenceAccountCreate
   contentStyle?: string | null;
 }
 
+export interface LocalKnowledgePreferences {
+  accountPoolId: number;
+  disabledRuleKeys: string[];
+  useMySamples: boolean;
+  useReferenceSamples: boolean;
+  useInspirations: boolean;
+  updatedAt?: string;
+}
+
+export interface LocalKnowledgePreferencesUpdate {
+  accountPoolId: number;
+  disabledRuleKeys: string[];
+  useMySamples: boolean;
+  useReferenceSamples: boolean;
+  useInspirations: boolean;
+}
+
+export interface LocalPromptConfig {
+  key: string;
+  label: string;
+  prompt: string;
+  sortOrder: number;
+  enabled: boolean;
+}
+
+export interface LocalPromptConfigUpsert extends LocalPromptConfig {
+  accountPoolId: number;
+}
+
+export interface LocalNoteStatsUpdate {
+  noteId: number;
+  accountPoolId: number;
+  expectedVersion: number;
+  field: "likes" | "comments" | "collects";
+  value: number;
+}
+
 export type LocalAIRunStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
 
 export interface LocalAIRunUpsert {
@@ -223,6 +260,33 @@ export interface LocalNoteStatusUpdate {
   noteUrl?: string;
 }
 
+export type LocalPublishOutboxStatus = "prepared" | "submitted" | "confirmed" | "failed" | "unknown";
+
+export interface LocalPublishOutboxPrepare {
+  attemptId: string;
+  accountPoolId: number;
+  noteId: number;
+  snapshotKey: string;
+  contentVersion: number;
+  snapshotJson: string;
+}
+
+export interface LocalPublishOutboxUpdate {
+  attemptId: string;
+  accountPoolId: number;
+  status: LocalPublishOutboxStatus;
+  platformUrl?: string | null;
+  error?: string | null;
+}
+
+export interface LocalPublishOutboxSummary extends LocalPublishOutboxPrepare {
+  status: LocalPublishOutboxStatus;
+  platformUrl?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface LocalNoteItemsUpdate {
   noteId: number;
   accountPoolId: number;
@@ -323,37 +387,42 @@ export function createLocalDraft(title: string, accountPoolId?: number): Promise
 
 export function updateLocalNote(update: LocalNoteUpdate): Promise<LocalNoteSummary> {
   requireTauri();
-  return invoke<LocalNoteSummary>("update_local_note", {
-    noteId: update.noteId,
-    accountPoolId: update.accountPoolId,
-    expectedVersion: update.expectedVersion,
-    title: update.title,
-    body: update.body,
-    tags: update.tags,
-    noteType: update.noteType,
-    itemIds: update.itemIds,
-  });
+  return invoke<LocalNoteSummary>("update_local_note", { update });
 }
 
 export function updateLocalNoteStatus(update: LocalNoteStatusUpdate): Promise<LocalNoteSummary> {
   requireTauri();
-  return invoke<LocalNoteSummary>("update_local_note_status", {
-    noteId: update.noteId,
-    accountPoolId: update.accountPoolId,
-    expectedVersion: update.expectedVersion,
-    status: update.status,
-    noteUrl: update.noteUrl,
+  return invoke<LocalNoteSummary>("update_local_note_status", { update });
+}
+
+export function prepareLocalPublish(
+  preparation: LocalPublishOutboxPrepare,
+): Promise<LocalPublishOutboxSummary> {
+  requireTauri();
+  return invoke<LocalPublishOutboxSummary>("prepare_local_publish", { preparation });
+}
+
+export function updateLocalPublish(
+  update: LocalPublishOutboxUpdate,
+): Promise<LocalPublishOutboxSummary> {
+  requireTauri();
+  return invoke<LocalPublishOutboxSummary>("update_local_publish", { update });
+}
+
+export function readLocalPublishOutbox(
+  accountPoolId?: number,
+  noteId?: number,
+): Promise<LocalPublishOutboxSummary[]> {
+  requireTauri();
+  return invoke<LocalPublishOutboxSummary[]>("read_local_publish_outbox", {
+    accountPoolId,
+    noteId,
   });
 }
 
 export function updateLocalNoteItems(update: LocalNoteItemsUpdate): Promise<LocalNoteSummary> {
   requireTauri();
-  return invoke<LocalNoteSummary>("update_local_note_items", {
-    noteId: update.noteId,
-    accountPoolId: update.accountPoolId,
-    expectedVersion: update.expectedVersion,
-    itemIds: update.itemIds,
-  });
+  return invoke<LocalNoteSummary>("update_local_note_items", { update });
 }
 
 export function deleteLocalNote(noteId: number, accountPoolId: number): Promise<LocalNoteSummary> {
@@ -541,6 +610,53 @@ export function updateLocalReferenceAccount(account: LocalReferenceAccountUpdate
 export function deleteLocalReferenceAccount(id: number, accountPoolId: number): Promise<void> {
   requireTauri();
   return invoke<void>("delete_local_reference_account", { id, accountPoolId });
+}
+
+export function readLocalKnowledgePreferences(accountPoolId?: number): Promise<LocalKnowledgePreferences> {
+  requireTauri();
+  return invoke<LocalKnowledgePreferences>("read_local_knowledge_preferences", { accountPoolId });
+}
+
+export function saveLocalKnowledgePreferences(preferences: LocalKnowledgePreferencesUpdate): Promise<LocalKnowledgePreferences> {
+  requireTauri();
+  return invoke<LocalKnowledgePreferences>("save_local_knowledge_preferences", { preferences });
+}
+
+export function listPromptConfigs(accountPoolId?: number): Promise<LocalPromptConfig[]> {
+  requireTauri();
+  return invoke<LocalPromptConfig[]>("list_prompt_configs", { accountPoolId });
+}
+
+export function upsertPromptConfig(config: LocalPromptConfigUpsert): Promise<LocalPromptConfig[]> {
+  requireTauri();
+  return invoke<LocalPromptConfig[]>("upsert_prompt_config", {
+    payload: {
+      accountPoolId: config.accountPoolId,
+      key: config.key,
+      label: config.label,
+      prompt: config.prompt,
+      sortOrder: config.sortOrder,
+      enabled: config.enabled,
+    },
+  });
+}
+
+export function deletePromptConfig(key: string, accountPoolId: number): Promise<LocalPromptConfig[]> {
+  requireTauri();
+  return invoke<LocalPromptConfig[]>("delete_prompt_config", { key, accountPoolId });
+}
+
+export function updateLocalNoteStats(update: LocalNoteStatsUpdate): Promise<LocalNoteSummary> {
+  requireTauri();
+  return invoke<LocalNoteSummary>("update_local_note_stats", {
+    update: {
+      noteId: update.noteId,
+      accountPoolId: update.accountPoolId,
+      expectedVersion: update.expectedVersion,
+      field: update.field,
+      value: update.value,
+    },
+  });
 }
 
 export function saveLocalAIRun(run: LocalAIRunUpsert): Promise<LocalAIRunSummary> {

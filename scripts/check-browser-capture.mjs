@@ -3,8 +3,8 @@ import path from "node:path";
 
 const root = process.cwd();
 const checks = [
-  ["client/src/lib/browserCapture.ts", ["validateBrowserCapture", "ACCOUNT_MISMATCH", "MAX_MESSAGE_BYTES", "dedupeKey"]],
-  ["client/src/pages/Inspire.tsx", ["validateBrowserCapture", "targetAccountId", "transport: \"manual\"", "dedupeKey", "AICHIHONGSHU_BROWSER_CAPTURE", "aichihongshu-browser-capture"]],
+  ["client/src/lib/browserCapture.ts", ["validateBrowserCapture", "ACCOUNT_MISMATCH", "MAX_MESSAGE_BYTES", "dedupeKey", "BrowserCaptureEnvelope", "pending_confirmation", "enqueueBrowserCapture", "markBrowserCaptureSaving", "markBrowserCaptureFailed", "requestId"]],
+  ["client/src/pages/Inspire.tsx", ["validateBrowserCapture", "targetAccountId", "transport: \"manual\"", "dedupeKey", "AICHIHONGSHU_BROWSER_CAPTURE", "aichihongshu-browser-capture", "确认保存", "重试", "readBrowserCaptureQueue"]],
 ];
 const failures = [];
 for (const [file, markers] of checks) {

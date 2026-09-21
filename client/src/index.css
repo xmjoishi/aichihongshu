@@ -53,8 +53,24 @@ body {
 :root[data-theme="dark"] select { background-color: var(--color-surface) !important; color: var(--color-text-primary) !important; border-color: var(--color-border) !important; }
 
 button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--color-brand) 48%, transparent);
-  outline-offset: 2px;
+  outline: 2px solid color-mix(in srgb, var(--color-brand) 42%, transparent);
+  outline-offset: 1px;
+}
+
+/* 侧栏拖拽保留 8px 命中区，但只显示 1px 的主题色提示线。 */
+.sidebar-resize-handle::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  width: 1px;
+  background: transparent;
+  transition: background-color 160ms ease;
+}
+
+.sidebar-resize-handle:hover::before,
+.sidebar-resize-handle:focus-visible::before {
+  background: color-mix(in srgb, var(--color-brand) 30%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -66,13 +82,48 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   }
 }
 
-/* scrollbar */
-::-webkit-scrollbar { width: 6px; height: 6px; }
+/* 滚动条：默认低干扰，交互时才增强对比度。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text-secondary) 28%, transparent) transparent;
+}
+::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 9999px; }
-::-webkit-scrollbar-thumb:hover { background: #a1a1aa; }
-:root[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #66565d; }
-:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #8a747d; }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--color-text-secondary) 28%, transparent); border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--color-text-secondary) 58%, transparent); }
+
+/* 窄窗口下的统一外壳约束。页面内部再按自己的内容密度重排。 */
+.app-topbar { min-width: 0; }
+.app-route-shell { min-width: 0; min-height: 0; }
+
+@media (max-width: 960px) {
+  .app-topbar { padding-inline: 0.75rem !important; gap: 0.5rem !important; }
+  .app-route-shell { min-width: 0; }
+  .search-page-header { align-items: flex-start; flex-wrap: wrap; }
+  .search-page-header > span { margin-left: 0 !important; max-width: 100%; }
+  .library-shell { position: relative; }
+  .library-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); }
+  .library-detail-panel { position: absolute; inset: 0 0 0 auto; z-index: 30; width: min(360px, 92vw) !important; box-shadow: -12px 0 30px rgb(24 24 27 / 12%); }
+  .library-bulk-bar { max-width: calc(100% - 1.5rem); flex-wrap: wrap; justify-content: center; gap: 0.5rem; padding-inline: 0.75rem; }
+  .inspire-drawer.is-open { width: min(92vw, 420px) !important; min-width: 0 !important; }
+  .note-preview-panel { width: 180px !important; }
+  .publish-board { min-width: 0 !important; display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); height: auto !important; overflow-y: auto; }
+  .publish-column { min-width: 0 !important; min-height: 220px; }
+  .settings-field { grid-template-columns: 120px minmax(0, 1fr) !important; gap: 0.75rem !important; }
+  .data-ai-drawer { width: min(420px, 92vw) !important; }
+  .note-ai-drawer { width: min(360px, 92vw) !important; }
+  .ai-panel-drawer { width: min(360px, 92vw) !important; }
+  .reference-account-drawer { width: min(360px, 92vw) !important; }
+}
+
+@media (max-width: 640px) {
+  .library-detail-panel { inset: 0; width: 100% !important; }
+  .inspire-drawer.is-open { width: 100% !important; }
+  .note-preview-panel { width: 156px !important; }
+  .publish-board { grid-template-columns: minmax(0, 1fr); }
+  .settings-field { grid-template-columns: minmax(0, 1fr) !important; gap: 0.35rem !important; }
+  .data-ai-drawer, .note-ai-drawer, .ai-panel-drawer, .reference-account-drawer { width: 100% !important; }
+}
 
 /* scrollbar-hide utility */
 .scrollbar-hide {

@@ -10,6 +10,7 @@
     "db:backup": "node ./scripts/desktop-db-safety.mjs backup",
     "db:restore-check": "node ./scripts/desktop-db-safety.mjs restore-check",
     "db:import-plan": "node ./scripts/desktop-db-safety.mjs migration-plan",
+    "db:import": "node ./scripts/desktop-db-safety.mjs migration-execute",
     "check:data-migration": "node ./scripts/check-data-migration.mjs",
     "check:capabilities": "node ./scripts/check-capability-matrix.mjs",
     "check:local-import": "node ./scripts/check-local-import.mjs",

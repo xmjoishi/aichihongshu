@@ -1,12 +1,29 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Sparkles, X, RotateCcw, StopCircle, Send, Copy, Check } from "lucide-react";
 import { useAIStream } from "../hooks/useAIStream";
 import { MdContent } from "./MdContent";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { IS_TAURI_RUNTIME } from "../lib/local";
-import { probeLocalAIProviders, type LocalAIProviderStatus } from "../lib/localAi";
+import {
+  IS_TAURI_RUNTIME,
+  localNoteToNote,
+  localProfileToProfile,
+  localReferenceAccountToReferenceAccount,
+  listPromptConfigs,
+  readLocalInspirations,
+  readLocalKnowledgePreferences,
+  readLocalWorkspaceSnapshot,
+} from "../lib/local";
+import {
+  probeLocalAIProviders,
+  readPreferredLocalAIProvider,
+  readVerifiedLocalAIProviders,
+  savePreferredLocalAIProvider,
+  type LocalAIProviderStatus,
+} from "../lib/localAi";
 import { usePanelResize } from "../hooks/usePanelResize";
+import { useAccountContext } from "../lib/accountContext";
+import { buildLocalKnowledgeContext } from "../lib/localKnowledge";
 
 interface AIPanelProps {
   noteId?: number;
@@ -29,7 +46,7 @@ interface QuickAction {
   key: string;
   label: string;
   prompt: string;
-  enabled: number;
+  enabled: number | boolean;
 }
 
 // ── 检测 AI 输出类型 ─────────────────────────────────────────────
@@ -220,42 +237,115 @@ export default function AIPanel({
   available = true, unavailableReason, unavailableNextStep,
   onApply, onApplyTitle, onApplyTags, onApplyBody, onClose, sourceNotice,
 }: AIPanelProps) {
-  const { messages, streaming, loading, error, send, clear, abort } = useAIStream({ noteId, itemId, accountId, systemExtra });
+  const { accountId: contextAccountId, scopeKey } = useAccountContext();
+  const effectiveAccountId = accountId ?? contextAccountId;
+  const { data: localWorkspace } = useQuery({
+    queryKey: ["local-ai-knowledge", scopeKey],
+    queryFn: () => readLocalWorkspaceSnapshot(effectiveAccountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && effectiveAccountId !== null,
+    staleTime: 3_000,
+  });
+  const { data: localInspirations = [] } = useQuery({
+    queryKey: ["local-ai-inspirations", scopeKey],
+    queryFn: () => readLocalInspirations(effectiveAccountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && effectiveAccountId !== null,
+    staleTime: 3_000,
+  });
+  const { data: localKnowledgePreferences } = useQuery({
+    queryKey: ["local-knowledge-preferences", scopeKey],
+    queryFn: () => readLocalKnowledgePreferences(effectiveAccountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && effectiveAccountId !== null,
+    staleTime: 3_000,
+  });
+  const { data: localQuickActions = [] } = useQuery<QuickAction[]>({
+    queryKey: ["local-settings-prompts", scopeKey],
+    queryFn: () => listPromptConfigs(effectiveAccountId ?? undefined),
+    enabled: IS_TAURI_RUNTIME && effectiveAccountId !== null,
+    staleTime: 30_000,
+  });
+  const localKnowledge = useMemo(() => buildLocalKnowledgeContext({
+    notes: (localWorkspace?.notes ?? []).map(localNoteToNote),
+    profile: localWorkspace?.profile ? localProfileToProfile(localWorkspace.profile) : undefined,
+    references: (localWorkspace?.referenceAccounts ?? []).map(localReferenceAccountToReferenceAccount),
+    inspirations: localInspirations,
+    preferences: localKnowledgePreferences,
+  }), [localInspirations, localKnowledgePreferences, localWorkspace]);
+  const effectiveSystemExtra = [systemExtra, localKnowledge.prompt].filter(Boolean).join("\n\n");
+  const [selectedLocalProviderId, setSelectedLocalProviderId] = useState<LocalAIProviderStatus["id"] | null>(null);
+  const { messages, streaming, loading, error, send, clear, abort } = useAIStream({
+    noteId,
+    itemId,
+    accountId,
+    systemExtra: effectiveSystemExtra,
+    localProviderId: selectedLocalProviderId ?? undefined,
+    localProviderScope: scopeKey,
+  });
   const [input, setInput] = useState("");
   const [copied, setCopied] = useState<number | null>(null);
-  const [localProvider, setLocalProvider] = useState<LocalAIProviderStatus | null>(null);
-  const [checkingLocalProvider, setCheckingLocalProvider] = useState(IS_TAURI_RUNTIME && !available);
+  const [localProviders, setLocalProviders] = useState<LocalAIProviderStatus[]>([]);
+  const [localProbeError, setLocalProbeError] = useState<string | null>(null);
+  const [localProbeVersion, setLocalProbeVersion] = useState(0);
+  const [checkingLocalProvider, setCheckingLocalProvider] = useState(IS_TAURI_RUNTIME);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!IS_TAURI_RUNTIME || available) return;
+    if (!IS_TAURI_RUNTIME) return;
     let active = true;
     setCheckingLocalProvider(true);
+    setLocalProbeError(null);
     probeLocalAIProviders()
       .then((providers) => {
         if (!active) return;
-        setLocalProvider(providers.find((provider) => provider.state === "present") ?? null);
+        setLocalProviders(providers);
+        const availableProvider = providers.find((provider) => provider.state === "present");
+        setSelectedLocalProviderId((current) => (
+          current && providers.some((provider) => provider.id === current && provider.state === "present")
+            ? current
+            : availableProvider?.id ?? null
+        ));
+        if (!providers.some((provider) => provider.state === "present")) {
+          const failed = providers
+            .filter((provider) => provider.state === "failed")
+            .map((provider) => `${provider.label}：${provider.reason}`);
+          setLocalProbeError(failed.length > 0 ? failed.join("；") : "未发现 claude、codex 或 opencode CLI");
+        }
       })
       .catch(() => {
-        if (active) setLocalProvider(null);
+        if (active) {
+          setLocalProviders([]);
+          setSelectedLocalProviderId(null);
+          setLocalProbeError("桌面进程无法完成本地 CLI 检测");
+        }
       })
       .finally(() => {
         if (active) setCheckingLocalProvider(false);
       });
     return () => { active = false; };
-  }, [available]);
+  }, [localProbeVersion]);
 
+  const localProvider = localProviders.find((provider) => provider.id === selectedLocalProviderId && provider.state === "present")
+    ?? localProviders.find((provider) => provider.state === "present")
+    ?? null;
+  const availableLocalProviders = localProviders.filter((provider) => provider.state === "present");
+  const verifiedLocalProviders = new Set(readVerifiedLocalAIProviders(scopeKey));
+  const localProviderTextVerified = localProvider ? localProvider.text || verifiedLocalProviders.has(localProvider.id) : false;
   const localReady = localProvider?.state === "present";
   const aiReady = available || localReady;
 
+  useEffect(() => {
+    if (!IS_TAURI_RUNTIME) return;
+    setSelectedLocalProviderId(readPreferredLocalAIProvider(scopeKey));
+  }, [scopeKey]);
+
   // 从后端加载快捷操作
-  const { data: quickActions = [] } = useQuery<QuickAction[]>({
+  const { data: remoteQuickActions = [] } = useQuery<QuickAction[]>({
     queryKey: ["quick-actions"],
     queryFn: () => api.get("/api/settings/prompts"),
     enabled: available && !IS_TAURI_RUNTIME,
     staleTime: 30_000,
   });
-  const enabledActions = quickActions.filter((a) => a.enabled);
+  const quickActions = IS_TAURI_RUNTIME ? localQuickActions : remoteQuickActions;
+  const enabledActions = quickActions.filter((a) => Boolean(a.enabled));
 
   // 经验库注入状态（轻量轮询，staleTime 长）
   const { data: knowledgeRules = [] } = useQuery<{ enabled: boolean }[]>({
@@ -276,7 +366,7 @@ export default function AIPanel({
     enabled: available && !IS_TAURI_RUNTIME,
     staleTime: 60_000,
   });
-  const knowledgeSummary = (() => {
+  const remoteKnowledgeSummary = (() => {
     const nRules = knowledgeRules.filter((r) => r.enabled).length;
     const nMy = knowledgeSamples.filter((s) => s.use_as_reference).length;
     const nRef = knowledgeRefGroups.reduce((s: number, g) => s + g.notes.length, 0);
@@ -286,6 +376,7 @@ export default function AIPanel({
     if (nRef) parts.push(`${nRef} 篇榜样参考`);
     return parts.length ? `经验库已注入：${parts.join(" · ")}` : "";
   })();
+  const knowledgeSummary = IS_TAURI_RUNTIME ? localKnowledge.summary : remoteKnowledgeSummary;
 
   // ── 拖拽调整宽度
   const { width, dragging, onDragStart } = usePanelResize({
@@ -318,7 +409,7 @@ export default function AIPanel({
 
   return (
     <div
-      className="creator-note-aux-panel creator-note-ai-panel flex flex-col h-full bg-white border-l border-zinc-100 relative shrink-0 select-none"
+      className="ai-panel-drawer creator-note-aux-panel creator-note-ai-panel flex flex-col h-full bg-white border-l border-zinc-100 relative shrink-0 select-none"
       style={{ width, cursor: dragging ? "col-resize" : undefined }}
     >
       {/* 左侧拖拽条：视觉 4px，热区 12px（负 margin 扩展左侧） */}
@@ -373,19 +464,49 @@ export default function AIPanel({
 
       {!aiReady && (
         <div className="mx-3 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 shrink-0" role="status">
-          <p className="text-xs font-medium text-amber-800">AI 生成暂未可用</p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-amber-800">AI 生成暂未可用</p>
+            {IS_TAURI_RUNTIME && !checkingLocalProvider && (
+              <button
+                type="button"
+                onClick={() => setLocalProbeVersion((version) => version + 1)}
+                className="text-[10px] text-amber-800 underline underline-offset-2 hover:text-amber-950"
+              >
+                重新检测
+              </button>
+            )}
+          </div>
           <p className="mt-1 text-[10px] leading-relaxed text-amber-700">
             {checkingLocalProvider ? "正在检测本地 AI CLI" : unavailableReason ?? "当前运行环境没有可用的 AI Provider"}。
             {unavailableNextStep ? ` ${unavailableNextStep}。` : ""}
+            {localProbeError ? ` ${localProbeError}。` : ""}
           </p>
         </div>
       )}
 
       {localReady && (
         <div className="mx-3 mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 shrink-0" role="status">
-          <p className="text-xs font-medium text-emerald-800">本地 AI CLI：{localProvider.label}</p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-emerald-800">本地 AI CLI：{localProvider.label}</p>
+            {availableLocalProviders.length > 1 && (
+              <select
+                value={localProvider.id}
+                onChange={(event) => {
+                  const providerId = event.target.value as LocalAIProviderStatus["id"];
+                  setSelectedLocalProviderId(providerId);
+                  savePreferredLocalAIProvider(scopeKey, providerId);
+                }}
+                aria-label="选择本地 AI CLI"
+                className="max-w-[130px] rounded border border-emerald-200 bg-white px-1.5 py-0.5 text-[10px] text-emerald-800"
+              >
+                {availableLocalProviders.map((provider) => (
+                  <option key={provider.id} value={provider.id}>{provider.label}</option>
+                ))}
+              </select>
+            )}
+          </div>
           <p className="mt-1 text-[10px] leading-relaxed text-emerald-700">
-            已发现命令，发送一次真实文本后才会确认文本能力；图片和工具能力仍未声明。
+            {localProviderTextVerified ? "文本能力已由真实非空输出验证" : "已发现命令，发送一次真实文本后才会确认文本能力"}；图片和工具能力仍未声明。
           </p>
         </div>
       )}
@@ -480,7 +601,7 @@ export default function AIPanel({
       </div>
 
       {/* 快捷操作 — 常驻横向滚动，位于输入框上方 */}
-      {available && enabledActions.length > 0 && (
+      {aiReady && enabledActions.length > 0 && (
         <QuickActionBar actions={enabledActions} onSend={send} loading={loading} hasMessages={messages.length > 0} />
       )}
 
@@ -495,7 +616,7 @@ export default function AIPanel({
             placeholder="输入指令… (Enter 发送，Shift+Enter 换行)"
             rows={2}
             className="flex-1 border border-zinc-200 rounded-xl px-3 py-2 text-xs resize-none
-                       focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442]
+                       focus:outline-none focus:ring-1 focus:ring-[#ff2442]/30 focus:border-[#ff2442]
                        placeholder:text-zinc-300 leading-relaxed disabled:bg-zinc-50 disabled:text-zinc-400 disabled:cursor-not-allowed"
           />
           {loading ? (
@@ -512,7 +633,7 @@ export default function AIPanel({
             </button>
           )}
         </div>
-        <p className="text-[10px] text-zinc-300 mt-1.5 text-right">SSE 流式 · Markdown 渲染</p>
+        <p className="text-[10px] text-zinc-300 mt-1.5 text-right">{IS_TAURI_RUNTIME ? "本地 CLI 流式" : "SSE 流式"} · Markdown 渲染</p>
       </div>
     </div>
   );

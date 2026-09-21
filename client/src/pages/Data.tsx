@@ -6,10 +6,12 @@ import {
   ExternalLink, RefreshCw, ChevronUp, ChevronDown,
   Sparkles, X, CornerDownLeft, StopCircle,
 } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, API_BASE, openInBrowser } from "../lib/api";
 import type { Analytics, AnalyticsNote, Insights, Note, ReferenceAccount } from "../lib/types";
 import { MdContent } from "../components/MdContent";
+import LocalImage from "../components/LocalImage";
+import { useToast } from "../components/Toast";
 import { useAIStream } from "../hooks/useAIStream";
 import { usePanelResize } from "../hooks/usePanelResize";
 import KnowledgeTab from "./KnowledgeTab";
@@ -19,6 +21,7 @@ import {
   localNoteToNote,
   localReferenceAccountToReferenceAccount,
   readLocalWorkspaceSnapshot,
+  updateLocalNoteStats,
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
 import { useAccountChange, useAccountContext } from "../lib/accountContext";
@@ -109,8 +112,10 @@ function OverviewTab({ summary }: { summary: Analytics | null }) {
 
 type SortKey = "likes" | "collects" | "comments";
 
-function RankingTab({ allNotes }: { allNotes: Note[] }) {
+function RankingTab({ allNotes, accountId, scopeKey }: { allNotes: Note[]; accountId: number | null; scopeKey: string }) {
   const navigate = useNavigate();
+  const qc = useQueryClient();
+  const { toast } = useToast();
   const [sort, setSort] = useState<SortKey>("likes");
   // inline 编辑状态
   const [editing, setEditing] = useState<{ id: number; field: SortKey } | null>(null);
@@ -135,12 +140,32 @@ function RankingTab({ allNotes }: { allNotes: Note[] }) {
     if (isNaN(val) || val < 0) { setEditing(null); return; }
     setSaving(true);
     try {
-      await api.patch(`/api/content/${editing.id}/stats`, { [editing.field]: val });
-      // 本地立即更新，避免重新 fetch 全量
-      setLocalOverrides((prev) => ({
-        ...prev,
-        [editing.id]: { ...(prev[editing.id] ?? {}), [editing.field]: val },
-      }));
+      if (IS_TAURI_RUNTIME) {
+        if (accountId === null) throw new Error("当前账号尚未就绪");
+        const current = allNotes.find((note) => note.id === editing.id);
+        if (!current) throw new Error("当前账号下找不到这篇笔记");
+        const updated = await updateLocalNoteStats({
+          noteId: editing.id,
+          accountPoolId: accountId,
+          expectedVersion: current.content_version ?? 1,
+          field: editing.field,
+          value: val,
+        });
+        setLocalOverrides((prev) => ({
+          ...prev,
+          [editing.id]: { ...(prev[editing.id] ?? {}), [editing.field]: updated[editing.field] },
+        }));
+        await qc.invalidateQueries({ queryKey: ["local-data", scopeKey] });
+      } else {
+        await api.patch(`/api/content/${editing.id}/stats`, { [editing.field]: val });
+        // 本地立即更新，避免重新 fetch 全量
+        setLocalOverrides((prev) => ({
+          ...prev,
+          [editing.id]: { ...(prev[editing.id] ?? {}), [editing.field]: val },
+        }));
+      }
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), "error");
     } finally {
       setSaving(false);
       setEditing(null);
@@ -222,14 +247,25 @@ function RankingTab({ allNotes }: { allNotes: Note[] }) {
                   <td className="px-4 py-3 text-zinc-400 text-xs">{idx + 1}</td>
                   <td className="px-4 py-3 max-w-[240px]">
                     <div className="flex items-center gap-2">
-                      {note.cover_image && (
-                        <img
-                          src={`${API_BASE}/api/library/image-raw?path=${encodeURIComponent(note.cover_image)}`}
-                          className="w-8 h-8 rounded-lg object-cover shrink-0 bg-zinc-100"
-                          alt=""
-                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                        />
-                      )}
+                      {(() => {
+                        const sourceNote = allNotes.find((candidate) => candidate.id === note.id);
+                        const itemId = sourceNote?.item_ids?.[0] ?? sourceNote?.item_id;
+                        return itemId ? (
+                          <LocalImage
+                            itemId={itemId}
+                            src={`${API_BASE}/api/library/${itemId}/image`}
+                            className="w-8 h-8 rounded-lg object-cover shrink-0 bg-zinc-100"
+                            alt=""
+                          />
+                        ) : !IS_TAURI_RUNTIME && note.cover_image ? (
+                          <img
+                            src={`${API_BASE}/api/library/image-raw?path=${encodeURIComponent(note.cover_image)}`}
+                            className="w-8 h-8 rounded-lg object-cover shrink-0 bg-zinc-100"
+                            alt=""
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                          />
+                        ) : null;
+                      })()}
                       <button
                         onClick={() => navigate(`/notes/${note.id}`)}
                         className="text-left text-zinc-700 hover:text-[#ff2442] transition-colors line-clamp-2 text-xs leading-snug"
@@ -529,7 +565,7 @@ function DataAIDrawer({
       )}
       {/* 抽屉 */}
       <div
-        className={`fixed top-0 right-0 h-full z-50 bg-white shadow-2xl flex flex-col
+        className={`data-ai-drawer fixed top-0 right-0 h-full z-50 bg-white shadow-2xl flex flex-col
           transition-transform duration-300 ${open ? "translate-x-0" : "translate-x-full"}`}
         style={{ width, cursor: dragging ? "col-resize" : undefined }}
       >
@@ -742,7 +778,7 @@ export default function Data() {
       {/* 内容区 */}
       <div className="flex-1 overflow-y-auto px-6 py-5">
         {tab === "overview" && <OverviewTab summary={summary} />}
-        {tab === "ranking" && <RankingTab allNotes={allNotes} />}
+        {tab === "ranking" && <RankingTab allNotes={allNotes} accountId={accountId} scopeKey={scopeKey} />}
         {tab === "insights" && <InsightsTab insights={insights} />}
         {tab === "knowledge" && (
           <KnowledgeTab

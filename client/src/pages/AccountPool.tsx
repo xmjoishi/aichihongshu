@@ -266,7 +266,7 @@ export default function AccountPool() {
                 <div
                   key={acc.id}
                   className={`rounded-xl border p-4 bg-white ${
-                    acc.is_active ? "border-[#ff2442] ring-2 ring-rose-100" : "border-zinc-200"
+                    acc.is_active ? "border-[#ff2442] ring-1 ring-rose-100" : "border-zinc-200"
                   }`}
                 >
                   <div className="flex items-start justify-between gap-4">
@@ -457,7 +457,7 @@ function AddAccountDialog({ onClose, onCreated }: { onClose: () => void; onCreat
                     onClick={() => setRole(r)}
                     className={`px-2 py-2 rounded-lg text-xs border flex items-center justify-center gap-1.5 ${
                       role === r
-                        ? `${meta.cls} ring-2 ring-rose-200`
+                        ? `${meta.cls} ring-1 ring-rose-200`
                         : "bg-white border-zinc-200 text-zinc-600 hover:bg-zinc-50"
                     }`}
                   >
@@ -583,7 +583,7 @@ function EditAccountDialog({
                     onClick={() => setRole(r)}
                     className={`px-2 py-2 rounded-lg text-xs border flex items-center justify-center gap-1.5 ${
                       role === r
-                        ? `${meta.cls} ring-2 ring-rose-200`
+                        ? `${meta.cls} ring-1 ring-rose-200`
                         : "bg-white border-zinc-200 text-zinc-600 hover:bg-zinc-50"
                     }`}
                   >

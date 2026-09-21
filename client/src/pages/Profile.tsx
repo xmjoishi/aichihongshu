@@ -185,7 +185,7 @@ function XhsProfileCard({ profile, onRefresh, refreshing }: {
 // ── 编辑表单样式 ──────────────────────────────────────────────────
 const inputCls =
   "w-full border border-zinc-200 rounded-lg px-3 py-1.5 text-sm text-zinc-800 " +
-  "focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442] bg-white";
+  "focus:outline-none focus:ring-1 focus:ring-[#ff2442]/30 focus:border-[#ff2442] bg-white";
 const textareaCls = `${inputCls} resize-y`;
 
 interface EditForm {

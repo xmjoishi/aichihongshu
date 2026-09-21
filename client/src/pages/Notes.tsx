@@ -43,6 +43,22 @@ import { noteToMarkdown } from "../lib/noteMarkdown";
 const AUTOSAVE_DELAY = 1500; // ms
 const NOTES_VIEW_KEY = "aichihongshu.notes-view.v1";
 
+function formatSaveError(cause: unknown, fallback = "保存失败，请重试"): string {
+  if (cause instanceof Error && cause.message.trim()) return cause.message;
+  if (typeof cause === "string" && cause.trim()) return cause.trim();
+  if (cause && typeof cause === "object") {
+    const message = (cause as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message.trim();
+    try {
+      const serialized = JSON.stringify(cause);
+      if (serialized && serialized !== "{}") return serialized;
+    } catch {
+      // Keep the user-facing fallback when an invoke error is not serializable.
+    }
+  }
+  return fallback;
+}
+
 function notesViewKey(scopeKey: string): string {
   return `${NOTES_VIEW_KEY}:${encodeURIComponent(scopeKey)}`;
 }
@@ -610,7 +626,7 @@ export function NoteList() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="搜索标题、正文、标签..."
-              className="w-full pl-8 pr-3 py-1.5 text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442]"
+              className="w-full pl-8 pr-3 py-1.5 text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#ff2442]/30 focus:border-[#ff2442]"
             />
             {search && (
               <button onClick={() => setSearch("")}
@@ -622,7 +638,7 @@ export function NoteList() {
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value)}
-            className="text-sm border border-zinc-200 rounded-lg px-3 py-1.5 text-zinc-600 focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442] bg-white"
+            className="text-sm border border-zinc-200 rounded-lg px-3 py-1.5 text-zinc-600 focus:outline-none focus:ring-1 focus:ring-[#ff2442]/30 focus:border-[#ff2442] bg-white"
           >
             {sortOptions.map((o) => (
               <option key={o.key} value={o.key}>{o.label}</option>
@@ -995,7 +1011,7 @@ export function NoteEditor() {
           setTimeout(() => setAutoSaved(false), 2000);
         } catch (cause) {
           if (payload.epoch === saveEpochRef.current) {
-            setSaveError(cause instanceof Error ? cause.message : String(cause));
+            setSaveError(formatSaveError(cause));
           }
           throw cause;
         } finally {
@@ -1048,7 +1064,7 @@ export function NoteEditor() {
       if (saveEpoch !== saveEpochRef.current || originAccountId !== accountId) return;
       toast("已保存", "success");
     } catch (e: unknown) {
-      if (saveEpoch === saveEpochRef.current) toast((e as Error).message, "error");
+      if (saveEpoch === saveEpochRef.current) toast(formatSaveError(e), "error");
     }
   }
 
@@ -1089,8 +1105,9 @@ export function NoteEditor() {
         qc.invalidateQueries({ queryKey: ["notes"] });
       }
     } catch (e: unknown) {
-      setSaveError((e as Error).message);
-      toast((e as Error).message, "error");
+      const message = formatSaveError(e);
+      setSaveError(message);
+      toast(message, "error");
     }
   }
 
@@ -1201,9 +1218,10 @@ export function NoteEditor() {
           )}
           <div className="creator-note-toolbar-actions ml-auto flex min-w-0 flex-wrap justify-end gap-2">
             <button
+              type="button"
               onClick={() => { setShowAI(true); setShowPrompt(false); }}
               aria-disabled={!aiGenerate.available}
-              title={aiGenerate.available ? "打开 AI 助手" : `${aiGenerate.reason}；${aiGenerate.nextStep}`}
+              title={aiGenerate.available ? "打开 AI 助手" : "打开 AI 助手并检测本地 CLI"}
               className={`flex items-center gap-1.5 text-xs border px-3 py-1.5 rounded-lg transition-colors ${
                 showAI
                   ? "bg-[#fff0f2] border-[#ff2442] text-[#ff2442]"
@@ -1284,7 +1302,7 @@ export function NoteEditor() {
 
         {localMode && (
           <div className="border-b border-[var(--color-border)] bg-[var(--color-selected)] px-6 py-2 text-xs text-[var(--color-text-secondary)]">
-            当前笔记来自本地数据库；{noteWrite.available ? "标题、正文、标签、类型和状态支持本地保存" : "本地笔记编辑仍需迁移"}；{noteItemsWrite.available ? "素材关联、排序与移除可用" : "素材关联仍需迁移"}；{noteExport.available ? "导出可用" : "导出仍需迁移"}，{aiGenerate.available ? "AI 可用" : "AI 仍需迁移"}。
+            当前笔记来自本地数据库；{noteWrite.available ? "标题、正文、标签、类型和状态支持本地保存" : "本地笔记编辑仍需迁移"}；{noteItemsWrite.available ? "素材关联、排序与移除可用" : "素材关联仍需迁移"}；{noteExport.available ? "导出可用" : "导出仍需迁移"}，{aiGenerate.available ? "AI 可用" : "AI 助手会检测本地 CLI"}。
           </div>
         )}
         {publishPreparation && (
@@ -1305,6 +1323,7 @@ export function NoteEditor() {
               body={body}
               tags={note.tags}
               localItems={localWorkspace?.items.map(localItemToItem)}
+              localProfile={localWorkspace?.profile}
             />
 
             {/* Text editor */}
@@ -1423,7 +1442,7 @@ export function NoteEditor() {
                                 qc.invalidateQueries({ queryKey: ["note", noteId] });
                               }
                             } catch (cause) {
-                              toast((cause as Error).message, "error");
+                              toast(formatSaveError(cause), "error");
                             }
                           }}
                           title={t.description}
@@ -1473,7 +1492,7 @@ export function NoteEditor() {
                                 qc.invalidateQueries({ queryKey: ["note", noteId] });
                               }
                             } catch (cause) {
-                              toast((cause as Error).message, "error");
+                              toast(formatSaveError(cause), "error");
                             }
                             }}
                             title={t.description}
@@ -1507,6 +1526,7 @@ export function NoteEditor() {
           available={aiGenerate.available}
           unavailableReason={aiGenerate.reason}
           unavailableNextStep={aiGenerate.nextStep}
+          systemExtra={`当前笔记标题：${title || "（空）"}\n当前笔记正文：${body.slice(0, 12000) || "（空）"}\n当前话题：${tagsInput || "（空）"}`}
           sourceNotice={`AI 提案仅基于当前笔记、已选素材和已注入经验；只有带正文的真实来源才可用于摘要。${lastAIProposal?.status === "conflict" ? "上次提案版本已变化，未覆盖原文。" : ""}`}
           onApply={handleAIApply}
           onApplyTitle={(t) => {
@@ -1533,7 +1553,7 @@ export function NoteEditor() {
       )}
       {showPrompt && prompt && (
         <div
-          className="creator-note-aux-panel creator-note-prompt-panel border-l border-zinc-100 bg-white flex flex-col shrink-0 relative select-none"
+          className="note-ai-drawer creator-note-aux-panel creator-note-prompt-panel border-l border-zinc-100 bg-white flex flex-col shrink-0 relative select-none"
           style={{ width: promptWidth, cursor: promptDragging ? "col-resize" : undefined }}
         >
           {/* 拖拽条 */}
@@ -1634,6 +1654,7 @@ function LibraryPickerModal({
   const { data: items = [], isLoading } = useQuery<Item[]>({
     queryKey: ["library-picker"],
     queryFn: () => api.get("/api/library/"),
+    enabled: !IS_TAURI_RUNTIME,
     staleTime: 10_000,
   });
 
@@ -1698,7 +1719,7 @@ function LibraryPickerModal({
             onChange={(e) => setSearch(e.target.value)}
             placeholder="搜索图片名称或标签..."
             autoFocus
-            className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#ff2442]/30 focus:border-[#ff2442]"
+            className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#ff2442]/30 focus:border-[#ff2442]"
           />
           {/* 第一行：固定筛选项 */}
           {alreadyLinked.length > 0 && (
@@ -1744,7 +1765,7 @@ function LibraryPickerModal({
                     key={item.id}
                     onClick={() => toggle(item.id)}
                     disabled={isLinked}
-                    className={`relative rounded-xl overflow-hidden border-2 transition-all aspect-square ${
+                    className={`relative rounded-xl overflow-hidden border transition-all aspect-square ${
                       isLinked
                         ? "border-zinc-300 cursor-default opacity-60"
                         : isSelected
@@ -1836,12 +1857,13 @@ async function uploadAndLink(
 // ── NoteImagePanel ────────────────────────────────────────────────────────────
 // 仿小红书编辑页左侧预览区：「笔记预览」和「封面预览」两种视图切换
 
-function NoteImagePanel({ itemIds, title, body, tags, localItems }: {
+function NoteImagePanel({ itemIds, title, body, tags, localItems, localProfile }: {
   itemIds: number[];
   title: string;
   body: string;
   tags: string[];
   localItems?: Item[];
+  localProfile?: LocalWorkspaceSnapshot["profile"];
 }) {
   const { imgStyle } = useHDRSetting();
   const localItemsById = new Map((localItems ?? []).map((item) => [item.id, item]));
@@ -1849,7 +1871,7 @@ function NoteImagePanel({ itemIds, title, body, tags, localItems }: {
     queries: itemIds.map((id) => ({
       queryKey: ["item", id],
       queryFn: () => api.get(`/api/library/${id}`) as Promise<Item>,
-      enabled: !!id && !localItemsById.has(id),
+      enabled: !!id && !IS_TAURI_RUNTIME && !localItemsById.has(id),
     })),
   });
   const images = itemIds
@@ -1861,9 +1883,10 @@ function NoteImagePanel({ itemIds, title, body, tags, localItems }: {
     queryKey: ["profile"],
     queryFn: () => api.get("/api/profile") as Promise<{ display_name?: string; avatar_url?: string }>,
     staleTime: 5 * 60 * 1000,
+    enabled: !IS_TAURI_RUNTIME,
   });
-  const displayName = profile?.display_name || "账号名称";
-  const avatarUrl = profile?.avatar_url || "";
+  const displayName = localProfile?.displayName || profile?.display_name || "账号名称";
+  const avatarUrl = localProfile?.avatarUrl || profile?.avatar_url || "";
 
   const [tab, setTab] = useState<"note" | "cover">("note");
   const [imgIdx, setImgIdx] = useState(0);
@@ -1873,7 +1896,7 @@ function NoteImagePanel({ itemIds, title, body, tags, localItems }: {
   const coverImg = images[0];
 
   return (
-    <div className="w-[230px] shrink-0 border-r border-zinc-100 bg-zinc-50 flex flex-col items-center py-4 px-3 gap-3 overflow-y-auto">
+    <div className="note-preview-panel w-[230px] shrink-0 border-r border-zinc-100 bg-zinc-50 flex flex-col items-center py-4 px-3 gap-3 overflow-y-auto">
 
       {/* 切换 Tab */}
       <div className="w-full flex bg-zinc-100 rounded-xl p-0.5 shrink-0">
@@ -2151,7 +2174,7 @@ function NoteImageStrip({ itemIds, noteId, localItems, onItemIdsChange, readOnly
     queries: itemIds.map((id) => ({
       queryKey: ["item", id],
       queryFn: () => api.get(`/api/library/${id}`) as Promise<Item>,
-      enabled: !!id && !localItemsById.has(id),
+      enabled: !!id && !IS_TAURI_RUNTIME && !localItemsById.has(id),
     })),
   });
   const images = itemIds
@@ -2230,7 +2253,7 @@ function NoteImageStrip({ itemIds, noteId, localItems, onItemIdsChange, readOnly
             }}
           >
             <div
-              className="w-[120px] h-[120px] rounded-xl overflow-hidden border-2 border-[#ff2442] shadow-sm cursor-grab active:cursor-grabbing"
+              className="w-[120px] h-[120px] rounded-xl overflow-hidden border border-[#ff2442] shadow-sm cursor-grab active:cursor-grabbing"
               onClick={() => { if (!isDraggingRef.current) setLightboxIdx(idx); }}
             >
               <LocalImage

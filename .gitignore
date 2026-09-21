@@ -11,6 +11,8 @@ data/analysis/
 # 数据库文件
 data/app.db
 data/*.db
+data/*.db-wal
+data/*.db-shm
 
 # 环境变量
 .env
