@@ -82,15 +82,65 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   }
 }
 
-/* 滚动条：默认低干扰，交互时才增强对比度。 */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--color-text-secondary) 28%, transparent) transparent;
+/* 滚动条策略按引擎分流，检测脚本在 index.html 首次渲染前设置 data-scrollbar-engine：
+   - “chromium”（Windows WebView2 / Chrome）：静默浮现式。静止滑块全透明；正在滚动
+     （.is-scrolling）或指针悬停可滚动区（.is-scrollbar-hover）时浮现约 32% 对比。
+     8px 命中条 + 2px 透明边框，视觉固定约 4px，显隐不引起布局跳动。
+   - “webkit”（macOS WKWebView / Safari）：WebKit 不会因宿主状态或类名变化重新应用滑块样式
+     （实测静默浮现无法实现，系统原生条又粗又常驻），故采用静态低对比细滑块：约 16% 常驻、
+     4px 视觉宽，滚动/悬停加深规则保留（引擎若支持即生效，不支持则恒为常驻淡色）。
+   - Firefox：下方 @supports 块，标准属性 thin + 状态显色。
+   - 检测失败/属性行缺失：回落 Chromium 分支之外的引擎原生滚动条（fail-open）。
+   注意：任何非 auto 的标准属性 scrollbar-width/scrollbar-color 都会让 Chromium/Safari 忽略
+   ::-webkit-scrollbar，因此标准属性只允许出现在 Firefox 的 @supports 块内。 */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  *:hover,
+  *:focus-within,
+  .is-scrolling,
+  .is-scrollbar-hover {
+    scrollbar-color: color-mix(in srgb, var(--color-text-secondary) 32%, transparent) transparent;
+  }
 }
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--color-text-secondary) 28%, transparent); border-radius: 9999px; }
-::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--color-text-secondary) 58%, transparent); }
+
+/* Chromium 主路径：静默浮现式。 */
+:root[data-scrollbar-engine="chromium"] ::-webkit-scrollbar { width: 8px; height: 8px; }
+:root[data-scrollbar-engine="chromium"] ::-webkit-scrollbar-track { background: transparent; }
+:root[data-scrollbar-engine="chromium"] ::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background-clip: padding-box;
+  transition: background-color 160ms ease;
+}
+:root[data-scrollbar-engine="chromium"] .is-scrolling::-webkit-scrollbar-thumb,
+:root[data-scrollbar-engine="chromium"] .is-scrollbar-hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--color-text-secondary) 32%, transparent);
+}
+:root[data-scrollbar-engine="chromium"] ::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--color-text-secondary) 60%, transparent);
+}
+
+/* WebKit 分支：静态低对比细滑块（约 4px 视觉宽），状态加深为渐进增强。 */
+:root[data-scrollbar-engine="webkit"] ::-webkit-scrollbar { width: 8px; height: 8px; }
+:root[data-scrollbar-engine="webkit"] ::-webkit-scrollbar-track { background: transparent; }
+:root[data-scrollbar-engine="webkit"] ::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--color-text-secondary) 16%, transparent);
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background-clip: padding-box;
+  transition: background-color 160ms ease;
+}
+:root[data-scrollbar-engine="webkit"] .is-scrolling::-webkit-scrollbar-thumb,
+:root[data-scrollbar-engine="webkit"] .is-scrollbar-hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--color-text-secondary) 32%, transparent);
+}
+:root[data-scrollbar-engine="webkit"] ::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--color-text-secondary) 60%, transparent);
+}
 
 /* 窄窗口下的统一外壳约束。页面内部再按自己的内容密度重排。 */
 .app-topbar { min-width: 0; }
@@ -125,12 +175,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .data-ai-drawer, .note-ai-drawer, .ai-panel-drawer, .reference-account-drawer { width: 100% !important; }
 }
 
-/* scrollbar-hide utility */
-.scrollbar-hide {
+/* scrollbar-hide utility（横向素材条等专用；scrollbar-none 为既有页面用法的等价别名） */
+.scrollbar-hide,
+.scrollbar-none {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
-.scrollbar-hide::-webkit-scrollbar {
+.scrollbar-hide::-webkit-scrollbar,
+.scrollbar-none::-webkit-scrollbar {
   display: none;
 }
 

@@ -196,7 +196,6 @@ export default function Sidebar() {
           to={to}
           end={to === "/" || to === "/accounts"}
           title={compact ? label : undefined}
-          onClick={() => compactViewport && setCompactExpanded(false)}
           className={({ isActive }) => itemClass({ isActive, collapsed: compact })}
         >
           <Icon size={20} />
@@ -217,7 +216,6 @@ export default function Sidebar() {
           to={to}
           end={to === "/accounts/pool"}
           title={compact ? label : undefined}
-          onClick={() => compactViewport && setCompactExpanded(false)}
           className={({ isActive }) => itemClass({ isActive, collapsed: compact })}
         >
           <Icon size={20} />
