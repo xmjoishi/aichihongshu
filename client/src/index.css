@@ -24,6 +24,59 @@ body {
   transition: background-color 160ms ease, color 160ms ease;
 }
 
+/* macOS Tauri overlay title bar: the app header shares the traffic-light row.
+   Dragging is handled by data-tauri-drag-region="deep" and the native API in
+   App.tsx, so buttons and links keep their normal pointer events. */
+.app-topbar {
+  cursor: grab;
+}
+
+.app-topbar:active {
+  cursor: grabbing;
+}
+
+.app-topbar button,
+.app-topbar a,
+.app-topbar [role="button"] {
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.app-topbar input,
+.app-topbar textarea {
+  cursor: text;
+}
+
+/* AI composer: focus is represented by one outer frame only. The global
+   keyboard focus ring must not create a second red rectangle around the
+   textarea or the popup search field. */
+.ai-composer-shell {
+  border: 1px solid var(--color-border);
+}
+
+.ai-composer-shell:focus-within {
+  border-color: color-mix(in srgb, var(--color-brand) 50%, transparent);
+}
+
+.ai-composer-field:focus,
+.ai-composer-field:focus-visible {
+  outline: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.ai-composer-field {
+  border: 0;
+  outline: none;
+  box-shadow: none;
+}
+
+.ai-composer-search:focus,
+.ai-composer-search:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
 :root[data-theme="dark"] {
   --color-canvas: #18181b;
   --color-surface: #27272a;
@@ -147,7 +200,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .app-route-shell { min-width: 0; min-height: 0; }
 
 @media (max-width: 960px) {
-  .app-topbar { padding-inline: 0.75rem !important; gap: 0.5rem !important; }
+  .app-topbar {
+    padding-inline-start: 6rem !important;
+    padding-inline-end: 0.75rem !important;
+    gap: 0.5rem !important;
+  }
   .app-route-shell { min-width: 0; }
   .search-page-header { align-items: flex-start; flex-wrap: wrap; }
   .search-page-header > span { margin-left: 0 !important; max-width: 100%; }

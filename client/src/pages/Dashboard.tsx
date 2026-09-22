@@ -61,7 +61,7 @@ export default function Dashboard() {
 
   // Tauri 桌面端只读取 Rust 本地快照，浏览器预览继续使用原 HTTP 数据源。
   const localWorkspaceQuery = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-dashboard", scopeKey],
+    queryKey: ["local-workspace", scopeKey],
     queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
     enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
@@ -374,7 +374,7 @@ function LocalDashboardView({ snapshot, accountId, scopeKey }: { snapshot: Local
     setCreating(true);
     try {
       await createLocalDraft(title, accountId);
-      await queryClient.invalidateQueries({ queryKey: ["local-dashboard", scopeKey] });
+      await queryClient.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       setDraftDialogOpen(false);
       setDraftTitle("");
       toast("草稿已创建", "success");

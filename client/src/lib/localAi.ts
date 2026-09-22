@@ -26,8 +26,54 @@ interface LocalAIEvent {
   error?: string;
 }
 
+export interface ProbeLocalAIProvidersOptions {
+  /** Bypass the short-lived process cache, used by an explicit refresh button. */
+  force?: boolean;
+  /** Cache duration in milliseconds. Defaults to 30 seconds. */
+  ttlMs?: number;
+}
+
+const DEFAULT_PROBE_CACHE_TTL_MS = 30_000;
+let providerProbeCache: { providers: LocalAIProviderStatus[]; expiresAt: number } | null = null;
+let providerProbeInFlight: Promise<LocalAIProviderStatus[]> | null = null;
+
+export function invalidateLocalAIProviderProbeCache(): void {
+  providerProbeCache = null;
+}
+
+/**
+ * Probe all supported local CLIs once per short cache window. The Rust command
+ * already returns the complete matrix; callers must not probe each provider
+ * separately. Concurrent callers share the same in-flight request as well.
+ */
+function loadLocalAIProviders(options: ProbeLocalAIProvidersOptions = {}): Promise<LocalAIProviderStatus[]> {
+  const now = Date.now();
+  const ttlMs = options.ttlMs ?? DEFAULT_PROBE_CACHE_TTL_MS;
+  if (!options.force && providerProbeCache && providerProbeCache.expiresAt > now) {
+    return Promise.resolve(providerProbeCache.providers);
+  }
+  if (providerProbeInFlight) return providerProbeInFlight;
+  if (options.force) providerProbeCache = null;
+  const request = invoke<LocalAIProviderStatus[]>("probe_local_ai_providers")
+    .then((providers) => {
+      providerProbeCache = { providers, expiresAt: Date.now() + ttlMs };
+      return providers;
+    })
+    .finally(() => {
+      providerProbeInFlight = null;
+    });
+  providerProbeInFlight = request;
+  return request;
+}
+
+/** Cached probe entry point; kept argument-free so it can be used directly as a queryFn. */
 export function probeLocalAIProviders(): Promise<LocalAIProviderStatus[]> {
-  return invoke<LocalAIProviderStatus[]>("probe_local_ai_providers");
+  return loadLocalAIProviders();
+}
+
+/** Explicit refresh entry point for settings and the AI panel refresh action. */
+export function refreshLocalAIProviders(): Promise<LocalAIProviderStatus[]> {
+  return loadLocalAIProviders({ force: true });
 }
 
 function providerPreferenceKey(scopeKey: string): string {

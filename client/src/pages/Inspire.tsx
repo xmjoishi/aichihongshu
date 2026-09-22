@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";import { Link } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { api, inspireStream, type InspireParams } from "../lib/api";
 import { Item, ReferenceAccount, Note } from "../lib/types";
-import { Empty } from "../components/ui";
+import { Empty, pageTabActiveClass, pageTabClass, pageTabInactiveClass } from "../components/ui";
 import LocalImage from "../components/LocalImage";
 import { useToast } from "../components/Toast";
 import { buildInsightsVM } from "../selectors/analytics";
@@ -41,6 +41,8 @@ import {
   type LocalAIProviderId,
 } from "../lib/localAi";
 import { useAccountChange, useAccountContext } from "../lib/accountContext";
+import { publishPageAIContext } from "../lib/pageAIContext";
+import Accounts from "./Accounts";
 import { listInspirations, type Inspiration } from "../lib/inspirationCapture";
 import {
   enqueueBrowserCapture,
@@ -245,6 +247,8 @@ function buildLocalInspirePrompt(input: {
 export default function Inspire() {
   const { toast } = useToast();
   const { accountId, databaseIdentity, scopeKey } = useAccountContext();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const inspireView = searchParams.get("tab") === "references" ? "references" : "topics";
 
   const [topic, setTopic] = useState("");
   const [selectedTopicWords, setSelectedTopicWords] = useState<string[]>([]);
@@ -278,6 +282,38 @@ export default function Inspire() {
   const generationRef = useRef(0);
   const bannerRef = useRef<HTMLDivElement>(null);
   const [bannerHeight, setBannerHeight] = useState(48);
+
+  // 让全局 Copilot 知道当前是在选题工作区、榜样参考工作区，及用户已经选中的对象。
+  useEffect(() => {
+    publishPageAIContext({
+      route: "/inspire",
+      page: inspireView === "references" ? "灵感 · 榜样与参考" : "灵感 · 选题",
+      accountId,
+      objectType: inspireView === "references" ? "reference-workspace" : "topic",
+      objectId: topic.trim() || null,
+      selectedIds: [...selectedItemIds, ...selectedAccountIds],
+      referenceIds: [...selectedItemIds, ...selectedAccountIds],
+      draft: titleText || body || tags.length > 0 ? {
+        title: titleText,
+        body,
+        tags: tags.join(" "),
+        status: savedNote?.status,
+        dirty: Boolean(rawResult) && !savedNote,
+      } : undefined,
+      availableActions: inspireView === "references"
+        ? [
+            { id: "analyze-reference", label: "分析榜样" },
+            { id: "use-reference", label: "用于生成笔记" },
+          ]
+        : [
+            { id: "find-topics", label: "找选题" },
+            { id: "generate-draft", label: "生成草稿" },
+            { id: "save-inspiration", label: "保存灵感" },
+          ],
+      source: "page",
+      permissionScope: ["inspiration.read", "inspiration.write", "note.write"],
+    });
+  }, [accountId, body, inspireView, rawResult, savedNote, selectedAccountIds, selectedItemIds, tags, titleText, topic]);
 
   useAccountChange(() => {
     generationRef.current += 1;
@@ -765,8 +801,30 @@ export default function Inspire() {
     return result;
   }
 
+  if (inspireView === "references") {
+    return (
+      <div className="flex h-full flex-col overflow-hidden">
+        <div className="flex shrink-0 items-center gap-1 border-b border-zinc-100 bg-white px-6 pt-1">
+          <div role="tablist" aria-label="灵感工作区" className="flex items-stretch gap-1">
+            <button type="button" role="tab" aria-selected={false} onClick={() => setSearchParams({})} className={`${pageTabClass} ${pageTabInactiveClass}`}>灵感与选题</button>
+            <button type="button" role="tab" aria-selected onClick={() => setSearchParams({ tab: "references" })} className={`${pageTabClass} ${pageTabActiveClass}`}>榜样与参考</button>
+          </div>
+          <span className="ml-2 text-xs text-zinc-400">榜样账号与参考内容会作为灵感来源使用</span>
+        </div>
+        <div className="min-h-0 flex-1"><Accounts embedded /></div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
+      <div className="flex shrink-0 items-center gap-1 border-b border-zinc-100 bg-white px-6 pt-1">
+        <div role="tablist" aria-label="灵感工作区" className="flex items-stretch gap-1">
+          <button type="button" role="tab" aria-selected onClick={() => setSearchParams({})} className={`${pageTabClass} ${pageTabActiveClass}`}>灵感与选题</button>
+          <button type="button" role="tab" aria-selected={false} onClick={() => setSearchParams({ tab: "references" })} className={`${pageTabClass} ${pageTabInactiveClass}`}>榜样与参考</button>
+        </div>
+        <span className="ml-2 text-xs text-zinc-400">选题、灵感、榜样和生成草稿的统一工作区</span>
+      </div>
       {/* ── 顶部通栏 Banner（单行紧凑） ── */}
       <div
         ref={bannerRef}

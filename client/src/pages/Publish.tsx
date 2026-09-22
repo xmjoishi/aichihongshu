@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, ExternalLink, Check, X, Send, FolderOpen, Images, Loader2 } from "lucide-react";
 import { api, API_BASE, openInSystemBrowser } from "../lib/api";
@@ -75,7 +76,7 @@ function PublishModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-100 shrink-0">
           <div className="flex items-center gap-2">
@@ -208,8 +209,8 @@ function PublishModal({
 
 // ─── 主页面 ───────────────────────────────────────────────────
 
-export default function Publish() {
-  if (IS_TAURI_RUNTIME) return <LocalPublishWorkflow />;
+export default function Publish({ embedded = false }: { embedded?: boolean } = {}) {
+  if (IS_TAURI_RUNTIME) return <LocalPublishWorkflow embedded={embedded} />;
 
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -266,10 +267,10 @@ export default function Publish() {
       )}
 
       <div className="flex flex-col h-full">
-        <div className="flex items-center px-6 py-4 border-b border-zinc-100 bg-white">
+        {!embedded && <div className="flex items-center px-6 py-4 border-b border-zinc-100 bg-white">
           <h1 className="text-lg font-semibold text-zinc-900">发布工作流</h1>
           <span className="ml-3 text-xs text-zinc-400">拖动或点按钮推进状态，待发布笔记可一键发布</span>
-        </div>
+        </div>}
 
         <div className="flex-1 overflow-x-auto p-6">
           <div className="publish-board flex gap-4 h-full min-h-0" style={{ minWidth: "700px" }}>
@@ -345,11 +346,13 @@ export default function Publish() {
  * Local mode keeps publish preparation and manual confirmation in Rust SQLite.
  * It deliberately never submits to the platform or calls the legacy API.
  */
-function LocalPublishWorkflow() {
+function LocalPublishWorkflow({ embedded = false }: { embedded?: boolean } = {}) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { accountId, scopeKey } = useAccountContext();
+  const [searchParams] = useSearchParams();
   const [publishingNote, setPublishingNote] = useState<Note | null>(null);
+  const autoOpenedNoteRef = useRef<number | null>(null);
   const { data: workspace, isLoading, error } = useQuery<LocalWorkspaceSnapshot>({
     queryKey: ["local-publish", scopeKey],
     queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
@@ -362,6 +365,20 @@ function LocalPublishWorkflow() {
   });
 
   const notes = (workspace?.notes ?? []).map(localNoteToNote);
+  const requestedNoteId = Number(searchParams.get("note"));
+
+  // A note-list "发布" action carries the note id into this workflow so the
+  // local preparation modal opens for the exact note the user selected.
+  useEffect(() => {
+    if (requestedNoteId !== autoOpenedNoteRef.current) autoOpenedNoteRef.current = null;
+    if (!Number.isInteger(requestedNoteId) || requestedNoteId <= 0 || publishingNote || autoOpenedNoteRef.current === requestedNoteId) return;
+    const target = notes.find((note) => note.id === requestedNoteId && note.status === "ready");
+    if (target) {
+      autoOpenedNoteRef.current = requestedNoteId;
+      setPublishingNote(target);
+    }
+  }, [notes, publishingNote, requestedNoteId]);
+
   const columns: { status: Note["status"]; label: string; color: string }[] = [
     { status: "draft", label: "草稿", color: "border-zinc-200" },
     { status: "ready", label: "待发布", color: "border-amber-300" },
@@ -410,10 +427,10 @@ function LocalPublishWorkflow() {
         />
       )}
       <div className="flex h-full flex-col">
-        <div className="flex items-center px-6 py-4 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
+        {!embedded && <div className="flex items-center px-6 py-4 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
           <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">发布准备</h1>
           <span className="ml-3 text-xs text-[var(--color-text-secondary)]">本地快照、复制和手工确认；不会自动提交平台</span>
-        </div>
+        </div>}
         <div className="flex-1 overflow-x-auto p-6">
           <div className="publish-board flex gap-4 h-full min-h-0" style={{ minWidth: "700px" }}>
             {columns.map((column) => {
@@ -644,82 +661,72 @@ function LocalPublishModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-[var(--color-surface)] rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border)]">
-          <div className="flex items-center gap-2"><Send size={16} className="text-[#ff2442]" /><span className="font-semibold text-sm text-[var(--color-text-primary)]">发布准备</span></div>
-          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600"><X size={18} /></button>
+      <div className="bg-[var(--color-surface)] rounded-2xl shadow-2xl w-full max-w-6xl max-h-[calc(100vh-48px)] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between gap-4 px-6 py-4 border-b border-[var(--color-border)]">
+          <div className="flex min-w-0 items-center gap-2">
+            <Send size={16} className="shrink-0 text-[#ff2442]" />
+            <span className="shrink-0 font-semibold text-sm text-[var(--color-text-primary)]">发布准备</span>
+            <span className="hidden min-w-0 truncate text-xs text-[var(--color-text-secondary)] sm:block">{note.title || "未命名笔记"}</span>
+          </div>
+          <button type="button" onClick={onClose} className="shrink-0 text-zinc-400 hover:text-zinc-600" aria-label="关闭发布准备"><X size={18} /></button>
         </div>
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-          <div className={`rounded-xl border px-3 py-2 text-xs ${preparation.ready ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"}`} role="status">
-            <p className="font-medium">{preparation.ready ? "内容检查通过" : "内容检查未通过"}</p>
-            <p className="mt-1 break-all">快照：{preparation.snapshotKey}</p>
-            {!preparation.ready && <p className="mt-1">{preparation.issues.map((issue) => issue.message).join("；")}</p>}
-          </div>
-          <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs" role="status">
-            <p className="font-medium text-zinc-700">本地发布 outbox：{outboxEntry ? publishOutboxStatusLabel(outboxEntry.status) : "准备中…"}</p>
-            {outboxEntry && <p className={`mt-1 ${publishOutboxStatusClass(outboxEntry.status)}`}>记录时间：{outboxEntry.updatedAt} · 结果不明不会自动重试</p>}
-            {outboxError && <p className="mt-1 text-red-600">无法持久化发布准备：{outboxError}</p>}
-          </div>
-          {history.length > 0 && <div className="rounded-xl border border-zinc-200 px-3 py-2 text-[11px] text-zinc-500"><p className="font-medium text-zinc-700 mb-1">历史状态</p>{history.slice(0, 5).map((entry) => <p key={entry.attemptId} className="flex justify-between gap-2"><span>{publishOutboxStatusLabel(entry.status)}</span><span>{entry.updatedAt}</span></p>)}</div>}
-          {note.item_ids?.length ? (
-            <div className="rounded-xl border border-zinc-200 overflow-hidden">
-              <div className="flex items-center justify-between px-3 py-2 bg-[var(--color-surface-2)] border-b border-zinc-100">
-                <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--color-text-secondary)]">
-                  <Images size={13} />
-                  配图暂存
-                  {stageFiles !== null && (
-                    <span className="font-normal text-zinc-400">（{stageFiles.length} 张，按序号顺序上传）</span>
-                  )}
-                </div>
-                {staging && (
-                  <span className="text-xs text-zinc-400 flex items-center gap-1">
-                    <Loader2 size={11} className="animate-spin" />准备中…
-                  </span>
-                )}
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+            <div className="space-y-4">
+              <div className={`rounded-xl border px-4 py-3 text-xs ${preparation.ready ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"}`} role="status">
+                <p className="font-medium">{preparation.ready ? "内容检查通过" : "内容检查未通过"}</p>
+                <p className="mt-1 break-all">快照：{preparation.snapshotKey}</p>
+                {!preparation.ready && <p className="mt-1">{preparation.issues.map((issue) => issue.message).join("；")}</p>}
               </div>
-              <div className="px-3 py-3 flex gap-2 overflow-x-auto">
-                {stageFiles !== null
-                  ? stageFiles.map((file) => (
-                      <div key={file.filename} className="shrink-0 relative">
-                        <LocalImage itemId={file.itemId} src="" variant="thumbnail" className="h-16 w-16 rounded-lg object-cover bg-zinc-100" alt={file.title || file.filename} />
-                        <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] rounded-md px-1 py-0.5 leading-none">{String(file.index).padStart(2, "0")}</span>
-                      </div>
-                    ))
-                  : note.item_ids!.map((id) => (
-                      <LocalImage key={id} itemId={id} src="" variant="thumbnail" className="h-16 w-16 shrink-0 rounded-lg object-cover bg-zinc-100" alt="" />
-                    ))}
+              <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-xs" role="status">
+                <p className="font-medium text-zinc-700">本地发布 outbox：{outboxEntry ? publishOutboxStatusLabel(outboxEntry.status) : "准备中…"}</p>
+                {outboxEntry && <p className={`mt-1 ${publishOutboxStatusClass(outboxEntry.status)}`}>记录时间：{outboxEntry.updatedAt} · 结果不明不会自动重试</p>}
+                {outboxError && <p className="mt-1 text-red-600">无法持久化发布准备：{outboxError}</p>}
               </div>
-              {stageError && (
-                <div className="px-3 py-2 bg-amber-50 border-t border-amber-100">
-                  <p className="text-[11px] text-amber-700 leading-relaxed">图片暂存失败：{stageError}。可关闭弹窗后重试，或打开小红书发布页后手动选择原图。</p>
+              {history.length > 0 && <div className="rounded-xl border border-zinc-200 px-4 py-3 text-[11px] text-zinc-500"><p className="font-medium text-zinc-700 mb-1">历史状态</p>{history.slice(0, 5).map((entry) => <p key={entry.attemptId} className="flex justify-between gap-2"><span>{publishOutboxStatusLabel(entry.status)}</span><span>{entry.updatedAt}</span></p>)}</div>}
+              {note.item_ids?.length ? (
+                <div className="rounded-xl border border-zinc-200 overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-3 bg-[var(--color-surface-2)] border-b border-zinc-100">
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--color-text-secondary)]">
+                      <Images size={13} />
+                      配图暂存
+                      {stageFiles !== null && <span className="font-normal text-zinc-400">（{stageFiles.length} 张，按序号顺序上传）</span>}
+                    </div>
+                    {staging && <span className="text-xs text-zinc-400 flex items-center gap-1"><Loader2 size={11} className="animate-spin" />准备中…</span>}
+                  </div>
+                  <div className="px-4 py-4 flex flex-wrap gap-2">
+                    {stageFiles !== null
+                      ? stageFiles.map((file) => (
+                          <div key={file.filename} className="shrink-0 relative">
+                            <LocalImage itemId={file.itemId} src="" variant="thumbnail" className="h-20 w-20 rounded-lg object-cover bg-zinc-100" alt={file.title || file.filename} />
+                            <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] rounded-md px-1 py-0.5 leading-none">{String(file.index).padStart(2, "0")}</span>
+                          </div>
+                        ))
+                      : note.item_ids!.map((id) => <LocalImage key={id} itemId={id} src="" variant="thumbnail" className="h-20 w-20 shrink-0 rounded-lg object-cover bg-zinc-100" alt="" />)}
+                  </div>
+                  {stageError && <div className="px-4 py-3 bg-amber-50 border-t border-amber-100"><p className="text-[11px] text-amber-700 leading-relaxed">图片暂存失败：{stageError}。可关闭弹窗后重试，或打开小红书发布页后手动选择原图。</p></div>}
+                  {stageFiles !== null && stageFiles.length > 0 && <div className="px-4 py-3 bg-amber-50 border-t border-amber-100"><p className="text-[11px] text-amber-700 leading-relaxed">图片已复制到本地暂存文件夹，点击「打开文件夹」后按 01-NN 序号顺序拖拽上传到小红书；确认发布后自动清理。</p></div>}
+                  {stageFiles !== null && stageFiles.length === 0 && <div className="px-4 py-3 bg-amber-50 border-t border-amber-100"><p className="text-[11px] text-amber-700 leading-relaxed">笔记关联的素材图片在本地找不到文件，无法生成待上传文件夹；请先到图库修复素材。</p></div>}
                 </div>
-              )}
+              ) : null}
               {stageFiles !== null && stageFiles.length > 0 && (
-                <div className="px-3 py-2 bg-amber-50 border-t border-amber-100">
-                  <p className="text-[11px] text-amber-700 leading-relaxed">图片已复制到本地暂存文件夹，点击「打开文件夹」后按 01-NN 序号顺序拖拽上传到小红书；确认发布后自动清理。</p>
-                </div>
-              )}
-              {stageFiles !== null && stageFiles.length === 0 && (
-                <div className="px-3 py-2 bg-amber-50 border-t border-amber-100">
-                  <p className="text-[11px] text-amber-700 leading-relaxed">笔记关联的素材图片在本地找不到文件，无法生成待上传文件夹；请先到图库修复素材。</p>
-                </div>
+                <button type="button" onClick={() => void openStageDir()} disabled={openingStage} className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-dashed border-zinc-200 text-xs text-zinc-500 hover:border-[#ff2442] hover:text-[#ff2442] disabled:opacity-50">
+                  {openingStage ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />}
+                  {openingStage ? "正在打开…" : "一键打开待上传图片文件夹"}
+                </button>
               )}
             </div>
-          ) : null}
-          {stageFiles !== null && stageFiles.length > 0 && (
-            <button onClick={() => void openStageDir()} disabled={openingStage} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 border-dashed border-zinc-200 text-xs text-zinc-500 hover:border-[#ff2442] hover:text-[#ff2442] disabled:opacity-50">
-              {openingStage ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />}
-              {openingStage ? "正在打开…" : "一键打开待上传图片文件夹"}
-            </button>
-          )}
-          <div className="rounded-xl bg-[var(--color-surface-2)] p-3"><div className="flex items-center justify-between mb-1.5"><span className="text-xs text-[var(--color-text-secondary)]">标题</span><button onClick={() => void copy("title")} className="text-xs text-zinc-400 hover:text-[#ff2442]">{copied === "title" ? "已复制" : "复制"}</button></div><p className="text-sm font-medium text-[var(--color-text-primary)]">{note.title || "（无标题）"}</p></div>
-          <div className="rounded-xl bg-[var(--color-surface-2)] p-3"><div className="flex items-center justify-between mb-1.5"><span className="text-xs text-[var(--color-text-secondary)]">正文 + 标签</span><button onClick={() => void copy("body")} className="text-xs text-zinc-400 hover:text-[#ff2442]">{copied === "body" ? "已复制" : "复制"}</button></div><p className="text-xs text-[var(--color-text-primary)] whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto">{note.body || "（无正文）"}</p></div>
-          <button onClick={() => void copy("all")} className="w-full rounded-xl border-2 border-dashed border-zinc-200 py-2.5 text-xs text-zinc-500 hover:border-[#ff2442] hover:text-[#ff2442]">{copied === "all" ? "已复制全文" : "一键复制全文（标题 + 正文 + 标签）"}</button>
-          <button onClick={() => openInSystemBrowser("https://creator.xiaohongshu.com/publish/publish")} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#ff2442] text-white text-xs font-medium hover:bg-[#e01f3a]"><ExternalLink size={13} />打开小红书发布页</button>
-          <label className="block text-xs text-[var(--color-text-secondary)]">发布后粘贴笔记链接（可选）<input value={noteUrl} onChange={(event) => setNoteUrl(event.target.value)} placeholder="https://www.xiaohongshu.com/explore/..." className="mt-1.5 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-xs" /></label>
-          <p className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-3 py-2">这里不会自动提交平台。完成平台操作后先记录“已提交”，结果不明时标记待核查，系统不会自动重复提交。</p>
+            <div className="space-y-4">
+              <div className="rounded-xl bg-[var(--color-surface-2)] p-4"><div className="flex items-center justify-between mb-1.5"><span className="text-xs text-[var(--color-text-secondary)]">标题</span><button type="button" onClick={() => void copy("title")} className="text-xs text-zinc-400 hover:text-[#ff2442]">{copied === "title" ? "已复制" : "复制"}</button></div><p className="text-sm font-medium text-[var(--color-text-primary)]">{note.title || "（无标题）"}</p></div>
+              <div className="rounded-xl bg-[var(--color-surface-2)] p-4"><div className="flex items-center justify-between mb-1.5"><span className="text-xs text-[var(--color-text-secondary)]">正文 + 标签</span><button type="button" onClick={() => void copy("body")} className="text-xs text-zinc-400 hover:text-[#ff2442]">{copied === "body" ? "已复制" : "复制"}</button></div><p className="text-xs text-[var(--color-text-primary)] whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto">{note.body || "（无正文）"}</p></div>
+              <button type="button" onClick={() => void copy("all")} className="w-full rounded-xl border-2 border-dashed border-zinc-200 py-3 text-xs text-zinc-500 hover:border-[#ff2442] hover:text-[#ff2442]">{copied === "all" ? "已复制全文" : "一键复制全文（标题 + 正文 + 标签）"}</button>
+              <button type="button" onClick={() => openInSystemBrowser("https://creator.xiaohongshu.com/publish/publish")} className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[#ff2442] text-white text-xs font-medium hover:bg-[#e01f3a]"><ExternalLink size={13} />打开小红书发布页</button>
+              <label className="block text-xs text-[var(--color-text-secondary)]">发布后粘贴笔记链接（可选）<input value={noteUrl} onChange={(event) => setNoteUrl(event.target.value)} placeholder="https://www.xiaohongshu.com/explore/..." className="mt-1.5 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5 text-xs" /></label>
+              <p className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-3 py-2.5">这里不会自动提交平台。完成平台操作后先记录“已提交”，结果不明时标记待核查，系统不会自动重复提交。</p>
+            </div>
+          </div>
         </div>
-        <div className="px-5 py-4 border-t border-[var(--color-border)] grid grid-cols-2 gap-2"><button onClick={onClose} className="py-2 rounded-xl border border-zinc-200 text-xs text-zinc-500 hover:bg-zinc-50">稍后再说</button><button onClick={() => void markSubmitted()} disabled={saving || !outboxEntry || outboxEntry.status !== "prepared"} className="py-2 rounded-xl bg-amber-500 text-white text-xs font-medium hover:bg-amber-600 disabled:opacity-50">我已完成平台提交</button><button onClick={() => void markUnknown()} disabled={saving || !outboxEntry || !["prepared", "submitted"].includes(outboxEntry.status)} className="py-2 rounded-xl border border-orange-200 text-xs text-orange-700 hover:bg-orange-50 disabled:opacity-50">结果不明</button><button onClick={() => void confirmPublished()} disabled={saving || !preparation.ready || !outboxEntry || !["submitted", "unknown"].includes(outboxEntry.status)} className="py-2 rounded-xl bg-green-500 text-white text-xs font-medium hover:bg-green-600 disabled:opacity-50">{saving ? "保存中…" : "确认已发布"}</button></div>
+        <div className="px-6 py-4 border-t border-[var(--color-border)] grid grid-cols-2 gap-2 sm:grid-cols-4"><button type="button" onClick={onClose} className="py-2.5 rounded-xl border border-zinc-200 text-xs text-zinc-500 hover:bg-zinc-50">稍后再说</button><button type="button" onClick={() => void markSubmitted()} disabled={saving || !outboxEntry || outboxEntry.status !== "prepared"} className="py-2.5 rounded-xl bg-amber-500 text-white text-xs font-medium hover:bg-amber-600 disabled:opacity-50">我已完成平台提交</button><button type="button" onClick={() => void markUnknown()} disabled={saving || !outboxEntry || !["prepared", "submitted"].includes(outboxEntry.status)} className="py-2.5 rounded-xl border border-orange-200 text-xs text-orange-700 hover:bg-orange-50 disabled:opacity-50">结果不明</button><button type="button" onClick={() => void confirmPublished()} disabled={saving || !preparation.ready || !outboxEntry || !["submitted", "unknown"].includes(outboxEntry.status)} className="py-2.5 rounded-xl bg-green-500 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50">{saving ? "保存中…" : "确认已发布"}</button></div>
       </div>
     </div>
   );

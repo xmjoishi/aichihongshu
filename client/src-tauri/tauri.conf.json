@@ -14,7 +14,10 @@
       {
         "title": "爱吃红薯",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {

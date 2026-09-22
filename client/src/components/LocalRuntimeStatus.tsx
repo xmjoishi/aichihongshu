@@ -75,9 +75,6 @@ export default function LocalRuntimeStatus() {
         <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
         本地数据可用
       </span>
-      <span className="max-w-28 truncate" title={`当前账号：${snapshot.activeAccount.alias}`}>
-        {snapshot.activeAccount.alias}
-      </span>
       <span>图库 {snapshot.items.length}</span>
       <span>笔记 {snapshot.notes.length}</span>
       <button

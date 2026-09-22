@@ -4,6 +4,12 @@ export const primaryButtonClass =
   "inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--color-action-primary)] px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50";
 export const secondaryButtonClass =
   "inline-flex items-center justify-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 text-sm font-medium text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-2)] disabled:cursor-not-allowed disabled:opacity-50";
+export const pageTabClass =
+  "inline-flex items-center justify-center border-b-2 px-3 py-2 text-sm font-medium transition-colors";
+export const pageTabActiveClass =
+  "border-[var(--color-brand)] text-[var(--color-brand)]";
+export const pageTabInactiveClass =
+  "border-transparent text-[var(--color-text-secondary)] hover:border-[var(--color-border)] hover:text-[var(--color-text-primary)]";
 
 export function Dialog({
   title,

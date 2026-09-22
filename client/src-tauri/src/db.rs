@@ -119,6 +119,28 @@ pub struct NoteSummary {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CompanionTaskSummary {
+    pub task_id: String,
+    pub client_task_id: Option<String>,
+    pub account_pool_id: i64,
+    pub status: String,
+    pub topic: Option<String>,
+    pub item_ids: Vec<i64>,
+    pub note_id: Option<i64>,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub tags: Vec<String>,
+    pub content_version: Option<i64>,
+    pub publish_status: Option<String>,
+    pub publish_note_url: Option<String>,
+    pub publish_message: Option<String>,
+    pub error: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PurgeItemsResult {
     pub purged_ids: Vec<i64>,
     pub cleanup_warnings: Vec<String>,
@@ -836,6 +858,17 @@ impl LocalDb {
     /// 将前端已读取的图片安全写入当前账号素材目录，并在数据库提交失败时清理文件。
     /// 前端不传任意路径；文件名只用于推断类型和标题，落位路径由内容摘要生成。
     pub fn import_local_image(&self, import: LocalImageImport) -> Result<ItemSummary, String> {
+        let account_pool_id = import.account_pool_id;
+        self.import_local_image_for_account(account_pool_id, import)
+    }
+
+    /// 按显式账号导入素材（PC Harness 等宿主侧链路）。不依赖 UI 激活账号，
+    /// 但要求目标账号存在，保证任务创建时冻结的账号归属不被切换干扰。
+    pub fn import_local_image_for_account(
+        &self,
+        account_pool_id: i64,
+        import: LocalImageImport,
+    ) -> Result<ItemSummary, String> {
         let file_name = import.file_name.trim();
         let path = Path::new(file_name);
         let validated = validate_local_image(&import)?;
@@ -847,23 +880,30 @@ impl LocalDb {
         let mut conn = self
             .connect()
             .map_err(|error| format!("打开本地数据库失败: {error}"))?;
-        let active = ensure_active_account(&mut conn, &self.path)
-            .map_err(|error| format!("读取当前运营账号失败: {error}"))?;
-        ensure_expected_account(&active, Some(import.account_pool_id))
-            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let account_exists: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM account_pool WHERE id = ?1",
+                params![account_pool_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("校验导入账号失败: {error}"))?;
+        if account_exists.is_none() {
+            return Err("导入账号不存在".to_string());
+        }
 
-        if let Some(existing) = read_item_by_hash(&conn, active.id, &hash)
+        if let Some(existing) = read_item_by_hash(&conn, account_pool_id, &hash)
             .map_err(|error| format!("检查重复素材失败: {error}"))?
         {
             return Ok(existing);
         }
 
         let db_dir = self.path.parent().unwrap_or_else(|| Path::new("."));
-        let relative_path = format!("assets/{}/{hash}.{extension}", active.id);
+        let relative_path = format!("assets/{}/{hash}.{extension}", account_pool_id);
         let target_path = db_dir.join(&relative_path);
         let thumbnail_relative_path = thumbnail_bytes
             .as_ref()
-            .map(|_| format!("assets/{}/thumbnails/{hash}.jpg", active.id));
+            .map(|_| format!("assets/{}/thumbnails/{hash}.jpg", account_pool_id));
         let thumbnail_target_path = thumbnail_relative_path
             .as_deref()
             .map(|relative| db_dir.join(relative));
@@ -963,7 +1003,13 @@ impl LocalDb {
         let insert_result = tx.execute(
             "INSERT INTO items (title, image_path, thumbnail_path, tags, account_pool_id, image_version, content_hash, metadata_version)
              VALUES (?1, ?2, ?3, '[]', ?4, 1, ?5, 1)",
-            params![title, relative_path, thumbnail_relative_path, active.id, hash],
+            params![
+                title,
+                relative_path,
+                thumbnail_relative_path,
+                account_pool_id,
+                hash
+            ],
         );
         if let Err(error) = insert_result {
             fs::remove_file(&target_path).ok();
@@ -973,7 +1019,7 @@ impl LocalDb {
             return Err(format!("保存素材记录失败: {error}"));
         }
         let item_id = tx.last_insert_rowid();
-        let item = match read_item_summary(&tx, item_id, active.id) {
+        let item = match read_item_summary(&tx, item_id, account_pool_id) {
             Ok(item) => item,
             Err(error) => {
                 fs::remove_file(&target_path).ok();
@@ -1656,9 +1702,6 @@ impl LocalDb {
         item_ids: &[i64],
         expected_account_id: Option<i64>,
     ) -> Result<NoteSummary, String> {
-        if item_ids.is_empty() || item_ids.len() > 9 {
-            return Err("草稿需要关联 1 到 9 张素材".to_string());
-        }
         let mut conn = self
             .connect()
             .map_err(|error| format!("打开本地数据库失败: {error}"))?;
@@ -1666,6 +1709,22 @@ impl LocalDb {
             .map_err(|error| format!("读取当前运营账号失败: {error}"))?;
         ensure_expected_account(&active, expected_account_id)
             .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        drop(conn);
+        self.create_local_draft_from_items_for_account(item_ids, active.id)
+    }
+
+    /// 按显式账号创建素材草稿（PC Harness 任务链路），不依赖 UI 激活账号。
+    pub fn create_local_draft_from_items_for_account(
+        &self,
+        item_ids: &[i64],
+        account_pool_id: i64,
+    ) -> Result<NoteSummary, String> {
+        if item_ids.is_empty() || item_ids.len() > 9 {
+            return Err("草稿需要关联 1 到 9 张素材".to_string());
+        }
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
         let tx = conn
             .transaction()
             .map_err(|error| format!("开始创建素材草稿失败: {error}"))?;
@@ -1673,13 +1732,13 @@ impl LocalDb {
             let owned: Option<i64> = tx
                 .query_row(
                     "SELECT id FROM items WHERE id = ?1 AND account_pool_id = ?2 AND deleted_at IS NULL",
-                    params![item_id, active.id],
+                    params![item_id, account_pool_id],
                     |row| row.get(0),
                 )
                 .optional()
                 .map_err(|error| format!("校验草稿素材失败: {error}"))?;
             if owned.is_none() {
-                return Err(format!("素材 {item_id} 不存在或不属于当前账号"));
+                return Err(format!("素材 {item_id} 不存在或不属于目标账号"));
             }
         }
         let item_ids_json = serde_json::to_string(item_ids)
@@ -1687,22 +1746,88 @@ impl LocalDb {
         let first_title: String = tx
             .query_row(
                 "SELECT title FROM items WHERE id = ?1 AND account_pool_id = ?2",
-                params![item_ids[0], active.id],
+                params![item_ids[0], account_pool_id],
                 |row| row.get(0),
             )
             .unwrap_or_else(|_| "素材草稿".to_string());
         tx.execute(
             "INSERT INTO notes (item_id, item_ids, title, tags, status, account_pool_id)
              VALUES (?1, ?2, ?3, '[]', 'draft', ?4)",
-            params![item_ids[0], item_ids_json, first_title, active.id],
+            params![item_ids[0], item_ids_json, first_title, account_pool_id],
         )
         .map_err(|error| format!("写入素材草稿失败: {error}"))?;
         let note_id = tx.last_insert_rowid();
-        let note = read_note_summary(&tx, note_id, active.id)
+        let note = read_note_summary(&tx, note_id, account_pool_id)
             .map_err(|error| format!("读取素材草稿失败: {error}"))?;
         tx.commit()
             .map_err(|error| format!("提交素材草稿失败: {error}"))?;
         Ok(note)
+    }
+
+    /// 按显式账号创建纯文字草稿（无素材时的主题种子稿件）。
+    pub fn create_local_draft_for_account_id(
+        &self,
+        title: &str,
+        account_pool_id: i64,
+    ) -> Result<NoteSummary, String> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("草稿标题不能为空".to_string());
+        }
+        if title.chars().count() > 200 {
+            return Err("草稿标题不能超过 200 个字符".to_string());
+        }
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        conn.execute(
+            "INSERT INTO notes (item_id, item_ids, title, tags, status, account_pool_id)
+             VALUES (NULL, '[]', ?1, '[]', 'draft', ?2)",
+            params![title, account_pool_id],
+        )
+        .map_err(|error| format!("创建本地草稿失败: {error}"))?;
+        let note_id = conn.last_insert_rowid();
+        read_note_summary(&conn, note_id, account_pool_id)
+            .map_err(|error| format!("读取本地草稿失败: {error}"))
+    }
+
+    /// 更新指定账号下的笔记正文/标题/标签（Companion 稿件种子）。
+    pub fn update_local_note_for_account(
+        &self,
+        account_pool_id: i64,
+        note_id: i64,
+        title: &str,
+        body: &str,
+        tags: &[String],
+        item_ids: &[i64],
+    ) -> Result<NoteSummary, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let tags_json =
+            serde_json::to_string(tags).map_err(|error| format!("序列化标签失败: {error}"))?;
+        let item_ids_json = serde_json::to_string(item_ids)
+            .map_err(|error| format!("序列化素材列表失败: {error}"))?;
+        let now = local_timestamp();
+        conn.execute(
+            "UPDATE notes
+             SET title = ?2, body = ?3, tags = ?4, item_ids = ?5,
+                 item_id = ?6, updated_at = ?7, content_version = content_version + 1
+             WHERE id = ?1 AND account_pool_id = ?8 AND deleted_at IS NULL",
+            params![
+                note_id,
+                title,
+                body,
+                tags_json,
+                item_ids_json,
+                item_ids.first().copied(),
+                now,
+                account_pool_id
+            ],
+        )
+        .map_err(|error| format!("保存 Companion 草稿失败: {error}"))?;
+        read_note_summary(&conn, note_id, account_pool_id)
+            .map_err(|error| format!("读取 Companion 草稿失败: {error}"))
     }
 
     /// 原子更新本地笔记编辑字段。expected_version 用于阻止旧编辑器回执覆盖新版本。
@@ -3215,6 +3340,173 @@ impl LocalDb {
         .map_err(|error| format!("读取最近 AI 运行失败: {error}"))
     }
 
+    /// 为 PC Harness 任务创建 companion_tasks 记录；账号在创建时冻结。
+    pub fn create_companion_task(
+        &self,
+        task_id: &str,
+        client_task_id: Option<&str>,
+        account_pool_id: i64,
+        topic: Option<&str>,
+    ) -> Result<CompanionTaskSummary, String> {
+        if task_id.trim().is_empty() {
+            return Err("任务 ID 不能为空".to_string());
+        }
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let account_exists: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM account_pool WHERE id = ?1",
+                params![account_pool_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("校验账号失败: {error}"))?;
+        if account_exists.is_none() {
+            return Err("任务账号不存在".to_string());
+        }
+        let now = local_timestamp();
+        conn.execute(
+            "INSERT INTO companion_tasks (
+                 task_id, client_task_id, account_pool_id, status, topic,
+                 item_ids, tags, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, 'queued', ?4, '[]', '[]', ?5, ?5)",
+            params![task_id, client_task_id, account_pool_id, topic, now],
+        )
+        .map_err(|error| format!("写入 Companion 任务失败: {error}"))?;
+        drop(conn);
+        self.companion_task_by_id(task_id)
+    }
+
+    pub fn find_companion_task_by_client_id(
+        &self,
+        account_pool_id: i64,
+        client_task_id: &str,
+    ) -> Result<Option<CompanionTaskSummary>, String> {
+        let conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let task_id: Option<String> = conn
+            .query_row(
+                "SELECT task_id FROM companion_tasks
+                 WHERE account_pool_id = ?1 AND client_task_id = ?2",
+                params![account_pool_id, client_task_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("查询 Companion 任务失败: {error}"))?;
+        drop(conn);
+        match task_id {
+            Some(id) => self.companion_task_by_id(&id).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub fn companion_task_by_id(&self, task_id: &str) -> Result<CompanionTaskSummary, String> {
+        let conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        read_companion_task(&conn, task_id)
+    }
+
+    pub fn update_companion_task_progress(
+        &self,
+        task_id: &str,
+        status: &str,
+        item_ids: &[i64],
+        note_id: Option<i64>,
+        title: Option<&str>,
+        body: Option<&str>,
+        tags: &[String],
+        content_version: Option<i64>,
+        error: Option<&str>,
+    ) -> Result<CompanionTaskSummary, String> {
+        if !matches!(
+            status,
+            "queued" | "processing" | "ready" | "failed" | "cancelled"
+        ) {
+            return Err("Companion 任务状态无效".to_string());
+        }
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let item_ids_json = serde_json::to_string(item_ids)
+            .map_err(|error| format!("序列化任务素材失败: {error}"))?;
+        let tags_json =
+            serde_json::to_string(tags).map_err(|error| format!("序列化任务标签失败: {error}"))?;
+        let now = local_timestamp();
+        conn.execute(
+            "UPDATE companion_tasks
+             SET status = ?2, item_ids = ?3, note_id = COALESCE(?4, note_id),
+                 title = COALESCE(?5, title), body = COALESCE(?6, body),
+                 tags = ?7, content_version = COALESCE(?8, content_version),
+                 error = ?9, updated_at = ?10
+             WHERE task_id = ?1",
+            params![
+                task_id,
+                status,
+                item_ids_json,
+                note_id,
+                title,
+                body,
+                tags_json,
+                content_version,
+                error,
+                now
+            ],
+        )
+        .map_err(|error| format!("更新 Companion 任务失败: {error}"))?;
+        drop(conn);
+        self.companion_task_by_id(task_id)
+    }
+
+    pub fn record_companion_publish_receipt(
+        &self,
+        task_id: &str,
+        status: &str,
+        note_url: Option<&str>,
+        message: Option<&str>,
+    ) -> Result<CompanionTaskSummary, String> {
+        if !matches!(
+            status,
+            "prepared" | "submitted" | "confirmed" | "unknown" | "failed"
+        ) {
+            return Err("发布回填状态无效".to_string());
+        }
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let existing = read_companion_task(&conn, task_id)?;
+        if existing.note_id.is_none() {
+            return Err("任务尚未生成稿件，无法回填发布结果".to_string());
+        }
+        let now = local_timestamp();
+        conn.execute(
+            "UPDATE companion_tasks
+             SET publish_status = ?2, publish_note_url = ?3, publish_message = ?4, updated_at = ?5
+             WHERE task_id = ?1",
+            params![task_id, status, note_url, message, now],
+        )
+        .map_err(|error| format!("写入发布回填失败: {error}"))?;
+        if let Some(note_id) = existing.note_id {
+            if matches!(status, "submitted" | "confirmed") {
+                conn.execute(
+                    "UPDATE notes
+                     SET note_url = COALESCE(?2, note_url),
+                         status = CASE WHEN ?3 = 'confirmed' THEN 'published' ELSE status END,
+                         published_at = COALESCE(published_at, ?4),
+                         updated_at = ?4,
+                         content_version = content_version + 1
+                     WHERE id = ?1 AND account_pool_id = ?5 AND deleted_at IS NULL",
+                    params![note_id, note_url, status, now, existing.account_pool_id],
+                )
+                .map_err(|error| format!("回填笔记发布状态失败: {error}"))?;
+            }
+        }
+        drop(conn);
+        self.companion_task_by_id(task_id)
+    }
+
     /// Persist a bounded generated artifact separately from run metadata.
     /// The artifact is scoped to the same account/object as its run and is
     /// replaced idempotently for the same run and kind.
@@ -4265,6 +4557,42 @@ fn migrate(conn: &mut Connection) -> SqlResult<()> {
          VALUES (1, 'rust_local_core')",
         [],
     )?;
+    tx.commit()?;
+    migrate_companion_tasks(conn)
+}
+
+fn migrate_companion_tasks(conn: &mut Connection) -> SqlResult<()> {
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS companion_tasks (
+             task_id TEXT PRIMARY KEY,
+             client_task_id TEXT,
+             account_pool_id INTEGER NOT NULL,
+             status TEXT NOT NULL,
+             topic TEXT,
+             item_ids TEXT NOT NULL DEFAULT '[]',
+             note_id INTEGER,
+             title TEXT,
+             body TEXT,
+             tags TEXT NOT NULL DEFAULT '[]',
+             content_version INTEGER,
+             publish_status TEXT,
+             publish_note_url TEXT,
+             publish_message TEXT,
+             error TEXT,
+             created_at TEXT,
+             updated_at TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_companion_tasks_client
+             ON companion_tasks(account_pool_id, client_task_id);
+         CREATE INDEX IF NOT EXISTS idx_companion_tasks_account
+             ON companion_tasks(account_pool_id, updated_at DESC);",
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, name)
+         VALUES (2, 'companion_tasks_v1')",
+        [],
+    )?;
     tx.commit()
 }
 
@@ -4288,6 +4616,75 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str)
         )?;
     }
     Ok(())
+}
+
+fn local_timestamp() -> String {
+    chrono_local_now()
+}
+
+fn chrono_local_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs() as i64)
+        .unwrap_or_default();
+    // sqlite-compatible localtime stamp without extra chrono dependency
+    format_unix_local(secs)
+}
+
+fn format_unix_local(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}:{ss:02}")
+}
+
+/// Howard Hinnant civil_from_days (UTC approximation is enough for local QA stamps).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn read_companion_task(conn: &Connection, task_id: &str) -> Result<CompanionTaskSummary, String> {
+    conn.query_row(
+        "SELECT task_id, client_task_id, account_pool_id, status, topic, item_ids,
+                note_id, title, body, tags, content_version,
+                publish_status, publish_note_url, publish_message, error,
+                created_at, updated_at
+         FROM companion_tasks WHERE task_id = ?1",
+        params![task_id],
+        |row| {
+            Ok(CompanionTaskSummary {
+                task_id: row.get(0)?,
+                client_task_id: row.get(1)?,
+                account_pool_id: row.get(2)?,
+                status: row.get(3)?,
+                topic: row.get(4)?,
+                item_ids: parse_json_vec(row.get(5)?),
+                note_id: row.get(6)?,
+                title: row.get(7)?,
+                body: row.get(8)?,
+                tags: parse_json_vec(row.get(9)?),
+                content_version: row.get(10)?,
+                publish_status: row.get(11)?,
+                publish_note_url: row.get(12)?,
+                publish_message: row.get(13)?,
+                error: row.get(14)?,
+                created_at: row.get(15)?,
+                updated_at: row.get(16)?,
+            })
+        },
+    )
+    .map_err(|error| format!("读取 Companion 任务失败: {error}"))
 }
 
 fn ensure_active_account(conn: &mut Connection, db_path: &Path) -> SqlResult<ActiveAccount> {

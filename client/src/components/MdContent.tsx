@@ -13,9 +13,10 @@ export function MdContent({ content, streaming = false }: { content: string; str
   }
 
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
+    <div className="select-text">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
         p: ({ children }) => <p className="mb-1.5 last:mb-0 leading-relaxed">{children}</p>,
         h1: ({ children }) => <p className="font-bold text-sm mb-1">{children}</p>,
         h2: ({ children }) => <p className="font-bold text-xs mb-1 text-zinc-600">{children}</p>,
@@ -53,9 +54,10 @@ export function MdContent({ content, streaming = false }: { content: string; str
         a: ({ children, href }) => (
           <span className="text-[#ff2442] underline cursor-default" title={href}>{children}</span>
         ),
-      }}
-    >
-      {streaming ? content + "▍" : content}
-    </ReactMarkdown>
+        }}
+      >
+        {streaming ? content + "▍" : content}
+      </ReactMarkdown>
+    </div>
   );
 }

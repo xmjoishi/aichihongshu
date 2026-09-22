@@ -1,13 +1,23 @@
 import { useState, useEffect, useRef } from "react";
 import { usePanelResize } from "../hooks/usePanelResize";
 import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, API_BASE, openInBrowser, openInSystemBrowser, riskAckHeader } from "../lib/api";
 import { NOTE_TYPE_GROUPS, getNoteTypeBadge, type NoteType } from "../lib/noteTypes";
 import { Note, Item } from "../lib/types";
-import { Dialog, Spinner, Empty, StatusBadge, primaryButtonClass, secondaryButtonClass } from "../components/ui";
+import {
+  Dialog,
+  Spinner,
+  Empty,
+  StatusBadge,
+  pageTabActiveClass,
+  pageTabClass,
+  pageTabInactiveClass,
+  primaryButtonClass,
+  secondaryButtonClass,
+} from "../components/ui";
 import LocalImage from "../components/LocalImage";
-import { Save, Copy, ChevronRight, Sparkles, ImagePlus, Hash, FileText, Trash2, X, Search, Send, Check, ExternalLink, Rocket, Loader2, FolderOpen, Images } from "lucide-react";
+import { Save, Copy, ChevronRight, Sparkles, ImagePlus, Hash, FileText, Trash2, X, Search, Send, Check, ExternalLink, Rocket, Loader2, FolderOpen, Images, LayoutList, Columns3 } from "lucide-react";
 import AIPanel from "../components/AIPanel";
 import { useToast } from "../components/Toast";
 import { useRiskConfirm } from "../components/useRiskConfirm";
@@ -38,10 +48,39 @@ import {
 } from "../lib/aiProposal";
 import { preparePublish, type PublishPreparation } from "../lib/publishPreparation";
 import { noteToMarkdown } from "../lib/noteMarkdown";
+import { publishPageAIContext } from "../lib/pageAIContext";
+import Publish from "./Publish";
 
 
 const AUTOSAVE_DELAY = 1500; // ms
 const NOTES_VIEW_KEY = "aichihongshu.notes-view.v1";
+
+function NotesWorkspaceViewSwitcher({ publishView, onChange }: { publishView: boolean; onChange: (publishView: boolean) => void }) {
+  return (
+    <div className="flex items-center gap-0.5 rounded-lg border border-zinc-200 bg-zinc-50 p-0.5" role="group" aria-label="切换笔记视图">
+      <button
+        type="button"
+        aria-pressed={!publishView}
+        aria-label="笔记列表视图"
+        title="笔记列表视图"
+        onClick={() => onChange(false)}
+        className={`rounded-md p-1.5 transition-colors ${!publishView ? "bg-white text-[#ff2442] shadow-sm" : "text-zinc-400 hover:bg-white hover:text-zinc-600"}`}
+      >
+        <LayoutList size={15} />
+      </button>
+      <button
+        type="button"
+        aria-pressed={publishView}
+        aria-label="发布看板视图"
+        title="发布看板视图"
+        onClick={() => onChange(true)}
+        className={`rounded-md p-1.5 transition-colors ${publishView ? "bg-white text-[#ff2442] shadow-sm" : "text-zinc-400 hover:bg-white hover:text-zinc-600"}`}
+      >
+        <Columns3 size={15} />
+      </button>
+    </div>
+  );
+}
 
 function formatSaveError(cause: unknown, fallback = "保存失败，请重试"): string {
   if (cause instanceof Error && cause.message.trim()) return cause.message;
@@ -151,7 +190,7 @@ function PublishModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[92vh] flex flex-col overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-100 shrink-0">
           <div className="flex items-center gap-2">
@@ -309,6 +348,7 @@ function PublishModal({
 
 export function NoteList() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const qc = useQueryClient();
   const { toast } = useToast();
   const { accountId, scopeKey } = useAccountContext();
@@ -339,6 +379,27 @@ export function NoteList() {
   const [creatingDraft, setCreatingDraft] = useState(false);
   const notesScrollRef = useRef<HTMLDivElement>(null);
   const viewScopeRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const publishView = searchParams.get("view") === "publish";
+    publishPageAIContext({
+      route: "/notes",
+      page: publishView ? "笔记 · 发布" : "笔记",
+      accountId,
+      selectedIds: [],
+      availableActions: publishView
+        ? [
+            { id: "review-outbox", label: "检查发布队列" },
+            { id: "prepare-publish", label: "准备发布", requiresConfirmation: true },
+          ]
+        : [
+            { id: "triage-notes", label: "整理笔记" },
+            { id: "find-draft", label: "找一篇可发布草稿" },
+          ],
+      source: "page",
+      permissionScope: ["note.read", "note.write", "note.status.write", "publish"],
+    });
+  }, [accountId, searchParams]);
 
   useAccountChange(() => {
     setNewDraftOpen(false);
@@ -408,7 +469,7 @@ export function NoteList() {
         if (accountId === null) throw new Error("当前账号尚未就绪");
         await deleteLocalNote(id, accountId);
         await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
-        await qc.invalidateQueries({ queryKey: ["local-dashboard", scopeKey] });
+        await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       } else {
         await api.delete(`/api/content/${id}`);
         qc.invalidateQueries({ queryKey: ["notes"] });
@@ -428,7 +489,7 @@ export function NoteList() {
     try {
       await restoreLocalNote(id, accountId);
       await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
-      await qc.invalidateQueries({ queryKey: ["local-dashboard", scopeKey] });
+      await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       toast("笔记已恢复", "success");
     } catch (e: unknown) {
       toast((e as Error).message, "error");
@@ -457,7 +518,7 @@ export function NoteList() {
           noteUrl,
         });
         await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
-        await qc.invalidateQueries({ queryKey: ["local-dashboard", scopeKey] });
+      await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       } catch (e: unknown) {
         toast((e as Error).message, "error");
       }
@@ -550,7 +611,7 @@ export function NoteList() {
     try {
       await createLocalDraft(newDraftTitle.trim() || "新建草稿", accountId ?? undefined);
       await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
-      await qc.invalidateQueries({ queryKey: ["local-dashboard", scopeKey] });
+      await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       setNewDraftOpen(false);
       setNewDraftTitle("");
       toast("草稿已创建", "success");
@@ -559,6 +620,19 @@ export function NoteList() {
     } finally {
       setCreatingDraft(false);
     }
+  }
+
+  if (searchParams.get("view") === "publish") {
+    return (
+      <div className="flex h-full flex-col overflow-hidden">
+        <div className="flex shrink-0 items-center gap-3 border-b border-zinc-100 bg-white px-6 py-2">
+          <h1 className="text-lg font-semibold text-zinc-900">笔记</h1>
+          <NotesWorkspaceViewSwitcher publishView onChange={(publishView) => navigate(publishView ? "/notes?view=publish" : "/notes")} />
+          <span className="ml-2 text-xs text-zinc-400">发布准备、平台交接与结果回填</span>
+        </div>
+        <div className="min-h-0 flex-1"><Publish embedded /></div>
+      </div>
+    );
   }
 
   return (
@@ -574,29 +648,37 @@ export function NoteList() {
 
       {/* Toolbar */}
       <div className="border-b border-zinc-100 bg-white shrink-0">
-        <div className="flex items-center gap-1 px-6 py-3">
-          <h1 className="text-lg font-semibold text-zinc-900 mr-4">笔记</h1>
+        <div className="flex items-center gap-1 px-6 pt-1">
+          <h1 className="mr-2 text-lg font-semibold text-zinc-900">笔记</h1>
+          <NotesWorkspaceViewSwitcher publishView={false} onChange={(publishView) => navigate(publishView ? "/notes?view=publish" : "/notes")} />
+          <div role="tablist" aria-label="笔记筛选" className="flex min-w-0 items-stretch gap-1">
           {statusTabs.map((t) => (
             <button
               key={t.key}
+              type="button"
+              role="tab"
+              aria-selected={statusFilter === t.key && !showTrash}
               onClick={() => handleStatusChange(t.key)}
-              className={`text-sm px-3 py-1 rounded-lg transition-colors ${
-                statusFilter === t.key ? "bg-[#ff2442] text-white" : "text-zinc-500 hover:bg-zinc-100"
-              }`}
+              className={`${pageTabClass} ${statusFilter === t.key && !showTrash ? pageTabActiveClass : pageTabInactiveClass}`}
             >
               {t.label}
             </button>
           ))}
           {IS_TAURI_RUNTIME && (
             <button
+              type="button"
+              role="tab"
+              aria-selected={showTrash}
               onClick={() => { setShowTrash((value) => !value); setStatusFilter(""); }}
-              className={`text-sm px-3 py-1 rounded-lg transition-colors ${showTrash ? "bg-amber-500 text-white" : "text-zinc-500 hover:bg-zinc-100"}`}
+              className={`${pageTabClass} ${showTrash ? "border-amber-500 text-amber-600" : pageTabInactiveClass}`}
               title="本地笔记回收站；关联素材不会随笔记删除"
             >
               回收站{localWorkspace?.trashNotes?.length ? ` (${localWorkspace.trashNotes.length})` : ""}
             </button>
           )}
+          </div>
           <button
+            type="button"
             onClick={() => {
               if (!noteWrite.available) {
                 toast(`${noteWrite.reason}。${noteWrite.nextStep}`, "info");
@@ -615,7 +697,7 @@ export function NoteList() {
         </div>
         {IS_TAURI_RUNTIME && (
           <div className="border-b border-[var(--color-border)] bg-[var(--color-selected)] px-6 py-2 text-xs text-[var(--color-text-secondary)]">
-            当前笔记来自本地数据库；编辑、状态变更和素材关联已可用，{noteDelete.available ? "删除会进入回收站" : "删除仍需迁移"}，{publish.available ? "发布已可用" : "发布仍需迁移"}。
+            当前笔记来自本地数据库；编辑、状态变更和素材关联已可用，{noteDelete.available ? "删除会进入回收站" : "删除仍需迁移"}，{publish.available ? "发布已可用" : "发布准备已可用，自动发布仍需迁移"}。
           </div>
         )}
         <div className="flex items-center gap-3 px-6 pb-3">
@@ -740,9 +822,20 @@ export function NoteList() {
                           退回草稿
                         </button>
                         <button
-                          onClick={(e) => { e.stopPropagation(); setPublishingNote(note); }}
-                          disabled={!publish.available}
-                          title={publish.available ? "发布" : `${publish.reason}；${publish.nextStep}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (IS_TAURI_RUNTIME) {
+                              navigate(`/notes?view=publish&note=${note.id}`);
+                              return;
+                            }
+                            if (!publish.available) {
+                              toast(`${publish.reason}。${publish.nextStep}`, "info");
+                              return;
+                            }
+                            setPublishingNote(note);
+                          }}
+                          disabled={!IS_TAURI_RUNTIME && !publish.available}
+                          title={IS_TAURI_RUNTIME ? "打开发布准备" : (publish.available ? "发布" : `${publish.reason}；${publish.nextStep}`)}
                           className="flex items-center gap-1 text-xs text-white bg-[#ff2442] px-2.5 py-1 rounded-lg hover:bg-[#e01f3a] transition-colors font-medium"
                         >
                           <Send size={10} />发布
@@ -894,6 +987,33 @@ export function NoteEditor() {
   const [lastAIProposal, setLastAIProposal] = useState<AIProposal | null>(null);
   const [proposalHistory, setProposalHistory] = useState<AIProposal[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    publishPageAIContext({
+      route: `/notes/${noteId}`,
+      page: "笔记编辑",
+      accountId,
+      objectType: "note",
+      objectId: noteId,
+      objectVersion: noteVersion,
+      selectedIds: note?.item_ids ?? (note?.item_id != null ? [note.item_id] : []),
+      referenceIds: note?.item_ids ?? (note?.item_id != null ? [note.item_id] : []),
+      draft: {
+        title,
+        body,
+        tags: tagsInput,
+        status: note?.status,
+        dirty: saving || Boolean(saveError),
+      },
+      availableActions: [
+        { id: "rewrite-note", label: "改写正文" },
+        { id: "suggest-title", label: "生成标题" },
+        { id: "check-publish", label: "检查发布", requiresConfirmation: true },
+      ],
+      source: "page",
+      permissionScope: ["note.read", "note.write", "note.status.write", "publish"],
+    });
+  }, [accountId, body, note, noteId, noteVersion, saveError, saving, tagsInput, title]);
   if (note && !inited) {
     setTitle(note.title ?? "");
     // body 直接存纯文本；兼容旧版 HTML 存储：自动剥离标签
@@ -993,7 +1113,7 @@ export function NoteEditor() {
             setNoteVersion(nextVersion);
             await qc.invalidateQueries({ queryKey: ["local-note", scopeKey, payload.noteId] });
             await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
-            await qc.invalidateQueries({ queryKey: ["local-dashboard", scopeKey] });
+            await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
           } else {
             await api.patch(`/api/content/${payload.noteId}`, {
               title: payload.title,

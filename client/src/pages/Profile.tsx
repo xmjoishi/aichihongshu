@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, riskAckHeader } from "../lib/api";
 import { Profile as ProfileType } from "../lib/types";
-import { Spinner } from "../components/ui";
+import { Spinner, pageTabActiveClass, pageTabClass, pageTabInactiveClass } from "../components/ui";
 import {
   Pencil, Save, RefreshCw, Sparkles, MapPin,
   Users, Heart, MessageCircle, Bookmark, Edit3,
@@ -18,6 +18,8 @@ import {
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
 import { useAccountChange, useAccountContext } from "../lib/accountContext";
+import { publishPageAIContext } from "../lib/pageAIContext";
+import { Navigate, useSearchParams } from "react-router-dom";
 
 // ── 工具函数 ──────────────────────────────────────────────────────
 function toArray(s: string): string[] {
@@ -250,21 +252,21 @@ function FormSection({ title, children }: { title: string; children: React.React
 // ── Tab 组件 ──────────────────────────────────────────────────────
 type TabId = "account" | "persona";
 
+function profileTabFromQuery(value: string | null): TabId {
+  return value === "persona" ? "persona" : "account";
+}
+
 function Tabs({ active, onChange }: { active: TabId; onChange: (t: TabId) => void }) {
   return (
     <div className="flex border-b border-zinc-100 bg-white px-6">
       {([ 
-        { id: "account" as TabId, label: "账号信息" },
+        { id: "account" as TabId, label: "账号资料" },
         { id: "persona" as TabId, label: "人设信息" },
       ]).map(({ id, label }) => (
         <button
           key={id}
           onClick={() => onChange(id)}
-          className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors -mb-px ${
-            active === id
-              ? "border-[#ff2442] text-[#ff2442]"
-              : "border-transparent text-zinc-500 hover:text-zinc-700"
-          }`}
+          className={`${pageTabClass} ${active === id ? pageTabActiveClass : pageTabInactiveClass}`}
         >
           {label}
         </button>
@@ -278,9 +280,42 @@ export default function ProfilePage() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { accountId, scopeKey } = useAccountContext();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { confirmAndRetry, dialog: riskDialog } = useRiskConfirm();
-  const [activeTab, setActiveTab] = useState<TabId>("account");
+  const [activeTab, setActiveTab] = useState<TabId>(() => profileTabFromQuery(searchParams.get("view")));
   const [editing, setEditing] = useState(false);
+
+  // 账号页二级页签由 URL 驱动：刷新、浏览器前进/后退和跨页跳转
+  // 都能回到同一个视图，不再依赖组件挂载时的默认 state。
+  useEffect(() => {
+    setActiveTab(profileTabFromQuery(searchParams.get("view")));
+  }, [searchParams]);
+
+  function handleProfileTabChange(nextTab: TabId): void {
+    setActiveTab(nextTab);
+    const next = new URLSearchParams(searchParams);
+    next.delete("tab");
+    if (nextTab === "account") next.delete("view");
+    else next.set("view", nextTab);
+    setSearchParams(next, { replace: true });
+  }
+
+  useEffect(() => {
+    publishPageAIContext({
+      route: "/profile",
+      page: "我的账号",
+      accountId,
+      objectType: "account",
+      objectId: accountId,
+      selectedIds: [],
+      availableActions: [
+        { id: "refine-persona", label: "优化人设" },
+        { id: "review-account", label: "查看账号资料" },
+      ],
+      source: "page",
+      permissionScope: ["account.read", "account.write", "analytics.read"],
+    });
+  }, [accountId]);
   const [showAI, setShowAI] = useState(false);
   const [form, setForm] = useState<EditForm | null>(null);
   const focusedFieldRef = useRef<keyof EditForm | null>(null);
@@ -292,7 +327,7 @@ export default function ProfilePage() {
   });
 
   const { data: localWorkspace, isLoading: localProfileLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-profile", scopeKey],
+    queryKey: ["local-workspace", scopeKey],
     queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
     enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
@@ -399,7 +434,7 @@ export default function ProfilePage() {
     onSuccess: () => {
       toast("已保存", "success");
       qc.invalidateQueries({ queryKey: ["profile"] });
-      if (IS_TAURI_RUNTIME) qc.invalidateQueries({ queryKey: ["local-profile", scopeKey] });
+      if (IS_TAURI_RUNTIME) qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       qc.invalidateQueries({ queryKey: ["analytics"] });
       setEditing(false);
     },
@@ -418,6 +453,12 @@ export default function ProfilePage() {
   }
 
   if (isLoading) return <Spinner />;
+
+  // 兼容旧书签：数据复盘已经是独立菜单，旧的账号页参数统一迁移过去。
+  if (searchParams.get("tab") === "data") {
+    const view = searchParams.get("view");
+    return <Navigate to={`/data${view ? `?view=${encodeURIComponent(view)}` : ""}`} replace />;
+  }
 
   if (!profile) return (
     <div className="p-6 text-zinc-400 text-sm">
@@ -450,8 +491,8 @@ export default function ProfilePage() {
           </button>
         </div>
 
-        {/* Tab 切换 */}
-        <Tabs active={activeTab} onChange={setActiveTab} />
+        {/* 账号页面二级页签：账号资料 / 人设信息 */}
+        <Tabs active={activeTab} onChange={handleProfileTabChange} />
 
         {/* Tab 内容 */}
         <div className="flex-1 overflow-y-auto p-6">
@@ -534,7 +575,7 @@ export default function ProfilePage() {
         </div>
 
         {/* Tab 切换（编辑态） */}
-        <Tabs active={activeTab} onChange={setActiveTab} />
+        <Tabs active={activeTab} onChange={handleProfileTabChange} />
 
         {/* 表单内容 */}
         <div className="flex-1 overflow-y-auto p-6">

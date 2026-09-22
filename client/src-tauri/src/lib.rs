@@ -1,9 +1,11 @@
 mod browser_capture;
 mod db;
+mod pc_harness;
 
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -11,8 +13,9 @@ use std::thread;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub(crate) struct AppState {
-    pub(crate) db: db::LocalDb,
+    pub(crate) db: Arc<db::LocalDb>,
     ai_processes: Arc<Mutex<HashMap<String, Child>>>,
+    pc_harness: Mutex<pc_harness::PcHarnessRuntime>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -149,17 +152,34 @@ fn command_for_provider(provider: &str, prompt: &str) -> Result<Command, String>
         // so prompt text cannot become a second command.
         "claude" => {
             let mut command = Command::new("claude");
-            command.args(["-p", prompt, "--output-format", "text"]);
+            command.args([
+                "-p",
+                prompt,
+                "--output-format",
+                "stream-json",
+                // Claude Code requires --verbose for stream-json print mode.
+                // Without it the CLI exits with code 1 before emitting a
+                // response, which previously surfaced as an opaque UI error.
+                "--verbose",
+                "--include-partial-messages",
+            ]);
             command
         }
         "codex" => {
             let mut command = Command::new("codex");
-            command.args(["exec", "--color", "never", "--skip-git-repo-check", prompt]);
+            command.args([
+                "exec",
+                "--color",
+                "never",
+                "--skip-git-repo-check",
+                "--json",
+                prompt,
+            ]);
             command
         }
         "opencode" => {
             let mut command = Command::new("opencode");
-            command.args(["run", prompt]);
+            command.args(["run", "--format", "json", prompt]);
             command
         }
         _ => return Err(format!("不支持的本地 AI Provider: {provider}")),
@@ -169,6 +189,134 @@ fn command_for_provider(provider: &str, prompt: &str) -> Result<Command, String>
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     Ok(command)
+}
+
+fn push_cli_text_candidate(candidates: &mut Vec<String>, value: Option<&Value>) {
+    if let Some(text) = value.and_then(Value::as_str) {
+        if !text.is_empty() && candidates.last().map(|last| last != text).unwrap_or(true) {
+            candidates.push(text.to_string());
+        }
+    }
+}
+
+/// Extract user-visible text from each provider's machine-readable event stream.
+/// The providers use different JSONL envelopes, so this boundary keeps the
+/// frontend event contract independent from CLI-specific payloads.
+fn extract_cli_text(provider: &str, value: &Value) -> Vec<String> {
+    let mut candidates = Vec::new();
+    match provider {
+        "claude" => {
+            let event = value.get("event").unwrap_or(value);
+            if event.get("type").and_then(Value::as_str) == Some("content_block_delta") {
+                push_cli_text_candidate(&mut candidates, event.pointer("/delta/text"));
+            }
+            if value.get("type").and_then(Value::as_str) == Some("result") {
+                push_cli_text_candidate(&mut candidates, value.get("result"));
+            }
+        }
+        "codex" => {
+            if value
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|event_type| event_type.starts_with("item."))
+            {
+                let item = value.get("item").unwrap_or(value);
+                if item.get("type").and_then(Value::as_str) == Some("agent_message") {
+                    push_cli_text_candidate(&mut candidates, item.get("text"));
+                    if let Some(content) = item.get("content").and_then(Value::as_array) {
+                        for part in content {
+                            push_cli_text_candidate(&mut candidates, part.get("text"));
+                        }
+                    }
+                }
+            }
+        }
+        "opencode" => {
+            if value.get("type").and_then(Value::as_str) == Some("text") {
+                push_cli_text_candidate(&mut candidates, value.pointer("/part/text"));
+                push_cli_text_candidate(&mut candidates, value.get("text"));
+            }
+        }
+        _ => {}
+    }
+    candidates
+}
+
+/// Turn cumulative provider updates into deltas for `local-ai://chunk`.
+/// Claude and Codex can emit both partial text and a final cumulative result;
+/// prefix/suffix checks prevent the final result from being shown twice while
+/// still allowing providers that emit independent chunks.
+fn append_cli_delta(candidate: &str, emitted_text: &mut String) -> Option<String> {
+    let candidate = candidate.trim_end_matches(['\r', '\n']);
+    if candidate.is_empty() {
+        return None;
+    }
+    if emitted_text.is_empty() {
+        emitted_text.push_str(candidate);
+        return Some(candidate.to_string());
+    }
+    if candidate.starts_with(emitted_text.as_str()) {
+        let delta = candidate[emitted_text.len()..].to_string();
+        if delta.is_empty() {
+            return None;
+        }
+        emitted_text.push_str(&delta);
+        return Some(delta);
+    }
+    if emitted_text.ends_with(candidate) {
+        return None;
+    }
+    emitted_text.push_str(candidate);
+    Some(candidate.to_string())
+}
+
+fn process_cli_output(
+    provider: &str,
+    bytes: &[u8],
+    app: &AppHandle,
+    run_id: &str,
+    emitted_text: &mut String,
+    emitted: &mut bool,
+) {
+    let line = String::from_utf8_lossy(bytes);
+    let line = line.trim_end_matches(['\r', '\n']);
+    if line.is_empty() {
+        return;
+    }
+    let candidates = serde_json::from_str::<Value>(line)
+        .map(|value| extract_cli_text(provider, &value))
+        .unwrap_or_else(|_| vec![line.to_string()]);
+    for candidate in candidates {
+        if let Some(delta) = append_cli_delta(&candidate, emitted_text) {
+            *emitted = true;
+            let _ = app.emit(
+                "local-ai://chunk",
+                LocalAIEvent {
+                    run_id: run_id.to_string(),
+                    text: Some(delta),
+                    error: None,
+                },
+            );
+        }
+    }
+}
+
+fn summarize_cli_stderr(stderr: &str) -> String {
+    let cleaned = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cleaned.is_empty() {
+        return String::new();
+    }
+    let mut summary = cleaned;
+    if summary.len() > 480 {
+        summary.truncate(480);
+        summary.push('…');
+    }
+    summary
 }
 
 #[tauri::command]
@@ -219,32 +367,66 @@ fn start_local_ai(
         processes.insert(run_id.clone(), child);
     }
     let processes = app.state::<AppState>().ai_processes.clone();
-    if let Some(stderr) = stderr {
+    let stderr_reader = stderr.map(|stderr| {
         thread::spawn(move || {
             let mut reader = BufReader::new(stderr);
             let mut sink = String::new();
             let _ = reader.read_to_string(&mut sink);
-        });
-    }
+            sink
+        })
+    });
+    let provider = request.provider;
     thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        let mut line = String::new();
+        let mut reader = stdout;
+        let mut buffer = [0_u8; 8192];
+        let mut pending = Vec::new();
+        let mut emitted_text = String::new();
         let mut emitted = false;
         loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    let text = line.trim_end_matches(['\r', '\n']).to_string();
-                    if !text.is_empty() {
-                        emitted = true;
-                        let _ = app.emit(
-                            "local-ai://chunk",
-                            LocalAIEvent {
-                                run_id: run_id.clone(),
-                                text: Some(text),
-                                error: None,
-                            },
+            match reader.read(&mut buffer) {
+                Ok(0) => {
+                    if !pending.is_empty() {
+                        process_cli_output(
+                            &provider,
+                            &pending,
+                            &app,
+                            &run_id,
+                            &mut emitted_text,
+                            &mut emitted,
+                        );
+                    }
+                    break;
+                }
+                Ok(size) => {
+                    pending.extend_from_slice(&buffer[..size]);
+                    while let Some(index) = pending.iter().position(|byte| *byte == b'\n') {
+                        let line: Vec<u8> = pending.drain(..=index).collect();
+                        process_cli_output(
+                            &provider,
+                            &line,
+                            &app,
+                            &run_id,
+                            &mut emitted_text,
+                            &mut emitted,
+                        );
+                    }
+                    // Machine-readable provider events are JSONL and end in a
+                    // newline. This fallback keeps a plain-text CLI responsive
+                    // if it writes a long line without a newline.
+                    let starts_like_json = pending
+                        .iter()
+                        .copied()
+                        .find(|byte| !byte.is_ascii_whitespace())
+                        .is_some_and(|byte| byte == b'{' || byte == b'[');
+                    if pending.len() >= 8192 && !starts_like_json {
+                        let chunk: Vec<u8> = pending.drain(..).collect();
+                        process_cli_output(
+                            &provider,
+                            &chunk,
+                            &app,
+                            &run_id,
+                            &mut emitted_text,
+                            &mut emitted,
                         );
                     }
                 }
@@ -266,6 +448,13 @@ fn start_local_ai(
             .ok()
             .and_then(|mut entries| entries.remove(&run_id))
             .and_then(|mut child| child.wait().ok());
+        // Wait for stderr after the process exits so failures include the
+        // provider's actionable diagnostic (auth, invalid flags, quota, etc.)
+        // instead of only the generic exit code.
+        let stderr_summary = stderr_reader
+            .and_then(|reader| reader.join().ok())
+            .map(|stderr| summarize_cli_stderr(&stderr))
+            .unwrap_or_default();
         match status {
             Some(status) if status.success() && emitted => {
                 let _ = app.emit(
@@ -288,15 +477,21 @@ fn start_local_ai(
                 );
             }
             Some(status) => {
+                let message = format!(
+                    "本地 AI CLI 退出码 {}{}",
+                    status.code().unwrap_or(-1),
+                    if stderr_summary.is_empty() {
+                        String::new()
+                    } else {
+                        format!("：{stderr_summary}")
+                    }
+                );
                 let _ = app.emit(
                     "local-ai://error",
                     LocalAIEvent {
                         run_id,
                         text: None,
-                        error: Some(format!(
-                            "本地 AI CLI 退出码 {}",
-                            status.code().unwrap_or(-1)
-                        )),
+                        error: Some(message),
                     },
                 );
             }
@@ -320,6 +515,49 @@ fn cancel_local_ai(state: State<'_, AppState>, run_id: String) -> Result<(), Str
         let _ = child.wait();
     }
     Ok(())
+}
+
+/// 读取 PC Harness 运行状态、配对令牌与可用局域网地址。
+#[tauri::command]
+fn pc_harness_status(state: State<'_, AppState>) -> Result<pc_harness::PcHarnessStatus, String> {
+    let runtime = state
+        .pc_harness
+        .lock()
+        .map_err(|_| "PC Harness 状态锁不可用")?;
+    Ok(runtime.status(&state.db))
+}
+
+/// 显式开启手机 Companion 局域网服务。默认不监听。
+#[tauri::command]
+fn start_pc_harness(state: State<'_, AppState>) -> Result<pc_harness::PcHarnessStatus, String> {
+    let mut runtime = state
+        .pc_harness
+        .lock()
+        .map_err(|_| "PC Harness 状态锁不可用")?;
+    runtime.start(state.db.clone())
+}
+
+/// 停止手机 Companion 局域网服务并释放端口。
+#[tauri::command]
+fn stop_pc_harness(state: State<'_, AppState>) -> Result<pc_harness::PcHarnessStatus, String> {
+    let mut runtime = state
+        .pc_harness
+        .lock()
+        .map_err(|_| "PC Harness 状态锁不可用")?;
+    runtime.stop(&state.db)
+}
+
+/// 轮换配对令牌（旧令牌立即失效）。
+#[tauri::command]
+fn rotate_pc_harness_token(
+    state: State<'_, AppState>,
+) -> Result<pc_harness::PcHarnessStatus, String> {
+    let mut runtime = state
+        .pc_harness
+        .lock()
+        .map_err(|_| "PC Harness 状态锁不可用")?;
+    runtime.rotate_token();
+    Ok(runtime.status(&state.db))
 }
 
 #[derive(Debug, Serialize)]
@@ -836,8 +1074,9 @@ pub fn run() {
             let db = db::LocalDb::open(db_path)
                 .map_err(|error| setup_error(format!("初始化本地数据库失败: {error}")))?;
             app.manage(AppState {
-                db,
+                db: Arc::new(db),
                 ai_processes: Arc::new(Mutex::new(HashMap::new())),
+                pc_harness: Mutex::new(pc_harness::PcHarnessRuntime::new()),
             });
             // 浏览器剪藏回传链路（N12 最小原型）：owner-only Unix socket，
             // 失败只记日志，不影响应用启动。
@@ -893,7 +1132,11 @@ pub fn run() {
             read_local_ai_artifacts,
             probe_local_ai_providers,
             start_local_ai,
-            cancel_local_ai
+            cancel_local_ai,
+            pc_harness_status,
+            start_pc_harness,
+            stop_pc_harness,
+            rotate_pc_harness_token
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -907,7 +1150,17 @@ mod tests {
     #[test]
     fn local_cli_commands_are_non_interactive_and_keep_prompt_as_one_argument() {
         for (provider, expected) in [
-            ("claude", vec!["-p", "prompt", "--output-format", "text"]),
+            (
+                "claude",
+                vec![
+                    "-p",
+                    "prompt",
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
+                    "--include-partial-messages",
+                ],
+            ),
             (
                 "codex",
                 vec![
@@ -915,10 +1168,11 @@ mod tests {
                     "--color",
                     "never",
                     "--skip-git-repo-check",
+                    "--json",
                     "prompt",
                 ],
             ),
-            ("opencode", vec!["run", "prompt"]),
+            ("opencode", vec!["run", "--format", "json", "prompt"]),
         ] {
             let command =
                 command_for_provider(provider, "prompt").expect("provider should be allowed");

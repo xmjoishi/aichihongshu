@@ -2,11 +2,11 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Save, KeyRound, RefreshCw, Monitor, ChevronRight, User,
-  Trash2, RotateCcw, X, Plus, Pencil, Check, GripVertical,
+  Trash2, RotateCcw, X, Plus, Pencil, Check, GripVertical, Bot, PanelRight,
 } from "lucide-react";
 import { api, API_BASE } from "../lib/api";
 import { useToast } from "../components/Toast";
-import { Spinner } from "../components/ui";
+import { Spinner, pageTabActiveClass, pageTabClass, pageTabInactiveClass } from "../components/ui";
 import LocalImage from "../components/LocalImage";
 import { useHDRSetting } from "../hooks/useHDRSetting";
 import { useThemeSetting, type ThemePreference } from "../hooks/useThemeSetting";
@@ -25,9 +25,15 @@ import {
   restoreLocalItem,
   type LocalRuntimeStatus,
   type LocalWorkspaceSnapshot,
+  readPcHarnessStatus,
+  startPcHarness,
+  stopPcHarness,
+  rotatePcHarnessToken,
+  type LocalPcHarnessStatus,
 } from "../lib/local";
-import { probeLocalAIProviders, type LocalAIProviderStatus } from "../lib/localAi";
+import { invalidateLocalAIProviderProbeCache, probeLocalAIProviders, type LocalAIProviderStatus } from "../lib/localAi";
 import { useAccountContext } from "../lib/accountContext";
+import { defaultAISettings, readAISettings, saveAISettings, type AIConnectionKind, type AIHostMode, type AISettings } from "../lib/aiHost";
 
 // ── 通用 Section 容器 ──────────────────────────────────────────────
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -57,6 +63,7 @@ const inputCls = "w-full rounded-lg border border-[var(--color-border)] bg-[var(
 // ── 页签定义 ──────────────────────────────────────────────────────
 const TABS = [
   { key: "general", label: "通用" },
+  { key: "ai", label: "AI 与 Agent" },
   { key: "prompts", label: "提示词" },
   { key: "trash",   label: "回收站" },
 ] as const;
@@ -69,17 +76,14 @@ export default function Settings() {
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* 页签栏 */}
-      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--color-border)] bg-[var(--color-surface)] px-6 py-3">
+      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--color-border)] bg-[var(--color-surface)] px-6 pt-1">
         <h1 className="mr-4 text-lg font-semibold text-[var(--color-text-primary)]">设置</h1>
         {TABS.map((t) => (
           <button
             key={t.key}
+            type="button"
             onClick={() => setActiveTab(t.key)}
-            className={`text-sm px-3 py-1 rounded-lg transition-colors ${
-              activeTab === t.key
-                ? "bg-[var(--color-brand)] text-white"
-                : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
-            }`}
+            className={`${pageTabClass} ${activeTab === t.key ? pageTabActiveClass : pageTabInactiveClass}`}
           >
             {t.label}
           </button>
@@ -89,6 +93,7 @@ export default function Settings() {
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-2xl space-y-6">
           {activeTab === "general" && <GeneralTab />}
+          {activeTab === "ai" && <AIAndAgentTab />}
           {activeTab === "prompts" && <PromptsTab />}
           {activeTab === "trash"   && (IS_TAURI_RUNTIME ? <LocalTrashSection /> : <TrashSection />)}
         </div>
@@ -158,6 +163,146 @@ function LocalTrashSection() {
 // ══════════════════════════════════════════════════════════════════
 // 通用页
 // ══════════════════════════════════════════════════════════════════
+function PcHarnessSection() {
+  const { toast } = useToast();
+  const [status, setStatus] = useState<LocalPcHarnessStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  async function refresh() {
+    try {
+      setStatus(await readPcHarnessStatus());
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), "error");
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function run(action: () => Promise<LocalPcHarnessStatus>, success: string) {
+    setBusy(true);
+    try {
+      const next = await action();
+      setStatus(next);
+      toast(success, "success");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copy(value: string, key: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(key);
+      window.setTimeout(() => setCopied(null), 1500);
+    } catch {
+      toast("复制失败，请手动选择文本", "error");
+    }
+  }
+
+  const baseUrl = status?.lanAddresses[0]
+    ? `http://${status.lanAddresses[0]}:${status.port}`
+    : status
+      ? `http://127.0.0.1:${status.port}`
+      : "";
+
+  return (
+    <Section title="手机 Companion（PC Harness）">
+      <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
+        仅在你显式开启后监听本机局域网端口，使用配对令牌鉴权。手机负责拍照、输入与发布回填；账号、素材与稿件仍以 PC 为准。默认不自动启动。
+      </p>
+      <div className="rounded-xl border border-[var(--color-border)] p-3 text-sm space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[var(--color-text-secondary)]">状态</span>
+          <span className="font-medium text-[var(--color-text-primary)]">
+            {status?.running ? "运行中（已监听）" : "未开启"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[var(--color-text-secondary)]">协议</span>
+          <span>v{status?.protocolVersion ?? "1"}</span>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[var(--color-text-secondary)]">手机连接地址</span>
+          <div className="flex items-center gap-2 min-w-0">
+            <code className="truncate rounded bg-[var(--color-surface)] px-2 py-1 text-xs">{baseUrl || "—"}</code>
+            {baseUrl ? (
+              <button
+                type="button"
+                className="shrink-0 rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs"
+                onClick={() => void copy(baseUrl, "url")}
+              >
+                {copied === "url" ? "已复制" : "复制"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[var(--color-text-secondary)]">配对令牌</span>
+          <div className="flex items-center gap-2 min-w-0">
+            <code className="truncate rounded bg-[var(--color-surface)] px-2 py-1 text-xs">
+              {status?.pairingToken || "—"}
+            </code>
+            {status?.pairingToken ? (
+              <button
+                type="button"
+                className="shrink-0 rounded-lg border border-[var(--color-border)] px-2 py-1 text-xs"
+                onClick={() => void copy(status.pairingToken || "", "token")}
+              >
+                {copied === "token" ? "已复制" : "复制"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+        {status?.lanAddresses.length ? (
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            可用局域网地址：{status.lanAddresses.join("、")}（手机需与本机同一 Wi-Fi）
+          </p>
+        ) : (
+          <p className="text-xs text-amber-700">未检测到局域网 IP，手机可能只能使用 127.0.0.1 自检。</p>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {status?.running ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(stopPcHarness, "已停止手机 Companion 监听")}
+            className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
+          >
+            停止监听
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(startPcHarness, "已开启手机 Companion，请把地址与令牌录入手机")}
+            className="rounded-lg bg-[var(--color-brand)] px-3 py-2 text-sm text-white"
+          >
+            开启手机连接
+          </button>
+        )}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void run(rotatePcHarnessToken, "已轮换配对令牌，请更新手机端")}
+          className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
+        >
+          轮换令牌
+        </button>
+        <button type="button" disabled={busy} onClick={() => void refresh()} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm">
+          刷新状态
+        </button>
+      </div>
+    </Section>
+  );
+}
+
 function GeneralTab() {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -217,7 +362,10 @@ function GeneralTab() {
             </p>
             <button
               type="button"
-              onClick={() => void refetchLocalProviders()}
+              onClick={() => {
+                invalidateLocalAIProviderProbeCache();
+                void refetchLocalProviders();
+              }}
               disabled={localProvidersFetching}
               aria-label="重新检测本地 AI CLI"
               className="shrink-0 rounded-lg border border-[var(--color-border)] p-2 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] disabled:opacity-50"
@@ -313,6 +461,7 @@ function GeneralTab() {
         </div>
       </Section>
 
+      <PcHarnessSection />
       {/* ── 显示设置 */}
       <Section title="显示设置">
         <Field label="HDR 图片显示" hint="开启后图片以 HDR 原色渲染；在不支持 HDR 的显示器上建议关闭，避免颜色过曝">
@@ -358,6 +507,123 @@ function GeneralTab() {
         </button>
       </Section>
     </>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 统一 AI 与 Agent 接入
+// ══════════════════════════════════════════════════════════════════
+function AIAndAgentTab() {
+  const { toast } = useToast();
+  const { scopeKey } = useAccountContext();
+  const { data: providers = [], isFetching, refetch } = useQuery<LocalAIProviderStatus[]>({
+    queryKey: ["ai-settings-cli-providers"],
+    queryFn: probeLocalAIProviders,
+    enabled: IS_TAURI_RUNTIME,
+    staleTime: 30_000,
+  });
+  const [settings, setSettings] = useState<AISettings>(() => readAISettings(scopeKey));
+
+  function updateModelApi<K extends keyof AISettings["modelApi"]>(key: K, value: AISettings["modelApi"][K]) {
+    setSettings((current) => ({ ...current, modelApi: { ...current.modelApi, [key]: value } }));
+  }
+
+  function updateAgent<K extends keyof AISettings["agentCli"]>(key: K, value: AISettings["agentCli"][K]) {
+    setSettings((current) => ({ ...current, agentCli: { ...current.agentCli, [key]: value } }));
+  }
+
+  function save() {
+    saveAISettings(scopeKey, settings);
+    toast("AI 与 Agent 配置已保存", "success");
+  }
+
+  function reset() {
+    setSettings(defaultAISettings());
+    saveAISettings(scopeKey, defaultAISettings());
+    toast("已恢复默认 AI 配置", "success");
+  }
+
+  return (
+    <div className="space-y-4">
+      <Section title="默认 AI 接入">
+        <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
+          Model API 与 Agent CLI 是两种接入方式，共用同一套 Copilot 会话。浮窗、侧栏和独立页切换时会保留会话、任务和当前账号上下文。
+        </p>
+        <Field label="默认接入" hint="仅影响新建会话；进行中的任务不会被切换">
+          <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="默认 AI 接入">
+            {([["model-api", "Model API", "兼容 OpenAI/Anthropic 的模型接口"], ["agent-cli", "Agent CLI", "使用本机已安装的 Claude、Codex 或 OpenCode"]] as [AIConnectionKind, string, string][]).map(([value, label, hint]) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={settings.defaultConnection === value}
+                onClick={() => setSettings((current) => ({ ...current, defaultConnection: value }))}
+                className={`rounded-xl border p-3 text-left transition ${settings.defaultConnection === value ? "border-[var(--color-brand)] bg-[var(--color-selected)]" : "border-[var(--color-border)] hover:bg-[var(--color-surface-2)]"}`}
+              >
+                <span className="flex items-center gap-2 text-sm font-medium text-[var(--color-text-primary)]">
+                  {value === "model-api" ? <KeyRound size={14} /> : <Bot size={14} />}{label}
+                </span>
+                <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">{hint}</span>
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="默认显示方式" hint="三种形态使用同一份会话状态">
+          <div className="flex flex-wrap gap-2">
+            {([ ["sidebar", "侧栏"], ["floating", "浮窗"], ["page", "独立页"] ] as [AIHostMode, string][]).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setSettings((current) => ({ ...current, defaultHostMode: value }))}
+                className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs ${settings.defaultHostMode === value ? "border-[var(--color-brand)] bg-[var(--color-selected)] text-[var(--color-brand)]" : "border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"}`}
+              >
+                <PanelRight size={12} />{label}
+              </button>
+            ))}
+          </div>
+        </Field>
+      </Section>
+
+      <Section title="Model API">
+        <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">用于接入兼容协议的模型服务。当前前端会保存配置到当前 WebView 的 AI 设置空间，不会写入笔记、素材或运行日志。</p>
+        <Field label="启用 Model API">
+          <button type="button" role="switch" aria-checked={settings.modelApi.enabled} onClick={() => updateModelApi("enabled", !settings.modelApi.enabled)} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${settings.modelApi.enabled ? "bg-[var(--color-brand)]" : "bg-zinc-200"}`}>
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${settings.modelApi.enabled ? "translate-x-6" : "translate-x-1"}`} />
+          </button>
+        </Field>
+        <Field label="Base URL" hint="例如 https://api.example.com/v1">
+          <input value={settings.modelApi.baseUrl} onChange={(event) => updateModelApi("baseUrl", event.target.value)} placeholder="https://…" className={inputCls} />
+        </Field>
+        <Field label="文本模型"><input value={settings.modelApi.model} onChange={(event) => updateModelApi("model", event.target.value)} placeholder="模型名称" className={inputCls} /></Field>
+        <Field label="视觉模型" hint="图片输入能力；未配置时不会假装支持图片"><input value={settings.modelApi.visionModel} onChange={(event) => updateModelApi("visionModel", event.target.value)} placeholder="可选" className={inputCls} /></Field>
+        <Field label="API Key" hint="仅本地设置空间；调用错误与日志不会回显密钥">
+          <input type="password" value={settings.modelApi.apiKey} onChange={(event) => updateModelApi("apiKey", event.target.value)} placeholder="留空则使用既有服务端配置" className={inputCls} autoComplete="off" />
+        </Field>
+      </Section>
+
+      <Section title="Agent CLI">
+        <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">沿用现有能力检测。安装状态不代表已登录或已具备图片、工具、取消能力；只有真实调用验证后才开放对应能力。</p>
+        <Field label="启用 Agent CLI"><button type="button" role="switch" aria-checked={settings.agentCli.enabled} onClick={() => updateAgent("enabled", !settings.agentCli.enabled)} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${settings.agentCli.enabled ? "bg-[var(--color-brand)]" : "bg-zinc-200"}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${settings.agentCli.enabled ? "translate-x-6" : "translate-x-1"}`} /></button></Field>
+        <Field label="默认 CLI" hint="留空时使用第一个已发现的可用 CLI">
+          <select value={settings.agentCli.provider} onChange={(event) => updateAgent("provider", event.target.value as AISettings["agentCli"]["provider"])} className={inputCls}>
+            <option value="">自动选择</option>
+            {providers.map((provider) => <option key={provider.id} value={provider.id} disabled={provider.state !== "present"}>{provider.label}{provider.state === "present" ? "" : "（不可用）"}</option>)}
+          </select>
+        </Field>
+        <Field label="工作目录" hint="仅作为后续 Agent 工具范围预留；当前聊天不会执行命令"><input value={settings.agentCli.workingDirectory} onChange={(event) => updateAgent("workingDirectory", event.target.value)} placeholder="可选，本地绝对路径" className={inputCls} /></Field>
+        <div className="flex items-center justify-between rounded-xl border border-[var(--color-border)] p-3">
+          <div className="flex flex-wrap gap-2">
+            {providers.length === 0 ? <span className="text-xs text-[var(--color-text-secondary)]">尚未检测</span> : providers.map((provider) => <span key={provider.id} className={`rounded-full px-2 py-1 text-[11px] ${provider.state === "present" ? "bg-emerald-50 text-emerald-700" : provider.state === "missing" ? "bg-zinc-100 text-zinc-500" : "bg-amber-50 text-amber-700"}`}>{provider.label} · {provider.state === "present" ? "已发现" : provider.state === "missing" ? "未安装" : "检测失败"}</span>)}
+          </div>
+          <button type="button" onClick={() => { invalidateLocalAIProviderProbeCache(); void refetch(); }} disabled={!IS_TAURI_RUNTIME || isFetching} className="shrink-0 rounded-lg border border-[var(--color-border)] p-2 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] disabled:opacity-50" title="重新检测"><RefreshCw size={14} className={isFetching ? "animate-spin" : ""} /></button>
+        </div>
+      </Section>
+
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={reset} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]">恢复默认</button>
+        <button type="button" onClick={save} className="flex items-center gap-1.5 rounded-lg bg-[var(--color-brand)] px-4 py-2 text-xs font-medium text-white hover:opacity-90"><Save size={13} />保存 AI 配置</button>
+      </div>
+    </div>
   );
 }
 

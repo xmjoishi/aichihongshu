@@ -749,6 +749,32 @@ export function readLocalAIRunArtifacts(
   });
 }
 
+export interface LocalPcHarnessStatus {
+  running: boolean;
+  bindAddress?: string | null;
+  lanAddresses: string[];
+  port: number;
+  pairingToken?: string | null;
+  protocolVersion: string;
+  activeAccountId?: number | null;
+}
+
+export function readPcHarnessStatus(): Promise<LocalPcHarnessStatus> {
+  return invoke("pc_harness_status");
+}
+
+export function startPcHarness(): Promise<LocalPcHarnessStatus> {
+  return invoke("start_pc_harness");
+}
+
+export function stopPcHarness(): Promise<LocalPcHarnessStatus> {
+  return invoke("stop_pc_harness");
+}
+
+export function rotatePcHarnessToken(): Promise<LocalPcHarnessStatus> {
+  return invoke("rotate_pc_harness_token");
+}
+
 export function localItemToItem(item: LocalItemSummary): Item {
   return {
     id: item.id,

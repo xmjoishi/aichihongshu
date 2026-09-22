@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { createContext, createElement, useContext, useEffect, useMemo, useRef, type PropsWithChildren } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import {
@@ -30,6 +30,8 @@ export interface AccountContext {
 
 export const ACCOUNT_CHANGED_EVENT = "aichihongshu:account-changed";
 
+const AccountContextValue = createContext<AccountContext | null>(null);
+
 export function emitAccountChanged(accountId: number): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent(ACCOUNT_CHANGED_EVENT, { detail: { accountId } }));
@@ -54,7 +56,7 @@ export function useAccountChange(onChange: (accountId: number) => void): void {
   }, []);
 }
 
-export function useAccountContext(): AccountContext {
+function useAccountContextQueries(): AccountContext {
   const { data: runtimeStatus } = useQuery({
     queryKey: ["local-runtime-status"],
     queryFn: readLocalRuntimeStatus,
@@ -85,11 +87,28 @@ export function useAccountContext(): AccountContext {
     : `http:${typeof window !== "undefined" ? window.location.origin : "browser"}`;
   const scopeKey = `${databaseIdentity}:account:${accountId ?? "unresolved"}`;
 
-  return {
+  return useMemo(() => ({
     accountId,
     accountAlias: active?.alias ?? null,
     databaseIdentity,
     scopeKey,
     ready: accountId !== null,
-  };
+  }), [accountId, active?.alias, databaseIdentity, scopeKey]);
+}
+
+/**
+ * Resolve the active account once at the app shell. Descendants consume this
+ * stable value instead of each subscribing to the account-pool queries.
+ */
+export function AccountContextProvider({ children }: PropsWithChildren) {
+  const value = useAccountContextQueries();
+  return createElement(AccountContextValue.Provider, { value }, children);
+}
+
+export function useAccountContext(): AccountContext {
+  const value = useContext(AccountContextValue);
+  if (!value) {
+    throw new Error("useAccountContext must be used within AccountContextProvider");
+  }
+  return value;
 }

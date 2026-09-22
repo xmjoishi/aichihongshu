@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Heart, MessageCircle, Bookmark, TrendingUp,
   ExternalLink, RefreshCw, ChevronUp, ChevronDown,
@@ -14,6 +14,8 @@ import LocalImage from "../components/LocalImage";
 import { useToast } from "../components/Toast";
 import { useAIStream } from "../hooks/useAIStream";
 import { usePanelResize } from "../hooks/usePanelResize";
+import { makeAISessionKey } from "../lib/aiHost";
+import { getPageAIContext, pageAIContextPrompt } from "../lib/pageAIContext";
 import KnowledgeTab from "./KnowledgeTab";
 import { buildSummaryVM, buildInsightsVM, buildRankingVM } from "../selectors/analytics";
 import {
@@ -25,6 +27,7 @@ import {
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
 import { useAccountChange, useAccountContext } from "../lib/accountContext";
+import { pageTabActiveClass, pageTabClass, pageTabInactiveClass } from "../components/ui";
 
 // ─── 工具函数 ───────────────────────────────────────────────
 
@@ -155,7 +158,7 @@ function RankingTab({ allNotes, accountId, scopeKey }: { allNotes: Note[]; accou
           ...prev,
           [editing.id]: { ...(prev[editing.id] ?? {}), [editing.field]: updated[editing.field] },
         }));
-        await qc.invalidateQueries({ queryKey: ["local-data", scopeKey] });
+        await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       } else {
         await api.patch(`/api/content/${editing.id}/stats`, { [editing.field]: val });
         // 本地立即更新，避免重新 fetch 全量
@@ -530,8 +533,16 @@ function DataAIDrawer({
   summary: Analytics | null; insights: Insights | null;
   accountId: number | null;
 }) {
-  const systemExtra = buildSystemExtra(summary, insights);
-  const { messages, streaming, loading, send, abort } = useAIStream({ systemExtra, accountId });
+  const pageContext = getPageAIContext("/data");
+  const systemExtra = [
+    buildSystemExtra(summary, insights),
+    pageAIContextPrompt({ ...pageContext, accountId }),
+  ].filter(Boolean).join("\n\n");
+  const sessionKey = makeAISessionKey(
+    { accountId },
+    `${pageContext.route}:${pageContext.objectId ?? "workspace"}`,
+  );
+  const { messages, streaming, loading, send, abort } = useAIStream({ systemExtra, accountId, sessionKey });
   const { width, dragging, onDragStart } = usePanelResize({
     defaultWidth: 384,
     min: 300,
@@ -584,7 +595,7 @@ function DataAIDrawer({
           <div className="flex items-center gap-2">
             <Sparkles size={15} className="text-[#ff2442]" />
             <span className="text-sm font-semibold text-zinc-800">问数据</span>
-            <span className="text-xs text-zinc-400">基于你的真实账号数据</span>
+            <span className="text-xs text-zinc-400">当前账号 · 数据与复盘</span>
           </div>
           <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600 transition-colors">
             <X size={16} />
@@ -672,7 +683,7 @@ function DataAIDrawer({
               rows={2}
               disabled={loading}
               className="flex-1 resize-none text-xs border border-zinc-200 rounded-xl px-3 py-2
-                         outline-none focus:border-[#ff2442] transition-colors placeholder:text-zinc-300
+                         outline-none focus:border-[#ff2442]/50 focus:outline-none focus-visible:outline-none transition-colors placeholder:text-zinc-300
                          disabled:opacity-50"
             />
             {loading ? (
@@ -699,6 +710,11 @@ function DataAIDrawer({
 
 type Tab = "overview" | "ranking" | "insights" | "knowledge";
 
+function dataTabFromQuery(value: string | null): Tab {
+  if (value === "ranking" || value === "insights" || value === "knowledge") return value;
+  return "overview";
+}
+
 const tabs: { key: Tab; label: string }[] = [
   { key: "overview", label: "总览" },
   { key: "ranking", label: "笔记排行" },
@@ -707,12 +723,31 @@ const tabs: { key: Tab; label: string }[] = [
 ];
 
 export default function Data() {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = dataTabFromQuery(searchParams.get("view"));
+  const [tab, setTab] = useState<Tab>(requestedTab);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const { accountId, scopeKey } = useAccountContext();
+
+  useEffect(() => {
+    setTab(requestedTab);
+  }, [requestedTab]);
+
+  function selectTab(nextTab: Tab): void {
+    setTab(nextTab);
+    const next = new URLSearchParams(searchParams);
+    next.delete("tab");
+    next.set("view", nextTab);
+    setSearchParams(next, { replace: true });
+  }
+
   useAccountChange(() => {
     setTab("overview");
     setDrawerOpen(false);
+    const next = new URLSearchParams(searchParams);
+    next.delete("tab");
+    next.set("view", "overview");
+    setSearchParams(next, { replace: true });
   });
 
   // ── 基础实体 ──────────────────────────────────────────────────
@@ -727,7 +762,7 @@ export default function Data() {
     enabled: !IS_TAURI_RUNTIME,
   });
   const { data: localWorkspace } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-data", scopeKey, tab],
+    queryKey: ["local-workspace", scopeKey],
     queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
     enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
@@ -754,8 +789,8 @@ export default function Data() {
       <div className="px-6 pt-6 pb-0 shrink-0">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h1 className="text-lg font-bold text-zinc-800">数据</h1>
-            <p className="text-xs text-zinc-400 mt-0.5">追踪笔记表现，发现内容规律</p>
+            <h1 className="text-lg font-bold text-zinc-800">数据与复盘</h1>
+            <p className="text-xs text-zinc-400 mt-0.5">追踪笔记表现，发现内容规律与经验</p>
           </div>
         </div>
         {/* Tab 栏 */}
@@ -763,11 +798,9 @@ export default function Data() {
           {tabs.map(({ key, label }) => (
             <button
               key={key}
-              onClick={() => setTab(key)}
-              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px
-                ${tab === key
-                  ? "border-[#ff2442] text-[#ff2442]"
-                  : "border-transparent text-zinc-400 hover:text-zinc-600"}`}
+              type="button"
+              onClick={() => selectTab(key)}
+              className={`${pageTabClass} ${tab === key ? pageTabActiveClass : pageTabInactiveClass}`}
             >
               {label}
             </button>
@@ -802,7 +835,7 @@ export default function Data() {
         <button
           onClick={() => setDrawerOpen(true)}
           title="基于你的真实账号数据进行 AI 对话"
-          className="absolute bottom-6 right-6 flex items-center gap-2 px-4 py-2.5 rounded-full
+          className="absolute bottom-6 right-24 flex items-center gap-2 px-4 py-2.5 rounded-full
                      bg-[#ff2442] text-white shadow-lg hover:bg-[#e01f3a] active:scale-95
                      transition-all text-sm font-medium"
         >

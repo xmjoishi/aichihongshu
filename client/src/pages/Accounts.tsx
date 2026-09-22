@@ -918,7 +918,7 @@ function AccountDrawer({
 }
 
 // ── Accounts Page ─────────────────────────────────────────────────────────────
-export default function Accounts() {
+export default function Accounts({ embedded = false }: { embedded?: boolean } = {}) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { accountId, scopeKey } = useAccountContext();
@@ -975,12 +975,12 @@ export default function Accounts() {
   if (isLoading) return <Spinner />;
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className={`flex h-full overflow-hidden ${embedded ? "bg-[var(--color-surface)]" : ""}`}>
       {/* 左侧列表区 */}
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <div className="flex items-center px-6 py-4 border-b border-zinc-100 bg-white shrink-0">
-          <h1 className="text-lg font-semibold text-zinc-900">榜样账号</h1>
-          <span className="ml-2 text-sm text-zinc-400">{accounts.length} 个</span>
+          {!embedded && <h1 className="text-lg font-semibold text-zinc-900">榜样账号与参考</h1>}
+          <span className={`${embedded ? "" : "ml-2"} text-sm text-zinc-400`}>{accounts.length} 个参考账号</span>
           <button
             onClick={() => setShowModal(true)}
             className="ml-auto flex items-center gap-1.5 text-sm bg-[#ff2442] text-white px-3 py-1.5 rounded-lg hover:bg-[#e01f3a]"
