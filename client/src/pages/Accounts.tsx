@@ -1,5 +1,6 @@
+import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
 import { useState, useRef, useEffect } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, openInBrowser, riskAckHeader, RiskConfirmationRequiredError } from "../lib/api";
 import { ReferenceAccount } from "../lib/types";
 import { Spinner, Empty } from "../components/ui";
@@ -22,7 +23,9 @@ import {
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
 import { useAccountChange, useAccountContext } from "../lib/accountContext";
+import { useSavedScrollPosition } from "../hooks/useSavedScrollPosition";
 import { useSearchParams } from "react-router-dom";
+import { DataCaptureButton } from "../components/DataCapture";
 
 // ── 解析 content_style JSON → keywords 数组 ─────────────────────────────────
 function stripFence(raw: string): string {
@@ -620,6 +623,10 @@ function AccountDrawer({
               <p className="text-xs text-zinc-400">{acc.account_id}</p>
             </div>
             <div className="flex items-center gap-1">
+              <DataCaptureButton
+                url={`https://www.xiaohongshu.com/user/profile/${acc.account_id}`}
+                title="数据抓取：打开榜样主页"
+              />
               <button
                 onClick={() => { setEditName(acc.name ?? ""); setEditFollowers(String(acc.followers ?? 0)); setEditingInfo(true); }}
                 title="编辑账号信息"
@@ -635,7 +642,7 @@ function AccountDrawer({
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div data-page-scroll="accounts-overview" className="flex-1 overflow-y-auto">
         {/* 数据看板 */}
         <div className="grid grid-cols-3 gap-px bg-zinc-100 border-b border-zinc-100">
           {[
@@ -861,6 +868,7 @@ function AccountDrawer({
                     )}
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="text-[#ff2442]">❤ {n.likes.toLocaleString()}</span>
+                      <DataCaptureButton url={n.url} size="xs" title="数据抓取：打开本条笔记" />
                       <button
                         onClick={() => addToRefLib(n, i)}
                         disabled={addedToLib.has(i)}
@@ -925,6 +933,7 @@ export default function Accounts({ embedded = false }: { embedded?: boolean } = 
   const [searchParams] = useSearchParams();
   const [showModal, setShowModal] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const referencesScrollRef = useRef<HTMLDivElement>(null);
 
   useAccountChange(() => {
     setShowModal(false);
@@ -937,14 +946,20 @@ export default function Accounts({ embedded = false }: { embedded?: boolean } = 
     enabled: !IS_TAURI_RUNTIME,
   });
   const { data: localWorkspace, isLoading: localLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-accounts", scopeKey],
-    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    queryKey: ["local-workspace", scopeKey, "references"],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined, "references"),
     enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
   const accounts = IS_TAURI_RUNTIME
     ? (localWorkspace?.referenceAccounts ?? []).map(localReferenceAccountToReferenceAccount)
     : remoteAccounts;
   const isLoading = IS_TAURI_RUNTIME ? localLoading : remoteLoading;
+
+  useSavedScrollPosition(
+    referencesScrollRef,
+    `aichihongshu.inspire-scroll.v1:${encodeURIComponent(scopeKey)}:${embedded ? "references" : "accounts-references"}`,
+    !isLoading,
+  );
 
   const deleteMutation = useMutation({
     mutationFn: (account: ReferenceAccount) => {
@@ -955,7 +970,7 @@ export default function Accounts({ embedded = false }: { embedded?: boolean } = 
       return api.delete(`/api/accounts/${account.account_id}`);
     },
     onSuccess: (_, account) => {
-      if (IS_TAURI_RUNTIME) qc.invalidateQueries({ queryKey: ["local-accounts", scopeKey] });
+      if (IS_TAURI_RUNTIME) qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       else qc.invalidateQueries({ queryKey: ["accounts"] });
       if (selectedId === account.account_id) setSelectedId(null);
       toast("账号已删除", "success");
@@ -990,7 +1005,7 @@ export default function Accounts({ embedded = false }: { embedded?: boolean } = 
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6">
+        <div ref={referencesScrollRef} className="flex-1 overflow-y-auto p-6">
           {accounts.length === 0 ? (
             <Empty message="暂无榜样账号，点击「导入账号」或运行 CLI: accounts add" />
           ) : (
@@ -1015,7 +1030,7 @@ export default function Accounts({ embedded = false }: { embedded?: boolean } = 
           key={selectedAcc.account_id}
           acc={selectedAcc}
           onClose={() => setSelectedId(null)}
-          onUpdated={() => qc.invalidateQueries({ queryKey: IS_TAURI_RUNTIME ? ["local-accounts", scopeKey] : ["accounts"] })}
+          onUpdated={() => qc.invalidateQueries({ queryKey: IS_TAURI_RUNTIME ? ["local-workspace", scopeKey] : ["accounts"] })}
         />
       )}
 
@@ -1024,7 +1039,7 @@ export default function Accounts({ embedded = false }: { embedded?: boolean } = 
           onClose={() => setShowModal(false)}
           accountPoolId={accountId}
           onDone={() => {
-            qc.invalidateQueries({ queryKey: IS_TAURI_RUNTIME ? ["local-accounts", scopeKey] : ["accounts"] });
+            qc.invalidateQueries({ queryKey: IS_TAURI_RUNTIME ? ["local-workspace", scopeKey] : ["accounts"] });
             toast("账号数据已导入", "success");
           }}
         />

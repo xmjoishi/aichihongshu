@@ -191,3 +191,68 @@ export function streamLocalAI(
 
   return controller;
 }
+
+/**
+ * 启动一次 Model API 流式文本调用。
+ * 与本地 CLI 共用 `local-ai://chunk|done|error` 事件契约。
+ */
+export function streamModelApi(
+  runId: string,
+  providerId: string,
+  model: string | null | undefined,
+  prompt: string,
+  onChunk: (text: string) => void,
+  onDone: () => void,
+  onError: (error: Error) => void,
+): AbortController {
+  const controller = new AbortController();
+  let listeners: UnlistenFn[] = [];
+  let cleaned = false;
+
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    listeners.forEach((unlisten) => unlisten());
+    listeners = [];
+  };
+
+  controller.signal.addEventListener("abort", () => {
+    cleanup();
+    void invoke("cancel_model_api_run", { runId }).catch(() => {
+      // 取消是幂等动作；运行可能已自然结束。
+    });
+  }, { once: true });
+
+  void (async () => {
+    try {
+      const [chunkOff, doneOff, errorOff] = await Promise.all([
+        listen<LocalAIEvent>("local-ai://chunk", (event) => {
+          if (event.payload.runId === runId && event.payload.text) onChunk(event.payload.text);
+        }),
+        listen<LocalAIEvent>("local-ai://done", (event) => {
+          if (event.payload.runId !== runId || cleaned) return;
+          cleanup();
+          onDone();
+        }),
+        listen<LocalAIEvent>("local-ai://error", (event) => {
+          if (event.payload.runId !== runId || cleaned) return;
+          cleanup();
+          onError(new Error(event.payload.error || "Model API 调用失败"));
+        }),
+      ]);
+      listeners = [chunkOff, doneOff, errorOff];
+      if (controller.signal.aborted) {
+        cleanup();
+        return;
+      }
+      await invoke("start_model_api_run", {
+        request: { runId, providerId, model: model ?? null, prompt },
+      });
+    } catch (error) {
+      cleanup();
+      if (!controller.signal.aborted) onError(error instanceof Error ? error : new Error(String(error)));
+    }
+  })();
+
+  return controller;
+}

@@ -1,3 +1,4 @@
+import { Stack } from 'expo-router';
 import {
   View, Text, ScrollView, Pressable,
   StyleSheet, Alert,
@@ -41,9 +42,9 @@ export default function DangerScreen() {
   const deleteNote = useStore((s) => s.deleteNote);
 
   async function handleClearItems() {
-    if (items.length === 0) { Alert.alert('图库已是空的'); return; }
+    if (items.length === 0) { Alert.alert('素材库已是空的'); return; }
     Alert.alert(
-      '清空图库记录',
+      '清空素材库记录',
       `确认删除全部 ${items.length} 条记录？\n不会删除手机相册里的图片。`,
       [
         { text: '取消', style: 'cancel' },
@@ -72,7 +73,7 @@ export default function DangerScreen() {
   async function handleClearAll() {
     Alert.alert(
       '清空所有数据',
-      '确认删除所有图库记录、草稿和笔记？此操作不可撤销。',
+      '确认删除所有素材库记录、草稿和笔记？此操作不可撤销。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -86,14 +87,16 @@ export default function DangerScreen() {
   }
 
   return (
-    <AuroraBackground style={{ flex: 1 }}>
+    <>
+      <Stack.Screen options={{ title: "危险操作" }} />
+          <AuroraBackground style={{ flex: 1 }}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
 
         {/* 当前数据量概览 */}
         <View style={styles.statsRow}>
           <View style={styles.statChip}>
             <Text style={styles.statNum}>{items.length}</Text>
-            <Text style={styles.statLabel}>图库记录</Text>
+            <Text style={styles.statLabel}>素材库记录</Text>
           </View>
           <View style={styles.statChip}>
             <Text style={styles.statNum}>{notes.filter(n => n.status !== 'ready').length}</Text>
@@ -109,7 +112,7 @@ export default function DangerScreen() {
         <View style={styles.card}>
           <DangerRow
             icon="🖼️"
-            label="清空图库记录"
+            label="清空素材库记录"
             desc={`删除 ${items.length} 条记录，不删除手机相册图片`}
             onPress={handleClearItems}
           />
@@ -127,7 +130,7 @@ export default function DangerScreen() {
           <DangerRow
             icon="⚠️"
             label="清空所有数据"
-            desc="删除图库、草稿、笔记全部本地数据"
+            desc="删除素材库、草稿、笔记全部本地数据"
             onPress={handleClearAll}
             last
           />
@@ -138,6 +141,7 @@ export default function DangerScreen() {
         </Text>
       </ScrollView>
     </AuroraBackground>
+    </>
   );
 }
 

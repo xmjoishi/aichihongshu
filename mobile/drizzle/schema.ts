@@ -5,8 +5,12 @@ export const items = sqliteTable('items', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   title: text('title').notNull(),
   imagePath: text('image_path').notNull(),
+  /** 系统相册资源 ID（按设备平台命名空间）；图片本体仍由系统图库持有。 */
+  sourceAssetId: text('source_asset_id'),
   tags: text('tags').notNull().default('[]'),
   analysis: text('analysis'),
+  usedAt: text('used_at'),
+  usageSources: text('usage_sources').notNull().default('[]'),
   createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
 });
 

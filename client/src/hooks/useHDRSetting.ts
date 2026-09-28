@@ -3,7 +3,7 @@
  *
  * 开关语义：
  *  hdr=true  → 「开启 HDR」→ 原图渲染，无 filter（HDR 显示器上色彩鲜艳/过曝）
- *  hdr=false → 「关闭 HDR」→ 加 filter 压制，模拟 SDR 效果（默认值）
+ *  hdr=false → 「关闭 HDR」→ 请求将媒体限制到 SDR，并用 filter 作旧 WebView 回退（默认值）
  */
 import { useState, useEffect, useCallback } from "react";
 
@@ -65,7 +65,7 @@ export function useHDRSetting() {
   /**
    * 返回应用于 <img> 的 inline style。
    * 直接读 DOM attribute，不依赖 React state，永远实时准确。
-   * - data-hdr="off"（默认）：加 filter 压制 HDR
+   * - data-hdr="off"（默认）：CSS 限制 HDR 动态范围，并加 filter 作为旧 WebView 回退
    * - data-hdr="on"：原图，无 filter
    */
   const imgStyle = (): React.CSSProperties => {

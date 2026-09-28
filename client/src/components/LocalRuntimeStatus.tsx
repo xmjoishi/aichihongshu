@@ -1,50 +1,25 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  IS_TAURI_RUNTIME,
-  readLocalRuntimeStatus,
-  readLocalWorkspaceSnapshot,
-  type LocalRuntimeStatus as LocalRuntimeStatusData,
-  type LocalWorkspaceSnapshot,
-} from "../lib/local";
-import { useAccountChange, useAccountContext } from "../lib/accountContext";
+import { useQuery } from "@tanstack/react-query";
+import { IS_TAURI_RUNTIME, readLocalRuntimeStatus, readLocalWorkspaceSnapshot } from "../lib/local";
+import { useAccountContext } from "../lib/accountContext";
 
 export default function LocalRuntimeStatus() {
-  const { accountId } = useAccountContext();
-  const [runtime, setRuntime] = useState<LocalRuntimeStatusData | null>(null);
-  const [snapshot, setSnapshot] = useState<LocalWorkspaceSnapshot | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const requestSeqRef = useRef(0);
-
-  useAccountChange(() => {
-    requestSeqRef.current += 1;
-    setSnapshot(null);
-    setError(null);
+  const { accountId, scopeKey } = useAccountContext();
+  const runtimeQuery = useQuery({
+    queryKey: ["local-runtime-status"],
+    queryFn: readLocalRuntimeStatus,
+    enabled: IS_TAURI_RUNTIME,
+    staleTime: Infinity,
   });
-
-  const refresh = useCallback(async () => {
-    if (!IS_TAURI_RUNTIME || accountId === null) return;
-    const requestSeq = ++requestSeqRef.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const [status, workspace] = await Promise.all([
-        readLocalRuntimeStatus(),
-        readLocalWorkspaceSnapshot(accountId ?? undefined),
-      ]);
-      if (requestSeq !== requestSeqRef.current) return;
-      setRuntime(status);
-      setSnapshot(workspace);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setLoading(false);
-    }
-  }, [accountId]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const summaryQuery = useQuery({
+    queryKey: ["local-workspace", scopeKey, "summary"],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined, "summary"),
+    enabled: IS_TAURI_RUNTIME && accountId !== null,
+  });
+  const runtime = runtimeQuery.data;
+  const snapshot = summaryQuery.data;
+  const error = runtimeQuery.error?.message ?? summaryQuery.error?.message;
+  const loading = runtimeQuery.isFetching || summaryQuery.isFetching;
+  const refresh = () => Promise.all([runtimeQuery.refetch(), summaryQuery.refetch()]);
 
   if (!IS_TAURI_RUNTIME) {
     return (
@@ -75,8 +50,8 @@ export default function LocalRuntimeStatus() {
         <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
         本地数据可用
       </span>
-      <span>图库 {snapshot.items.length}</span>
-      <span>笔记 {snapshot.notes.length}</span>
+      <span>图库 {snapshot.itemCount}</span>
+      <span>笔记 {snapshot.noteCount}</span>
       <button
         className="text-zinc-400 hover:text-zinc-700 disabled:opacity-50"
         disabled={loading}

@@ -93,6 +93,10 @@ export interface LocalProfileSummary {
   updatedAt?: string;
 }
 
+export type MaterialType = "note_material" | "profile_material" | "web_material";
+
+export const LOCAL_INSPIRATIONS_UPDATED_EVENT = "aichihongshu-local-inspirations-updated";
+
 export interface LocalInspirationCreate {
   id: string;
   accountPoolId: number;
@@ -102,11 +106,17 @@ export interface LocalInspirationCreate {
   observedAt: string;
   reason: string;
   dedupeKey?: string;
+  materialType?: MaterialType;
+  author?: string;
+  captureModules?: string[];
 }
 
 export interface LocalInspirationSummary extends LocalInspirationCreate {
   status: "saved" | "converted";
   noteId?: number;
+  materialType: MaterialType;
+  author: string;
+  captureModules: string[];
 }
 
 export interface LocalReferenceAccountCreate {
@@ -148,6 +158,117 @@ export interface LocalPromptConfig {
 
 export interface LocalPromptConfigUpsert extends LocalPromptConfig {
   accountPoolId: number;
+}
+
+export type MemoryOrigin = "pc" | "mobile";
+export type MemoryKind =
+  | "positioning"
+  | "expression"
+  | "fact"
+  | "event"
+  | "content_history";
+export type MemoryConfirmStatus =
+  | "candidate"
+  | "confirmed"
+  | "rejected"
+  | "outdated";
+export type MemorySourceType = "user" | "ai_draft" | "import" | "sync";
+
+export interface LocalMemoryEntry {
+  id: number;
+  accountPoolId: number;
+  origin: MemoryOrigin;
+  kind: MemoryKind;
+  content: string;
+  subject: string;
+  scope: string;
+  source: string;
+  sourceType: MemorySourceType;
+  occurredAt?: string | null;
+  confirmStatus: MemoryConfirmStatus;
+  validStatus: "valid" | "invalid";
+  enabled: boolean;
+  replacedBy?: number | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface LocalMemoryEntryCreate {
+  accountPoolId: number;
+  origin: MemoryOrigin;
+  kind: MemoryKind;
+  content: string;
+  subject?: string;
+  scope?: string;
+  source?: string;
+  sourceType?: MemorySourceType;
+  occurredAt?: string | null;
+  confirmStatus?: Extract<MemoryConfirmStatus, "candidate" | "confirmed">;
+  /** 默认 true；AI 来源建议 false，由用户启用 */
+  enabled?: boolean;
+}
+
+export interface LocalMemoryEntryUpdate {
+  id: number;
+  accountPoolId: number;
+  kind: MemoryKind;
+  content: string;
+  subject?: string;
+  scope?: string;
+  source?: string;
+  sourceType?: MemorySourceType;
+  occurredAt?: string | null;
+}
+
+export interface LocalMemoryEntryTransition {
+  id: number;
+  accountPoolId: number;
+  nextStatus: MemoryConfirmStatus;
+  replacedBy?: number | null;
+}
+
+export interface LocalMemoryEntryFilter {
+  accountPoolId?: number;
+  origin?: MemoryOrigin;
+  kind?: MemoryKind;
+  confirmStatus?: MemoryConfirmStatus;
+  enabled?: boolean;
+}
+
+export interface LocalExperiencePrompt {
+  id: number;
+  accountPoolId: number;
+  origin: MemoryOrigin;
+  title: string;
+  content: string;
+  enabled: boolean;
+  applyScope: "global" | "account";
+  applyTarget: "all" | "compose" | "chat";
+  source: "user" | "from_memory";
+  sortOrder: number;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface LocalExperiencePromptUpsert {
+  accountPoolId: number;
+  origin: MemoryOrigin;
+  /** 空表示新建 */
+  id?: number | null;
+  title: string;
+  content: string;
+  enabled: boolean;
+  applyScope?: "global" | "account";
+  applyTarget?: "all" | "compose" | "chat";
+  source?: "user" | "from_memory";
+  sortOrder?: number;
+}
+
+export interface LocalMemorySystemRules {
+  l0: string;
+  l1Default: string;
+  l1Active: string;
+  l1IsOverride: boolean;
 }
 
 export interface LocalNoteStatsUpdate {
@@ -383,9 +504,9 @@ export function readLocalRuntimeStatus(): Promise<LocalRuntimeStatus> {
   return invoke<LocalRuntimeStatus>("runtime_status");
 }
 
-export function readLocalWorkspaceSnapshot(accountPoolId?: number): Promise<LocalWorkspaceSnapshot> {
+export function readLocalWorkspaceSnapshot(accountPoolId?: number, section: "workspace" | "library" | "notes" | "profile" | "references" | "summary" | "all" = "workspace"): Promise<LocalWorkspaceSnapshot> {
   requireTauri();
-  return invoke<LocalWorkspaceSnapshot>("read_status", { accountPoolId });
+  return invoke<LocalWorkspaceSnapshot>("read_status", { accountPoolId, section });
 }
 
 export function readLocalImageData(itemId: number, accountPoolId?: number, variant: "original" | "thumbnail" = "original"): Promise<string | null> {
@@ -637,6 +758,9 @@ export function saveLocalInspiration(inspiration: LocalInspirationCreate): Promi
       observedAt: inspiration.observedAt,
       reason: inspiration.reason,
       dedupeKey: inspiration.dedupeKey,
+      materialType: inspiration.materialType ?? "web_material",
+      author: inspiration.author ?? "",
+      captureModules: inspiration.captureModules ?? [],
     },
   });
 }
@@ -659,6 +783,118 @@ export function updateLocalReferenceAccount(account: LocalReferenceAccountUpdate
 export function deleteLocalReferenceAccount(id: number, accountPoolId: number): Promise<void> {
   requireTauri();
   return invoke<void>("delete_local_reference_account", { id, accountPoolId });
+}
+
+export type PageSnapshotKind = "note_snapshot" | "ref_snapshot" | "clip";
+
+export interface PageSnapshotMetrics {
+  like: number | null;
+  collect: number | null;
+  comment: number | null;
+  followers?: number | null;
+  noteCount?: number | null;
+}
+
+export interface PageSnapshotCreate {
+  accountPoolId: number;
+  kind: PageSnapshotKind;
+  sourceUrl: string;
+  title: string;
+  author: string;
+  bodyExcerpt: string;
+  metrics: PageSnapshotMetrics;
+  referenceAccountId?: number | null;
+  requestId?: string;
+  observedAt: string;
+}
+
+export interface PageSnapshotSummary {
+  id: number;
+  accountPoolId: number;
+  kind: PageSnapshotKind;
+  sourceUrl: string;
+  title: string;
+  author: string;
+  bodyExcerpt: string;
+  likeCount: number | null;
+  collectCount: number | null;
+  commentCount: number | null;
+  metricsJson: string;
+  noteId: number | null;
+  referenceAccountId: number | null;
+  requestId: string | null;
+  observedAt: string;
+  createdAt: string;
+}
+
+export function savePageSnapshot(snapshot: PageSnapshotCreate): Promise<PageSnapshotSummary> {
+  requireTauri();
+  return invoke<PageSnapshotSummary>("save_page_snapshot", { snapshot });
+}
+
+export function listPageSnapshots(
+  sourceUrl: string,
+  accountPoolId?: number,
+  limit?: number,
+): Promise<PageSnapshotSummary[]> {
+  requireTauri();
+  return invoke<PageSnapshotSummary[]>("list_page_snapshots", {
+    accountPoolId: accountPoolId ?? null,
+    sourceUrl,
+    limit: limit ?? null,
+  });
+}
+
+export function installBrowserCaptureHost(browser: "chrome" | "edge"): Promise<string> {
+  requireTauri();
+  return invoke<string>("install_browser_capture_host", { browser });
+}
+
+export function copyBrowserExtensionDir(): Promise<string> {
+  requireTauri();
+  return invoke<string>("copy_browser_extension_dir");
+}
+
+export function copyBrowserExtensionPath(): Promise<string> {
+  requireTauri();
+  return invoke<string>("copy_browser_extension_path");
+}
+
+export function openBrowserExtensionDir(): Promise<string> {
+  requireTauri();
+  return invoke<string>("open_browser_extension_dir");
+}
+
+export function testBrowserCaptureLink(): Promise<Array<[string, boolean, string]>> {
+  requireTauri();
+  return invoke<Array<[string, boolean, string]>>("test_browser_capture_link");
+}
+
+export function openBrowserExtensionsPage(browser: "chrome" | "edge" = "chrome"): Promise<string> {
+  requireTauri();
+  return invoke<string>("open_browser_extensions_page", { browser });
+}
+
+export function detectCaptureBrowsers(): Promise<string[]> {
+  requireTauri();
+  return invoke<string[]>("detect_capture_browsers");
+}
+
+export interface BrowserCaptureStatus {
+  protocolVersion: number;
+  extensionVersion: string | null;
+  extensionDir: string;
+  extensionId: string | null;
+  hostManifestPath: string;
+  hostInstalled: boolean;
+  hostManifestMatches: boolean;
+  hostInstalledEdge: boolean;
+  browsers: string[];
+}
+
+export function browserCaptureStatus(): Promise<BrowserCaptureStatus> {
+  requireTauri();
+  return invoke<BrowserCaptureStatus>("browser_capture_status");
 }
 
 export function readLocalKnowledgePreferences(accountPoolId?: number): Promise<LocalKnowledgePreferences> {
@@ -693,6 +929,89 @@ export function upsertPromptConfig(config: LocalPromptConfigUpsert): Promise<Loc
 export function deletePromptConfig(key: string, accountPoolId: number): Promise<LocalPromptConfig[]> {
   requireTauri();
   return invoke<LocalPromptConfig[]>("delete_prompt_config", { key, accountPoolId });
+}
+
+export function listMemoryEntries(filter: LocalMemoryEntryFilter = {}): Promise<LocalMemoryEntry[]> {
+  requireTauri();
+  return invoke<LocalMemoryEntry[]>("list_memory_entries", {
+    filter: {
+      accountPoolId: filter.accountPoolId,
+      origin: filter.origin,
+      kind: filter.kind,
+      confirmStatus: filter.confirmStatus,
+      enabled: filter.enabled,
+    },
+  });
+}
+
+export function createMemoryEntry(entry: LocalMemoryEntryCreate): Promise<LocalMemoryEntry> {
+  requireTauri();
+  return invoke<LocalMemoryEntry>("create_memory_entry", { entry });
+}
+
+export function updateMemoryEntry(entry: LocalMemoryEntryUpdate): Promise<LocalMemoryEntry> {
+  requireTauri();
+  return invoke<LocalMemoryEntry>("update_memory_entry", { entry });
+}
+
+export function deleteMemoryEntry(id: number, accountPoolId: number): Promise<void> {
+  requireTauri();
+  return invoke<void>("delete_memory_entry", { id, accountPoolId });
+}
+
+export function setMemoryEntryEnabled(
+  id: number,
+  accountPoolId: number,
+  enabled: boolean,
+): Promise<LocalMemoryEntry> {
+  requireTauri();
+  return invoke<LocalMemoryEntry>("set_memory_entry_enabled", { id, accountPoolId, enabled });
+}
+
+export function transitionMemoryEntryStatus(
+  transition: LocalMemoryEntryTransition,
+): Promise<LocalMemoryEntry> {
+  requireTauri();
+  return invoke<LocalMemoryEntry>("transition_memory_entry_status", { transition });
+}
+
+export function listExperiencePrompts(
+  accountPoolId?: number,
+  origin?: MemoryOrigin,
+): Promise<LocalExperiencePrompt[]> {
+  requireTauri();
+  return invoke<LocalExperiencePrompt[]>("list_experience_prompts", { accountPoolId, origin });
+}
+
+export function upsertExperiencePrompt(
+  prompt: LocalExperiencePromptUpsert,
+): Promise<LocalExperiencePrompt[]> {
+  requireTauri();
+  return invoke<LocalExperiencePrompt[]>("upsert_experience_prompt", { prompt });
+}
+
+export function deleteExperiencePrompt(
+  id: number,
+  accountPoolId: number,
+  origin: MemoryOrigin,
+): Promise<LocalExperiencePrompt[]> {
+  requireTauri();
+  return invoke<LocalExperiencePrompt[]>("delete_experience_prompt", { id, accountPoolId, origin });
+}
+
+export function readMemorySystemRules(): Promise<LocalMemorySystemRules> {
+  requireTauri();
+  return invoke<LocalMemorySystemRules>("read_memory_system_rules");
+}
+
+export function saveMemoryL1Override(content: string): Promise<LocalMemorySystemRules> {
+  requireTauri();
+  return invoke<LocalMemorySystemRules>("save_memory_l1_override", { content });
+}
+
+export function resetMemoryL1Override(): Promise<LocalMemorySystemRules> {
+  requireTauri();
+  return invoke<LocalMemorySystemRules>("reset_memory_l1_override");
 }
 
 export function updateLocalNoteStats(update: LocalNoteStatsUpdate): Promise<LocalNoteSummary> {
@@ -757,10 +1076,31 @@ export interface LocalPcHarnessStatus {
   pairingToken?: string | null;
   protocolVersion: string;
   activeAccountId?: number | null;
+  mobileConnected: boolean;
+}
+
+export type MobileMemoryCommandOperation =
+  | "createEntry"
+  | "updateEntry"
+  | "setEntryEnabled"
+  | "deleteEntry"
+  | "createPrompt"
+  | "updatePrompt"
+  | "setPromptEnabled"
+  | "deletePrompt"
+  | "seedExamples";
+
+export interface MobileMemoryCommandReceipt {
+  cacheSynced: boolean;
+  message?: string | null;
 }
 
 export function readPcHarnessStatus(): Promise<LocalPcHarnessStatus> {
   return invoke("pc_harness_status");
+}
+
+export function readPcHarnessMobileConnection(): Promise<boolean> {
+  return invoke("pc_harness_mobile_connection");
 }
 
 export function startPcHarness(): Promise<LocalPcHarnessStatus> {
@@ -773,6 +1113,14 @@ export function stopPcHarness(): Promise<LocalPcHarnessStatus> {
 
 export function rotatePcHarnessToken(): Promise<LocalPcHarnessStatus> {
   return invoke("rotate_pc_harness_token");
+}
+
+export function writeMobileMemoryCommand(
+  operation: MobileMemoryCommandOperation,
+  payload: unknown,
+): Promise<MobileMemoryCommandReceipt> {
+  requireTauri();
+  return invoke("pc_harness_mobile_memory_command", { operation, payload });
 }
 
 export function localItemToItem(item: LocalItemSummary): Item {

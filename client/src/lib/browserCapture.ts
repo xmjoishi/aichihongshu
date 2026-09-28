@@ -1,4 +1,20 @@
 export type BrowserCaptureTransport = "manual" | "extension";
+export type BrowserCaptureKind = "clip" | "note_snapshot" | "ref_snapshot";
+export type BrowserCaptureMaterialType = "note_material" | "profile_material" | "web_material";
+export type BrowserCapturePageType = "note" | "profile" | "web";
+
+export interface BrowserCaptureMetrics {
+  like?: number | null;
+  collect?: number | null;
+  comment?: number | null;
+  followers?: number | null;
+  noteCount?: number | null;
+}
+
+export interface BrowserCaptureModules {
+  collect: { titleBody: boolean; authorSource: boolean; images: boolean; comments: boolean };
+  data: { metrics: boolean; publishedAt: boolean };
+}
 
 export interface BrowserCaptureMessage {
   title: string;
@@ -9,6 +25,17 @@ export interface BrowserCaptureMessage {
   targetAccountId: number;
   transport: BrowserCaptureTransport;
   requestId?: string;
+  kind?: BrowserCaptureKind;
+  materialType?: BrowserCaptureMaterialType;
+  pageType?: BrowserCapturePageType;
+  author?: string;
+  like?: number | null;
+  collect?: number | null;
+  comment?: number | null;
+  followers?: number | null;
+  noteCount?: number | null;
+  referenceAccountId?: number | null;
+  modules?: Partial<BrowserCaptureModules>;
 }
 
 export interface ValidatedBrowserCapture extends BrowserCaptureMessage {
@@ -18,20 +45,20 @@ export interface ValidatedBrowserCapture extends BrowserCaptureMessage {
   reason: string;
   observedAt: string;
   dedupeKey: string;
+  kind: BrowserCaptureKind;
+  materialType: BrowserCaptureMaterialType;
+  pageType: BrowserCapturePageType;
+  author: string;
+  metrics: BrowserCaptureMetrics;
+  referenceAccountId: number | null;
+  modules: BrowserCaptureModules;
 }
 
 export type BrowserCaptureValidation =
   | { ok: true; value: ValidatedBrowserCapture }
   | { ok: false; code: "INVALID_MESSAGE" | "ACCOUNT_MISMATCH" | "INVALID_URL" | "TOO_LARGE"; message: string };
 
-/**
- * The browser host is intentionally only a message transport.  It does not
- * get a database handle, a cookie, or a browser profile.  Once a message has
- * passed validation, this small envelope is persisted in the current account
- * WebView until the user acknowledges it and the local Rust command accepts
- * it.  Keeping the envelope here also gives a failed delivery a safe retry
- * path after a page refresh.
- */
+/** Legacy queue envelopes are retained only to migrate older pending captures into SQLite. */
 export type BrowserCaptureQueueStatus = "pending_confirmation" | "saving" | "saved" | "failed";
 
 export interface BrowserCaptureEnvelope {
@@ -54,6 +81,7 @@ export interface BrowserCaptureEnqueueResult {
 const QUEUE_VERSION = 1;
 const MAX_QUEUE_ENTRIES = 32;
 const QUEUE_KEY_PREFIX = "aichihongshu.browser-capture-queue.v1";
+export const BROWSER_CAPTURE_QUEUE_UPDATED_EVENT = "aichihongshu-browser-capture-queue-updated";
 
 const MAX_MESSAGE_BYTES = 128 * 1024;
 const MAX_TITLE_CHARS = 200;
@@ -86,8 +114,84 @@ export function validateBrowserCapture(raw: unknown, activeAccountId: number): B
   const observedAt = text(input.observedAt, 64) || new Date().toISOString();
   if (Number.isNaN(Date.parse(observedAt))) return { ok: false, code: "INVALID_MESSAGE", message: "观察时间格式无效" };
   const requestId = text(input.requestId, 128) || undefined;
+  const kind: BrowserCaptureKind =
+    input.kind === "note_snapshot" || input.kind === "ref_snapshot" || input.kind === "clip"
+      ? input.kind
+      : "clip";
+  const author = text(input.author, 200);
+  const optionalMetric = (value: unknown): number | null => {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return Math.floor(value);
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
+    }
+    return null;
+  };
+  const metrics: BrowserCaptureMetrics = {
+    like: optionalMetric(input.like),
+    collect: optionalMetric(input.collect),
+    comment: optionalMetric(input.comment),
+    followers: optionalMetric(input.followers),
+    noteCount: optionalMetric(input.noteCount),
+  };
+  const referenceAccountId =
+    typeof input.referenceAccountId === "number"
+      && Number.isSafeInteger(input.referenceAccountId)
+      && input.referenceAccountId > 0
+      ? input.referenceAccountId
+      : null;
+  const materialType: BrowserCaptureMaterialType =
+    input.materialType === "note_material"
+      || input.materialType === "profile_material"
+      || input.materialType === "web_material"
+      ? input.materialType
+      : kind === "note_snapshot"
+        ? "note_material"
+        : kind === "ref_snapshot"
+          ? "profile_material"
+          : "web_material";
+  const pageType: BrowserCapturePageType =
+    input.pageType === "note" || input.pageType === "profile" || input.pageType === "web"
+      ? input.pageType
+      : kind === "note_snapshot"
+        ? "note"
+        : kind === "ref_snapshot"
+          ? "profile"
+          : "web";
+  const modules: BrowserCaptureModules = {
+    collect: {
+      titleBody: Boolean(input.modules?.collect?.titleBody ?? true),
+      authorSource: Boolean(input.modules?.collect?.authorSource ?? true),
+      images: false,
+      comments: false,
+    },
+    data: {
+      metrics: Boolean(input.modules?.data?.metrics ?? kind !== "clip"),
+      publishedAt: Boolean(input.modules?.data?.publishedAt ?? false),
+    },
+  };
   const dedupeKey = `${activeAccountId}|${sourceUrl.toLocaleLowerCase()}|${title.toLocaleLowerCase()}`;
-  return { ok: true, value: { title, sourceUrl, body, reason, observedAt, targetAccountId: activeAccountId, transport: input.transport, requestId, dedupeKey } };
+  return {
+    ok: true,
+    value: {
+      title,
+      sourceUrl,
+      body,
+      reason,
+      observedAt,
+      targetAccountId: activeAccountId,
+      transport: input.transport,
+      requestId,
+      dedupeKey,
+      kind,
+      materialType,
+      pageType,
+      author,
+      metrics,
+      referenceAccountId,
+      modules,
+    },
+  };
 }
 
 export function parseBrowserCaptureMessage(raw: string, activeAccountId: number): BrowserCaptureValidation {
@@ -140,6 +244,7 @@ function writeQueue(databaseIdentity: string, accountId: number, entries: Browse
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, MAX_QUEUE_ENTRIES);
   storage.setItem(queueStorageKey(databaseIdentity, accountId), JSON.stringify({ version: QUEUE_VERSION, entries: bounded }));
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(BROWSER_CAPTURE_QUEUE_UPDATED_EVENT));
 }
 
 /** Read the current account queue. A crash during save becomes retryable. */
@@ -208,4 +313,11 @@ export function markBrowserCaptureSaved(databaseIdentity: string, accountId: num
 
 export function markBrowserCaptureFailed(databaseIdentity: string, accountId: number, envelopeId: string, error: string): BrowserCaptureEnvelope | null {
   return updateBrowserCaptureQueue(databaseIdentity, accountId, envelopeId, { status: "failed", error: text(error, 500) || "保存失败，可重试" });
+}
+
+/** Remove a legacy queue item after it is already persisted in SQLite. */
+export function removeBrowserCaptureQueueEntry(databaseIdentity: string, accountId: number, envelopeId: string): void {
+  const entries = readBrowserCaptureQueue(databaseIdentity, accountId);
+  const next = entries.filter((entry) => entry.envelopeId !== envelopeId);
+  if (next.length !== entries.length) writeQueue(databaseIdentity, accountId, next);
 }

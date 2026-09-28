@@ -1,5 +1,7 @@
+import { useWorkspaceEffect } from "../lib/workspaceActivity";
+import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
 import { useState, useRef, useEffect } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, riskAckHeader } from "../lib/api";
 import { Profile as ProfileType } from "../lib/types";
 import { Spinner, pageTabActiveClass, pageTabClass, pageTabInactiveClass } from "../components/ui";
@@ -8,6 +10,7 @@ import {
   Users, Heart, MessageCircle, Bookmark, Edit3,
 } from "lucide-react";
 import AIPanel from "../components/AIPanel";
+import { publishPageAISidebarVisibility } from "../lib/aiHost";
 import { useToast } from "../components/Toast";
 import { useRiskConfirm } from "../components/useRiskConfirm";
 import {
@@ -300,7 +303,7 @@ export default function ProfilePage() {
     setSearchParams(next, { replace: true });
   }
 
-  useEffect(() => {
+  useWorkspaceEffect(() => {
     publishPageAIContext({
       route: "/profile",
       page: "我的账号",
@@ -311,12 +314,17 @@ export default function ProfilePage() {
       availableActions: [
         { id: "refine-persona", label: "优化人设" },
         { id: "review-account", label: "查看账号资料" },
+        { id: "open-persona", label: "打开人设信息", handler: "navigate", href: "/profile?view=persona" },
       ],
       source: "page",
       permissionScope: ["account.read", "account.write", "analytics.read"],
     });
   }, [accountId]);
   const [showAI, setShowAI] = useState(false);
+  useEffect(() => {
+    publishPageAISidebarVisibility("profile-ai", showAI);
+    return () => publishPageAISidebarVisibility("profile-ai", false);
+  }, [showAI]);
   const [form, setForm] = useState<EditForm | null>(null);
   const focusedFieldRef = useRef<keyof EditForm | null>(null);
 
@@ -327,8 +335,8 @@ export default function ProfilePage() {
   });
 
   const { data: localWorkspace, isLoading: localProfileLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-workspace", scopeKey],
-    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    queryKey: ["local-workspace", scopeKey, "profile"],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined, "profile"),
     enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
   const profile = IS_TAURI_RUNTIME
@@ -350,7 +358,7 @@ export default function ProfilePage() {
     setShowAI(false);
     setRefreshing(false);
   });
-  useEffect(() => {
+  useWorkspaceEffect(() => {
     if (!refreshing) return;
     const timer = setInterval(async () => {
       try {
@@ -495,7 +503,7 @@ export default function ProfilePage() {
         <Tabs active={activeTab} onChange={handleProfileTabChange} />
 
         {/* Tab 内容 */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div data-page-scroll="profile-read" className="flex-1 overflow-y-auto p-6">
           <div className="max-w-lg space-y-4">
 
             {activeTab === "account" && (
@@ -578,7 +586,7 @@ export default function ProfilePage() {
         <Tabs active={activeTab} onChange={handleProfileTabChange} />
 
         {/* 表单内容 */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div data-page-scroll="profile-edit" className="flex-1 overflow-y-auto p-6">
           <div className="max-w-lg space-y-6">
 
             {/* ── 账号信息 Tab ── */}

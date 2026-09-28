@@ -14,11 +14,17 @@ export interface AIHostProps {
   onClose?: () => void;
   /** Optional host override used by the independent page and global launcher. */
   mode?: AIHostMode;
+  /** Make a shell-owned sidebar fill its host instead of using the resizable page pane width. */
+  fillHost?: boolean;
+  onModeChange?: (mode: AIHostMode) => void;
   /** Explicit context is useful for embedded hosts; defaults to the current route registry. */
   pageContext?: PageAIContext;
   /** Optional stable Agent session identity. */
   sessionKey?: string;
-  historyKey?: string;
+  /** Select a previously saved session in hosts managed by the app shell. */
+  onSelectSession?: (sessionId: string) => void;
+  /** `null` preserves the legacy unkeyed page history when moving an embedded panel. */
+  historyKey?: string | null;
   assistantMode?: "ask" | "agent";
 }
 
@@ -42,7 +48,7 @@ export default function AIHost(props: AIHostProps) {
     { accountId: effectiveAccountId, noteId: props.noteId, itemId: props.itemId },
     `${pageContext.route}:${pageContext.objectId ?? "workspace"}`,
   );
-  const historyKey = props.historyKey ?? (props.mode === "floating" ? sessionKey : undefined);
+  const historyKey = props.historyKey === null ? undefined : props.historyKey ?? (props.mode === "floating" ? sessionKey : undefined);
 
   useEffect(() => {
     if (effectiveAccountId == null || (props.mode !== "floating" && !props.historyKey)) return;
@@ -57,6 +63,7 @@ export default function AIHost(props: AIHostProps) {
     setMode(next);
     const settings = readAISettings(scopeKey);
     saveAISettings(scopeKey, { ...settings, defaultHostMode: next });
+    props.onModeChange?.(next);
   }
 
   return (
@@ -67,8 +74,10 @@ export default function AIHost(props: AIHostProps) {
         pageContext={{ ...pageContext, accountId: effectiveAccountId, route: location.pathname }}
         hostMode={mode}
         onHostModeChange={changeMode}
+        fillHost={props.fillHost}
         sessionKey={sessionKey}
         historyKey={historyKey}
+        onSelectSession={props.onSelectSession}
         assistantMode={props.assistantMode}
       />
     </div>

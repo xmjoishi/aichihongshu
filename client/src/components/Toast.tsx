@@ -30,17 +30,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <Ctx.Provider value={{ toast }}>
       {children}
       {/* Toast 容器 */}
-      <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none">
+      <div className="fixed bottom-5 left-5 right-5 z-50 flex max-h-[calc(100vh-2.5rem)] flex-col items-end gap-2 overflow-y-auto pointer-events-none">
         {toasts.map((t) => (
           <div
             key={t.id}
-            className="pointer-events-auto flex items-center gap-2.5 bg-white border border-zinc-200
-                       shadow-lg rounded-xl px-4 py-3 min-w-52 max-w-xs animate-in slide-in-from-right-4
+            className="pointer-events-auto flex w-full min-w-0 max-w-xs items-start gap-2.5 bg-white border border-zinc-200
+                       shadow-lg rounded-xl px-4 py-3 animate-in slide-in-from-right-4
                        text-sm text-zinc-700"
           >
-            {icons[t.type]}
-            <span className="flex-1">{t.message}</span>
-            <button onClick={() => remove(t.id)} className="text-zinc-300 hover:text-zinc-500">
+            <span className="mt-0.5">{icons[t.type]}</span>
+            <span className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">{t.message}</span>
+            <button onClick={() => remove(t.id)} className="mt-0.5 shrink-0 text-zinc-300 hover:text-zinc-500">
               <X size={13} />
             </button>
           </div>

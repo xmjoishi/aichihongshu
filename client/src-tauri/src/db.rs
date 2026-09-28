@@ -279,6 +279,58 @@ pub struct LocalInspirationCreate {
     pub observed_at: String,
     pub reason: String,
     pub dedupe_key: Option<String>,
+    /// note_material | profile_material | web_material
+    pub material_type: Option<String>,
+    pub author: Option<String>,
+    pub capture_modules: Option<Vec<String>>,
+}
+
+/// 页面快照指标。缺失为 None，入库为 NULL，禁止用 0 冒充未采集。
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PageSnapshotMetrics {
+    pub like: Option<i64>,
+    pub collect: Option<i64>,
+    pub comment: Option<i64>,
+    pub followers: Option<i64>,
+    pub note_count: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PageSnapshotCreate {
+    pub account_pool_id: i64,
+    /// note_snapshot | ref_snapshot | clip
+    pub kind: String,
+    pub source_url: String,
+    pub title: String,
+    pub author: String,
+    pub body_excerpt: String,
+    pub metrics: PageSnapshotMetrics,
+    pub reference_account_id: Option<i64>,
+    pub request_id: Option<String>,
+    pub observed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageSnapshotSummary {
+    pub id: i64,
+    pub account_pool_id: i64,
+    pub kind: String,
+    pub source_url: String,
+    pub title: String,
+    pub author: String,
+    pub body_excerpt: String,
+    pub like_count: Option<i64>,
+    pub collect_count: Option<i64>,
+    pub comment_count: Option<i64>,
+    pub metrics_json: String,
+    pub note_id: Option<i64>,
+    pub reference_account_id: Option<i64>,
+    pub request_id: Option<String>,
+    pub observed_at: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +373,124 @@ pub struct PromptConfigUpsert {
     pub prompt: String,
     pub sort_order: i64,
     pub enabled: bool,
+}
+
+/// L3 事实记忆条目（定位/表达偏好/事实/事件/内容历史）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEntry {
+    pub id: i64,
+    pub account_pool_id: i64,
+    pub origin: String,
+    pub kind: String,
+    pub content: String,
+    pub subject: String,
+    pub scope: String,
+    pub source: String,
+    pub source_type: String,
+    pub occurred_at: Option<String>,
+    pub confirm_status: String,
+    pub valid_status: String,
+    pub enabled: bool,
+    pub replaced_by: Option<i64>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEntryCreate {
+    pub account_pool_id: i64,
+    pub origin: String,
+    pub kind: String,
+    pub content: String,
+    pub subject: Option<String>,
+    pub scope: Option<String>,
+    pub source: Option<String>,
+    pub source_type: Option<String>,
+    pub occurred_at: Option<String>,
+    /// 默认 candidate；仅允许 candidate 或 confirmed（手工录入的确定事实）。
+    pub confirm_status: Option<String>,
+    /// 是否启用注入；默认 true。AI 来源建议 false，由用户开启。
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEntryUpdate {
+    pub id: i64,
+    pub account_pool_id: i64,
+    pub kind: String,
+    pub content: String,
+    pub subject: Option<String>,
+    pub scope: Option<String>,
+    pub source: Option<String>,
+    pub source_type: Option<String>,
+    pub occurred_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEntryTransition {
+    pub id: i64,
+    pub account_pool_id: i64,
+    pub next_status: String,
+    pub replaced_by: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEntryFilter {
+    pub account_pool_id: Option<i64>,
+    pub origin: Option<String>,
+    pub kind: Option<String>,
+    pub confirm_status: Option<String>,
+    /// true=仅启用 / false=仅停用 / 缺省=全部
+    pub enabled: Option<bool>,
+}
+
+/// L2 用户经验提示词条目。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperiencePrompt {
+    pub id: i64,
+    pub account_pool_id: i64,
+    pub origin: String,
+    pub title: String,
+    pub content: String,
+    pub enabled: bool,
+    pub apply_scope: String,
+    pub apply_target: String,
+    pub source: String,
+    pub sort_order: i64,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperiencePromptUpsert {
+    pub account_pool_id: i64,
+    pub origin: String,
+    /// 空串表示新建；非空表示更新该 id。
+    pub id: Option<i64>,
+    pub title: String,
+    pub content: String,
+    pub enabled: bool,
+    pub apply_scope: Option<String>,
+    pub apply_target: Option<String>,
+    pub source: Option<String>,
+    pub sort_order: Option<i64>,
+}
+
+/// L0/L1 系统经验规则（只读展示；L1 允许覆盖并可恢复默认）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySystemRules {
+    pub l0: String,
+    pub l1_default: String,
+    pub l1_active: String,
+    pub l1_is_override: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -401,6 +571,9 @@ pub struct InspirationSummary {
     pub status: String,
     pub note_id: Option<i64>,
     pub dedupe_key: Option<String>,
+    pub material_type: String,
+    pub author: String,
+    pub capture_modules: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -428,6 +601,20 @@ pub struct AIRunArtifactSummary {
     pub kind: String,
     pub content: String,
     pub created_at: Option<String>,
+}
+
+/// Extension popup lookup result. The active account is resolved locally and
+/// never accepted from the browser extension.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserPageContext {
+    pub match_type: String,
+    pub default_action: String,
+    pub page_type: String,
+    pub snapshot_kind: Option<String>,
+    pub reference_account_id: Option<i64>,
+    pub matched_title: Option<String>,
+    pub last_snapshot_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -651,6 +838,18 @@ impl LocalDb {
         &self,
         expected_account_id: Option<i64>,
     ) -> SqlResult<WorkspaceSnapshot> {
+        self.snapshot_section_for_account(expected_account_id, "all")
+    }
+
+    /// Read only the data needed by a UI resource. Existing callers keep the full snapshot.
+    pub fn snapshot_section_for_account(
+        &self,
+        expected_account_id: Option<i64>,
+        section: &str,
+    ) -> SqlResult<WorkspaceSnapshot> {
+        let with_items = matches!(section, "all" | "workspace" | "library" | "notes");
+        let with_notes = matches!(section, "all" | "workspace" | "notes");
+        let with_references = matches!(section, "all" | "workspace" | "references");
         let mut conn = self.connect()?;
         let active = ensure_active_account(&mut conn, &self.path)?;
         ensure_expected_account(&active, expected_account_id)?;
@@ -733,17 +932,37 @@ impl LocalDb {
             counts
         };
 
-        let items = read_item_summaries(&conn, active.id, false)?;
-        let trash_items = read_item_summaries(&conn, active.id, true)?;
-        let missing_image_ids = items
-            .iter()
-            .chain(trash_items.iter())
-            .filter(|item| !self.resolve_image_path(&item.image_path).is_file())
-            .map(|item| item.id)
-            .collect::<Vec<_>>();
+        let items = if with_items {
+            read_item_summaries(&conn, active.id, false)?
+        } else {
+            Vec::new()
+        };
+        let trash_items = if matches!(section, "all" | "library") {
+            read_item_summaries(&conn, active.id, true)?
+        } else {
+            Vec::new()
+        };
+        let missing_image_ids = if matches!(section, "all" | "library") {
+            items
+                .iter()
+                .chain(trash_items.iter())
+                .filter(|item| !self.resolve_image_path(&item.image_path).is_file())
+                .map(|item| item.id)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
 
-        let notes = read_note_summaries(&conn, active.id, false)?;
-        let trash_notes = read_note_summaries(&conn, active.id, true)?;
+        let notes = if with_notes {
+            read_note_summaries(&conn, active.id, false)?
+        } else {
+            Vec::new()
+        };
+        let trash_notes = if matches!(section, "all" | "notes") {
+            read_note_summaries(&conn, active.id, true)?
+        } else {
+            Vec::new()
+        };
 
         let mut ref_stmt = conn.prepare(
             "SELECT id, account_id, name, followers, total_likes, note_count,
@@ -753,28 +972,32 @@ impl LocalDb {
              WHERE account_pool_id = ?1
              ORDER BY id DESC",
         )?;
-        let reference_accounts = ref_stmt
-            .query_map(params![active.id], |row| {
-                Ok(ReferenceAccountSummary {
-                    id: row.get(0)?,
-                    account_id: row.get(1)?,
-                    name: row.get(2)?,
-                    followers: row.get(3)?,
-                    total_likes: row.get(4)?,
-                    note_count: row.get(5)?,
-                    avg_likes: row.get(6)?,
-                    avg_comments: row.get(7)?,
-                    avg_collects: row.get(8)?,
-                    content_style: row.get(9)?,
-                    top_notes: parse_json_vec(row.get(10)?),
-                    raw_data: row.get(11)?,
-                    crawled_at: row.get(12)?,
-                    analyzed_at: row.get(13)?,
-                    insights: row.get(14)?,
-                    insights_at: row.get(15)?,
-                })
-            })?
-            .collect::<SqlResult<Vec<_>>>()?;
+        let reference_accounts = if with_references {
+            ref_stmt
+                .query_map(params![active.id], |row| {
+                    Ok(ReferenceAccountSummary {
+                        id: row.get(0)?,
+                        account_id: row.get(1)?,
+                        name: row.get(2)?,
+                        followers: row.get(3)?,
+                        total_likes: row.get(4)?,
+                        note_count: row.get(5)?,
+                        avg_likes: row.get(6)?,
+                        avg_comments: row.get(7)?,
+                        avg_collects: row.get(8)?,
+                        content_style: row.get(9)?,
+                        top_notes: parse_json_vec(row.get(10)?),
+                        raw_data: row.get(11)?,
+                        crawled_at: row.get(12)?,
+                        analyzed_at: row.get(13)?,
+                        insights: row.get(14)?,
+                        insights_at: row.get(15)?,
+                    })
+                })?
+                .collect::<SqlResult<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
 
         Ok(WorkspaceSnapshot {
             database_path: self.path.display().to_string(),
@@ -2700,6 +2923,38 @@ impl LocalDb {
         })
     }
 
+    /// 读取应用级设置项（非账号作用域）。
+    pub fn get_app_setting(&self, key: &str) -> Result<Option<String>, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let stored: Option<Option<String>> = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取应用设置失败: {error}"))?;
+        Ok(stored.flatten())
+    }
+
+    /// 写入应用级设置项（非账号作用域）。
+    pub fn set_app_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at)
+             VALUES (?1, ?2, datetime('now', 'localtime'))
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+             updated_at = excluded.updated_at",
+            params![key, value],
+        )
+        .map_err(|error| format!("保存应用设置失败: {error}"))?;
+        Ok(())
+    }
+
     /// 读取当前账号的本地 AI 快捷操作。运行时配置保存在账号作用域的
     /// app_settings 中；仅在首次读取时兼容迁移旧 FastAPI 的 prompt_configs 表。
     pub fn list_prompt_configs(
@@ -2794,6 +3049,589 @@ impl LocalDb {
         Ok(prompts)
     }
 
+    /// 列出记忆条目（L3）。按账号隔离，可按 origin/kind/confirm_status 过滤。
+    pub fn list_memory_entries(
+        &self,
+        filter: MemoryEntryFilter,
+    ) -> Result<Vec<MemoryEntry>, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, filter.account_pool_id)
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        validate_origin(filter.origin.as_deref())?;
+        if let Some(kind) = filter.kind.as_deref() {
+            validate_memory_kind(kind)?;
+        }
+        if let Some(status) = filter.confirm_status.as_deref() {
+            validate_confirm_status(status)?;
+        }
+        let mut sql = String::from(
+            "SELECT id, account_pool_id, origin, kind, content, subject, scope, source, source_type,
+                    occurred_at, confirm_status, valid_status, enabled, replaced_by, created_at, updated_at
+             FROM memory_entries WHERE account_pool_id = ?1",
+        );
+        let mut bind: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(active.id)];
+        if let Some(origin) = filter.origin.as_deref() {
+            sql.push_str(" AND origin = ?");
+            bind.push(Box::new(origin.to_string()));
+        }
+        if let Some(kind) = filter.kind.as_deref() {
+            sql.push_str(" AND kind = ?");
+            bind.push(Box::new(kind.to_string()));
+        }
+        if let Some(status) = filter.confirm_status.as_deref() {
+            sql.push_str(" AND confirm_status = ?");
+            bind.push(Box::new(status.to_string()));
+        }
+        if let Some(enabled) = filter.enabled {
+            sql.push_str(" AND enabled = ?");
+            bind.push(Box::new(enabled as i64));
+        }
+        sql.push_str(" ORDER BY updated_at DESC, id DESC");
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|error| format!("准备记忆查询失败: {error}"))?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params_from_iter(bind.iter().map(|value| value.as_ref())),
+                |row| {
+                    Ok(MemoryEntry {
+                        id: row.get(0)?,
+                        account_pool_id: row.get(1)?,
+                        origin: row.get(2)?,
+                        kind: row.get(3)?,
+                        content: row.get(4)?,
+                        subject: row.get(5)?,
+                        scope: row.get(6)?,
+                        source: row.get(7)?,
+                        source_type: row.get(8)?,
+                        occurred_at: row.get(9)?,
+                        confirm_status: row.get(10)?,
+                        valid_status: row.get(11)?,
+                        enabled: row.get::<_, i64>(12)? != 0,
+                        replaced_by: row.get(13)?,
+                        created_at: row.get(14)?,
+                        updated_at: row.get(15)?,
+                    })
+                },
+            )
+            .map_err(|error| format!("读取记忆条目失败: {error}"))?;
+        rows.collect::<SqlResult<Vec<_>>>()
+            .map_err(|error| format!("读取记忆条目失败: {error}"))
+    }
+
+    /// 新增记忆条目。手工录入默认候选；仅允许显式 candidate/confirmed。
+    pub fn create_memory_entry(&self, input: MemoryEntryCreate) -> Result<MemoryEntry, String> {
+        validate_memory_content(&input.content)?;
+        validate_origin(Some(&input.origin))?;
+        validate_memory_kind(&input.kind)?;
+        validate_source_type(input.source_type.as_deref())?;
+        let confirm_status = input.confirm_status.as_deref().unwrap_or("candidate");
+        validate_confirm_status(confirm_status)?;
+        if confirm_status == "rejected" || confirm_status == "outdated" {
+            return Err("新建记忆只能是候选或已确认".to_string());
+        }
+        let subject = input.subject.unwrap_or_default().trim().to_string();
+        let scope = input.scope.unwrap_or_else(|| "account".to_string());
+        let source = input.source.unwrap_or_default().trim().to_string();
+        let source_type = input.source_type.unwrap_or_else(|| "user".to_string());
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(input.account_pool_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        conn.execute(
+            "INSERT INTO memory_entries (
+                account_pool_id, origin, kind, content, subject, scope, source, source_type,
+                occurred_at, confirm_status, valid_status, enabled
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'valid', ?11)",
+            params![
+                active.id,
+                input.origin,
+                input.kind,
+                input.content.trim(),
+                subject,
+                scope,
+                source,
+                source_type,
+                input.occurred_at,
+                confirm_status,
+                input.enabled.unwrap_or(true) as i64,
+            ],
+        )
+        .map_err(|error| format!("保存记忆条目失败: {error}"))?;
+        let id = conn.last_insert_rowid();
+        self.memory_entry_by_id(&conn, active.id, id)
+    }
+
+    /// 启用/停用记忆条目（停用后不再注入 AI）。
+    pub fn set_memory_entry_enabled(
+        &self,
+        id: i64,
+        account_pool_id: i64,
+        enabled: bool,
+    ) -> Result<MemoryEntry, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(account_pool_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let changed = conn
+            .execute(
+                "UPDATE memory_entries SET enabled = ?1, updated_at = datetime('now', 'localtime')
+                 WHERE id = ?2 AND account_pool_id = ?3",
+                params![enabled as i64, id, active.id],
+            )
+            .map_err(|error| format!("更新记忆启用状态失败: {error}"))?;
+        if changed == 0 {
+            return Err("记忆条目不存在或不属于当前账号".to_string());
+        }
+        self.memory_entry_by_id(&conn, active.id, id)
+    }
+
+    /// 编辑记忆内容字段。不改确认状态、origin 和替代关系。
+    pub fn update_memory_entry(&self, input: MemoryEntryUpdate) -> Result<MemoryEntry, String> {
+        validate_memory_content(&input.content)?;
+        validate_memory_kind(&input.kind)?;
+        validate_source_type(input.source_type.as_deref())?;
+        let subject = input.subject.unwrap_or_default().trim().to_string();
+        let scope = input.scope.unwrap_or_else(|| "account".to_string());
+        let source = input.source.unwrap_or_default().trim().to_string();
+        let source_type = input.source_type.unwrap_or_else(|| "user".to_string());
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(input.account_pool_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let changed = conn
+            .execute(
+                "UPDATE memory_entries
+                 SET kind = ?1, content = ?2, subject = ?3, scope = ?4, source = ?5,
+                     source_type = ?6, occurred_at = ?7, updated_at = datetime('now', 'localtime')
+                 WHERE id = ?8 AND account_pool_id = ?9",
+                params![
+                    input.kind,
+                    input.content.trim(),
+                    subject,
+                    scope,
+                    source,
+                    source_type,
+                    input.occurred_at,
+                    input.id,
+                    active.id,
+                ],
+            )
+            .map_err(|error| format!("更新记忆条目失败: {error}"))?;
+        if changed == 0 {
+            return Err("记忆条目不存在或不属于当前账号".to_string());
+        }
+        self.memory_entry_by_id(&conn, active.id, input.id)
+    }
+
+    /// 删除记忆条目。删除后新任务不再检索；本批次不保留撤回占位（历史产物回填在批次四）。
+    pub fn delete_memory_entry(&self, id: i64, expected_account_id: i64) -> Result<(), String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(expected_account_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let referenced: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM memory_entries
+                 WHERE account_pool_id = ?1 AND replaced_by = ?2 LIMIT 1",
+                params![active.id, id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("检查记忆替代关系失败: {error}"))?;
+        if referenced.is_some() {
+            return Err("该记忆被其他条目的替代关系引用，请先解除引用".to_string());
+        }
+        let deleted = conn
+            .execute(
+                "DELETE FROM memory_entries WHERE id = ?1 AND account_pool_id = ?2",
+                params![id, active.id],
+            )
+            .map_err(|error| format!("删除记忆条目失败: {error}"))?;
+        if deleted == 0 {
+            return Err("记忆条目不存在或不属于当前账号".to_string());
+        }
+        Ok(())
+    }
+
+    /// 删除手机同步缓存。手机是源数据，缓存过期时删除必须幂等且不阻止手机重试。
+    pub fn delete_mobile_memory_cache_entry(&self, id: i64) -> Result<(), String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        conn.execute(
+            "UPDATE memory_entries SET replaced_by = NULL
+             WHERE account_pool_id = ?1 AND origin = 'mobile' AND replaced_by = ?2",
+            params![active.id, id],
+        )
+        .map_err(|error| format!("清理手机记忆缓存引用失败: {error}"))?;
+        conn.execute(
+            "DELETE FROM memory_entries
+             WHERE id = ?1 AND account_pool_id = ?2 AND origin = 'mobile'",
+            params![id, active.id],
+        )
+        .map_err(|error| format!("删除手机记忆缓存失败: {error}"))?;
+        Ok(())
+    }
+
+    /// 确认状态迁移：候选→确认/否定；确认→过时（可带替代条目）。不可逆向迁移。
+    pub fn transition_memory_entry_status(
+        &self,
+        input: MemoryEntryTransition,
+    ) -> Result<MemoryEntry, String> {
+        validate_confirm_status(&input.next_status)?;
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(input.account_pool_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let current_status: String = conn
+            .query_row(
+                "SELECT confirm_status FROM memory_entries
+                 WHERE id = ?1 AND account_pool_id = ?2",
+                params![input.id, active.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取记忆状态失败: {error}"))?
+            .ok_or_else(|| "记忆条目不存在或不属于当前账号".to_string())?;
+        validate_status_transition(&current_status, &input.next_status)?;
+        if let Some(replaced_by) = input.replaced_by {
+            if input.next_status != "outdated" {
+                return Err("替代关系只能在标记过时时写入".to_string());
+            }
+            if replaced_by == input.id {
+                return Err("记忆不能替代自己".to_string());
+            }
+            let target_status: Option<String> = conn
+                .query_row(
+                    "SELECT confirm_status FROM memory_entries
+                     WHERE id = ?1 AND account_pool_id = ?2",
+                    params![replaced_by, active.id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| format!("检查替代记忆失败: {error}"))?;
+            let target_status =
+                target_status.ok_or_else(|| "替代条目不存在或不属于当前账号".to_string())?;
+            if target_status != "confirmed" {
+                return Err("替代条目必须是已确认记忆".to_string());
+            }
+        }
+        conn.execute(
+            "UPDATE memory_entries
+             SET confirm_status = ?1,
+                 valid_status = CASE WHEN ?1 IN ('rejected', 'outdated') THEN 'invalid' ELSE valid_status END,
+                 replaced_by = ?2,
+                 updated_at = datetime('now', 'localtime')
+             WHERE id = ?3 AND account_pool_id = ?4",
+            params![input.next_status, input.replaced_by, input.id, active.id],
+        )
+        .map_err(|error| format!("更新记忆状态失败: {error}"))?;
+        self.memory_entry_by_id(&conn, active.id, input.id)
+    }
+
+    fn memory_entry_by_id(
+        &self,
+        conn: &Connection,
+        account_pool_id: i64,
+        id: i64,
+    ) -> Result<MemoryEntry, String> {
+        conn.query_row(
+            "SELECT id, account_pool_id, origin, kind, content, subject, scope, source, source_type,
+                    occurred_at, confirm_status, valid_status, enabled, replaced_by, created_at, updated_at
+             FROM memory_entries WHERE id = ?1 AND account_pool_id = ?2",
+            params![id, account_pool_id],
+            |row| {
+                Ok(MemoryEntry {
+                    id: row.get(0)?,
+                    account_pool_id: row.get(1)?,
+                    origin: row.get(2)?,
+                    kind: row.get(3)?,
+                    content: row.get(4)?,
+                    subject: row.get(5)?,
+                    scope: row.get(6)?,
+                    source: row.get(7)?,
+                    source_type: row.get(8)?,
+                    occurred_at: row.get(9)?,
+                    confirm_status: row.get(10)?,
+                    valid_status: row.get(11)?,
+                    enabled: row.get::<_, i64>(12)? != 0,
+                    replaced_by: row.get(13)?,
+                    created_at: row.get(14)?,
+                    updated_at: row.get(15)?,
+                })
+            },
+        )
+        .map_err(|error| format!("读取记忆条目失败: {error}"))
+    }
+
+    /// 列出经验提示词（L2）。按账号 + origin 过滤。
+    pub fn list_experience_prompts(
+        &self,
+        account_pool_id: Option<i64>,
+        origin: Option<String>,
+    ) -> Result<Vec<ExperiencePrompt>, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, account_pool_id)
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        validate_origin(origin.as_deref())?;
+        let rows = if let Some(origin) = origin.as_deref() {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, account_pool_id, origin, title, content, enabled, apply_scope,
+                            apply_target, source, sort_order, created_at, updated_at
+                     FROM experience_prompts
+                     WHERE account_pool_id = ?1 AND origin = ?2
+                     ORDER BY sort_order, id",
+                )
+                .map_err(|error| format!("准备经验提示词查询失败: {error}"))?;
+            let mapped = stmt
+                .query_map(params![active.id, origin], |row| {
+                    Ok(experience_prompt_from_row(row)?)
+                })
+                .map_err(|error| format!("读取经验提示词失败: {error}"))?;
+            mapped.collect::<SqlResult<Vec<_>>>()
+        } else {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, account_pool_id, origin, title, content, enabled, apply_scope,
+                            apply_target, source, sort_order, created_at, updated_at
+                     FROM experience_prompts
+                     WHERE account_pool_id = ?1
+                     ORDER BY sort_order, id",
+                )
+                .map_err(|error| format!("准备经验提示词查询失败: {error}"))?;
+            let mapped = stmt
+                .query_map(params![active.id], |row| {
+                    Ok(experience_prompt_from_row(row)?)
+                })
+                .map_err(|error| format!("读取经验提示词失败: {error}"))?;
+            mapped.collect::<SqlResult<Vec<_>>>()
+        };
+        rows.map_err(|error| format!("读取经验提示词失败: {error}"))
+    }
+
+    /// 新增或更新经验提示词。启用条目每池 ≤10 条，单条 ≤300 字。
+    pub fn upsert_experience_prompt(
+        &self,
+        input: ExperiencePromptUpsert,
+    ) -> Result<Vec<ExperiencePrompt>, String> {
+        self.upsert_experience_prompt_with_id(input)
+            .map(|(_, prompts)| prompts)
+    }
+
+    /// 与普通 upsert 相同，但同时返回受影响条目的 ID，避免按展示排序猜测新建 ID。
+    pub fn upsert_experience_prompt_with_id(
+        &self,
+        input: ExperiencePromptUpsert,
+    ) -> Result<(i64, Vec<ExperiencePrompt>), String> {
+        validate_experience_prompt_fields(&input.title, &input.content)?;
+        validate_origin(Some(&input.origin))?;
+        let apply_scope = input.apply_scope.unwrap_or_else(|| "account".to_string());
+        let apply_target = input.apply_target.unwrap_or_else(|| "all".to_string());
+        let source = input.source.unwrap_or_else(|| "user".to_string());
+        if !matches!(apply_scope.as_str(), "global" | "account") {
+            return Err("适用范围只能是 global 或 account".to_string());
+        }
+        if !matches!(apply_target.as_str(), "all" | "compose" | "chat") {
+            return Err("适用目标只能是 all / compose / chat".to_string());
+        }
+        if !matches!(source.as_str(), "user" | "from_memory" | "sync") {
+            return Err("来源只能是 user / from_memory / sync".to_string());
+        }
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(input.account_pool_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        if input.enabled {
+            let enabled_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM experience_prompts
+                     WHERE account_pool_id = ?1 AND origin = ?2 AND enabled = 1
+                       AND (?3 IS NULL OR id != ?3)",
+                    params![active.id, input.origin, input.id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("统计经验提示词失败: {error}"))?;
+            if enabled_count >= 10 {
+                return Err("启用中的经验提示词最多 10 条，请先停用或删除".to_string());
+            }
+        }
+        if let Some(id) = input.id {
+            let changed = conn
+                .execute(
+                    "UPDATE experience_prompts
+                     SET title = ?1, content = ?2, enabled = ?3, apply_scope = ?4,
+                         apply_target = ?5, source = ?6,
+                         sort_order = COALESCE(?7, sort_order),
+                         updated_at = datetime('now', 'localtime')
+                     WHERE id = ?8 AND account_pool_id = ?9 AND origin = ?10",
+                    params![
+                        input.title.trim(),
+                        input.content.trim(),
+                        input.enabled as i64,
+                        apply_scope,
+                        apply_target,
+                        source,
+                        input.sort_order,
+                        id,
+                        active.id,
+                        input.origin,
+                    ],
+                )
+                .map_err(|error| format!("更新经验提示词失败: {error}"))?;
+            if changed == 0 {
+                return Err("经验提示词不存在或不属于当前账号/端".to_string());
+            }
+        } else {
+            conn.execute(
+                "INSERT INTO experience_prompts (
+                    account_pool_id, origin, title, content, enabled, apply_scope,
+                    apply_target, source, sort_order
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    active.id,
+                    input.origin,
+                    input.title.trim(),
+                    input.content.trim(),
+                    input.enabled as i64,
+                    apply_scope,
+                    apply_target,
+                    source,
+                    input.sort_order.unwrap_or(0),
+                ],
+            )
+            .map_err(|error| format!("保存经验提示词失败: {error}"))?;
+        }
+        let id = input.id.unwrap_or_else(|| conn.last_insert_rowid());
+        let prompts = self.list_experience_prompts(Some(active.id), Some(input.origin))?;
+        Ok((id, prompts))
+    }
+
+    /// 删除经验提示词条目。
+    pub fn delete_experience_prompt(
+        &self,
+        id: i64,
+        account_pool_id: i64,
+        origin: String,
+    ) -> Result<Vec<ExperiencePrompt>, String> {
+        validate_origin(Some(&origin))?;
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(account_pool_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM experience_prompts
+                 WHERE id = ?1 AND account_pool_id = ?2 AND origin = ?3",
+                params![id, active.id, origin],
+            )
+            .map_err(|error| format!("删除经验提示词失败: {error}"))?;
+        if deleted == 0 {
+            return Err("经验提示词不存在或不属于当前账号/端".to_string());
+        }
+        self.list_experience_prompts(Some(active.id), Some(origin))
+    }
+
+    /// 读取 L0/L1 系统经验规则。L0 不可改；L1 可覆盖并可恢复默认。
+    pub fn read_memory_system_rules(&self) -> Result<MemorySystemRules, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let _ = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        let override_value: Option<Option<String>> = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                params![MEMORY_L1_OVERRIDE_KEY],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("读取系统规则覆盖失败: {error}"))?;
+        let stored = override_value.flatten();
+        let (l1_active, l1_is_override) = match stored {
+            Some(value) if !value.trim().is_empty() => (value, true),
+            _ => (DEFAULT_MEMORY_L1.to_string(), false),
+        };
+        Ok(MemorySystemRules {
+            l0: DEFAULT_MEMORY_L0.to_string(),
+            l1_default: DEFAULT_MEMORY_L1.to_string(),
+            l1_active,
+            l1_is_override,
+        })
+    }
+
+    /// 保存 L1 覆盖文本（非空）。
+    pub fn save_memory_l1_override(&self, content: &str) -> Result<MemorySystemRules, String> {
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return Err("L1 覆盖内容不能为空；如需恢复默认请调用 reset".to_string());
+        }
+        if trimmed.chars().count() > 2000 {
+            return Err("L1 覆盖内容最多 2000 字".to_string());
+        }
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let _ = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at)
+             VALUES (?1, ?2, datetime('now', 'localtime'))
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+             updated_at = excluded.updated_at",
+            params![MEMORY_L1_OVERRIDE_KEY, trimmed],
+        )
+        .map_err(|error| format!("保存系统规则覆盖失败: {error}"))?;
+        self.read_memory_system_rules()
+    }
+
+    /// 恢复 L1 默认，删除覆盖。
+    pub fn reset_memory_l1_override(&self) -> Result<MemorySystemRules, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let _ = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        conn.execute(
+            "DELETE FROM app_settings WHERE key = ?1",
+            params![MEMORY_L1_OVERRIDE_KEY],
+        )
+        .map_err(|error| format!("清除系统规则覆盖失败: {error}"))?;
+        self.read_memory_system_rules()
+    }
+
     /// 更新当前账号笔记的互动统计。字段白名单和版本校验避免旧页面覆盖新数据。
     pub fn update_local_note_stats(
         &self,
@@ -2874,7 +3712,7 @@ impl LocalDb {
         let mut statement = conn
             .prepare(
                 "SELECT id, account_pool_id, title, source_url, body, observed_at,
-                        reason, status, note_id, dedupe_key
+                        reason, status, note_id, dedupe_key, material_type, author, capture_modules
                  FROM inspirations
                  WHERE account_pool_id = ?1
                  ORDER BY observed_at DESC, id DESC",
@@ -2959,8 +3797,9 @@ impl LocalDb {
         tx.execute(
             "INSERT INTO inspirations (
                id, account_pool_id, title, source_url, body, observed_at, reason,
-               status, note_id, dedupe_key, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'saved', NULL, ?8,
+               status, note_id, dedupe_key, material_type, author, capture_modules,
+               created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'saved', NULL, ?8, ?9, ?10, ?11,
                        datetime('now', 'localtime'), datetime('now', 'localtime'))
              ON CONFLICT(id) DO UPDATE SET
                account_pool_id = excluded.account_pool_id,
@@ -2970,6 +3809,9 @@ impl LocalDb {
                observed_at = excluded.observed_at,
                reason = excluded.reason,
                dedupe_key = excluded.dedupe_key,
+               material_type = excluded.material_type,
+               author = excluded.author,
+               capture_modules = excluded.capture_modules,
                updated_at = excluded.updated_at",
             params![
                 input.id,
@@ -2980,6 +3822,14 @@ impl LocalDb {
                 input.observed_at.trim(),
                 input.reason.trim(),
                 input.dedupe_key.as_deref().map(str::trim),
+                input
+                    .material_type
+                    .as_deref()
+                    .unwrap_or("web_material")
+                    .trim(),
+                input.author.as_deref().unwrap_or("").trim(),
+                serde_json::to_string(input.capture_modules.as_deref().unwrap_or(&[]))
+                    .unwrap_or_else(|_| "[]".to_string()),
             ],
         )
         .map_err(|error| format!("保存本地灵感失败: {error}"))?;
@@ -3034,7 +3884,7 @@ impl LocalDb {
         let converted = tx
             .query_row(
                 "SELECT id, account_pool_id, title, source_url, body, observed_at,
-                        reason, status, note_id, dedupe_key
+                        reason, status, note_id, dedupe_key, material_type, author, capture_modules
                  FROM inspirations
                  WHERE id = ?1 AND account_pool_id = ?2",
                 params![id.trim(), account_pool_id],
@@ -3044,6 +3894,411 @@ impl LocalDb {
         tx.commit()
             .map_err(|error| format!("提交灵感转换失败: {error}"))?;
         Ok(converted)
+    }
+
+    /// 根据当前激活账号的本地记录识别扩展当前页，供弹窗选择默认操作。
+    pub fn lookup_browser_page_context(
+        &self,
+        source_url: &str,
+        requested_page_type: &str,
+    ) -> Result<BrowserPageContext, String> {
+        let normalized_url = normalize_browser_lookup_url(source_url)
+            .ok_or_else(|| "当前页链接无效，必须是 http(s) 链接".to_string())?;
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+
+        let own_note = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT title, note_url FROM notes
+                     WHERE account_pool_id = ?1 AND deleted_at IS NULL AND note_url IS NOT NULL",
+                )
+                .map_err(|error| format!("查询当前账号笔记失败: {error}"))?;
+            let rows = statement
+                .query_map(params![active.id], |row| {
+                    Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|error| format!("读取当前账号笔记失败: {error}"))?;
+            let matched = rows.filter_map(Result::ok).find(|(_, url)| {
+                normalize_browser_lookup_url(url).as_deref() == Some(normalized_url.as_str())
+            });
+            matched
+        };
+
+        let mut reference_note: Option<(i64, Option<String>, Option<String>)> = None;
+        let mut reference_profile: Option<(i64, Option<String>)> = None;
+        {
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, account_id, name, top_notes FROM reference_accounts
+                     WHERE account_pool_id = ?1 ORDER BY id DESC",
+                )
+                .map_err(|error| format!("查询当前账号榜样失败: {error}"))?;
+            let rows = statement
+                .query_map(params![active.id], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(|error| format!("读取当前账号榜样失败: {error}"))?;
+            for row in rows {
+                let (id, account_id, name, top_notes) =
+                    row.map_err(|error| format!("解析当前账号榜样失败: {error}"))?;
+                let notes =
+                    serde_json::from_str::<Vec<ReferenceNote>>(&top_notes).unwrap_or_default();
+                if let Some(note) = notes.iter().find(|note| {
+                    note.url
+                        .as_deref()
+                        .and_then(normalize_browser_lookup_url)
+                        .as_deref()
+                        == Some(normalized_url.as_str())
+                }) {
+                    reference_note = Some((id, name.clone(), Some(note.title.clone())));
+                    break;
+                }
+                if requested_page_type == "profile" && url_has_path_segment(source_url, &account_id)
+                {
+                    reference_profile = Some((id, name));
+                    break;
+                }
+            }
+        }
+
+        let prior_snapshot = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT kind, title, observed_at, source_url, reference_account_id FROM page_snapshots
+                     WHERE account_pool_id = ?1
+                     ORDER BY observed_at DESC, id DESC LIMIT 2000",
+                )
+                .map_err(|error| format!("查询页面快照历史失败: {error}"))?;
+            let rows = statement
+                .query_map(params![active.id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                    ))
+                })
+                .map_err(|error| format!("读取页面快照历史失败: {error}"))?;
+            let mut found = None;
+            for row in rows {
+                let snapshot = row.map_err(|error| format!("解析页面快照历史失败: {error}"))?;
+                if normalize_browser_lookup_url(&snapshot.3).as_deref()
+                    == Some(normalized_url.as_str())
+                {
+                    found = Some(snapshot);
+                    break;
+                }
+            }
+            found
+        };
+
+        let saved_material = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT title, source_url, material_type FROM inspirations
+                     WHERE account_pool_id = ?1 AND source_url != ''
+                     ORDER BY updated_at DESC, id DESC",
+                )
+                .map_err(|error| format!("查询已收藏材料失败: {error}"))?;
+            let rows = statement
+                .query_map(params![active.id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })
+                .map_err(|error| format!("读取已收藏材料失败: {error}"))?;
+            let mut found = None;
+            for row in rows {
+                let item = row.map_err(|error| format!("解析已收藏材料失败: {error}"))?;
+                if normalize_browser_lookup_url(&item.1).as_deref() == Some(normalized_url.as_str())
+                {
+                    found = Some(item);
+                    break;
+                }
+            }
+            found
+        };
+
+        if let Some((title, _)) = own_note {
+            let last_snapshot_at = prior_snapshot
+                .as_ref()
+                .filter(|snapshot| snapshot.0 == "note_snapshot")
+                .map(|snapshot| snapshot.2.clone());
+            return Ok(browser_page_context(
+                "own_note",
+                "note",
+                Some("note_snapshot"),
+                None,
+                title,
+                last_snapshot_at,
+            ));
+        }
+        if let Some((reference_account_id, name, note_title)) = reference_note {
+            let last_snapshot_at = prior_snapshot
+                .as_ref()
+                .filter(|snapshot| snapshot.0 == "ref_snapshot")
+                .map(|snapshot| snapshot.2.clone());
+            return Ok(browser_page_context(
+                "reference_note",
+                "note",
+                Some("ref_snapshot"),
+                Some(reference_account_id),
+                prior_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.1.clone())
+                    .or(note_title)
+                    .or(name),
+                last_snapshot_at,
+            ));
+        }
+        if let Some((reference_account_id, name)) = reference_profile {
+            let last_snapshot_at = prior_snapshot
+                .as_ref()
+                .filter(|snapshot| snapshot.0 == "ref_snapshot")
+                .map(|snapshot| snapshot.2.clone());
+            return Ok(browser_page_context(
+                "reference_profile",
+                "profile",
+                Some("ref_snapshot"),
+                Some(reference_account_id),
+                prior_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.1.clone())
+                    .or(name),
+                last_snapshot_at,
+            ));
+        }
+        if let Some((kind, title, observed_at, _, reference_account_id)) = prior_snapshot {
+            if kind == "note_snapshot" || kind == "ref_snapshot" {
+                let page_type = if kind == "note_snapshot" {
+                    "note"
+                } else if requested_page_type == "profile" {
+                    "profile"
+                } else {
+                    "note"
+                };
+                return Ok(browser_page_context(
+                    "known_snapshot",
+                    page_type,
+                    Some(&kind),
+                    reference_account_id,
+                    Some(title),
+                    Some(observed_at),
+                ));
+            }
+        }
+        if let Some((title, _, Some(material_type))) = saved_material {
+            let (match_type, page_type) = match material_type.as_str() {
+                "note_material" => ("saved_note_material", "note"),
+                "profile_material" => ("saved_profile_material", "profile"),
+                _ => ("", "web"),
+            };
+            if !match_type.is_empty() {
+                return Ok(browser_page_context(
+                    match_type,
+                    page_type,
+                    Some("ref_snapshot"),
+                    None,
+                    Some(title),
+                    None,
+                ));
+            }
+        }
+
+        Ok(BrowserPageContext {
+            match_type: "unknown".to_string(),
+            default_action: "collect_material".to_string(),
+            page_type: requested_page_type.to_string(),
+            snapshot_kind: None,
+            reference_account_id: None,
+            matched_title: None,
+            last_snapshot_at: None,
+        })
+    }
+
+    /// 保存一条页面快照（单篇刷新 / 扩展解析当前页）。
+    /// 快照是数据记录，不走灵感待确认队列；指标缺失保持 NULL，不编造数字。
+    pub fn save_page_snapshot(
+        &self,
+        input: PageSnapshotCreate,
+    ) -> Result<PageSnapshotSummary, String> {
+        validate_page_snapshot(&input)?;
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        ensure_expected_account(&active, Some(input.account_pool_id))
+            .map_err(|error| format!("账号上下文已变化: {error}"))?;
+        let reference_account_id = if let Some(reference_account_id) = input.reference_account_id {
+            let belongs_to_active: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM reference_accounts
+                     WHERE id = ?1 AND account_pool_id = ?2)",
+                    params![reference_account_id, active.id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("校验榜样归属失败: {error}"))?;
+            if !belongs_to_active {
+                return Err("榜样不存在或不属于当前账号".to_string());
+            }
+            Some(reference_account_id)
+        } else {
+            None
+        };
+        let metrics_json = serde_json::to_string(&input.metrics)
+            .map_err(|error| format!("序列化快照指标失败: {error}"))?;
+        // 同一 request_id 幂等：重复投递不追加新行。
+        if let Some(request_id) = input.request_id.as_deref() {
+            if !request_id.is_empty() {
+                let existing: Option<i64> = conn
+                    .query_row(
+                        "SELECT id FROM page_snapshots
+                         WHERE account_pool_id = ?1 AND request_id = ?2",
+                        params![active.id, request_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| format!("校验快照幂等失败: {error}"))?;
+                if let Some(id) = existing {
+                    return self.page_snapshot_by_id(id);
+                }
+            }
+        }
+        let note_id = if input.kind == "note_snapshot" {
+            resolve_note_id_by_url(&conn, active.id, &input.source_url)
+                .map_err(|error| format!("解析笔记链接失败: {error}"))?
+        } else {
+            None
+        };
+        let now = input.observed_at.trim().to_string();
+        conn.execute(
+            "INSERT INTO page_snapshots (
+                account_pool_id, kind, source_url, title, author, body_excerpt,
+                like_count, collect_count, comment_count, metrics_json,
+                note_id, reference_account_id, request_id, observed_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                active.id,
+                input.kind,
+                input.source_url.trim(),
+                input.title.trim(),
+                input.author.trim(),
+                input.body_excerpt.trim(),
+                input.metrics.like,
+                input.metrics.collect,
+                input.metrics.comment,
+                metrics_json,
+                note_id,
+                reference_account_id,
+                input.request_id.as_deref().unwrap_or("").trim(),
+                now,
+            ],
+        )
+        .map_err(|error| format!("写入页面快照失败: {error}"))?;
+        // 自己笔记快照顺手更新 notes 上的即时指标，便于列表直接读。
+        if let Some(note_id) = note_id {
+            conn.execute(
+                "UPDATE notes
+                 SET likes = COALESCE(?2, likes),
+                     collects = COALESCE(?3, collects),
+                     comments = COALESCE(?4, comments),
+                     updated_at = datetime('now', 'localtime')
+                 WHERE id = ?1 AND account_pool_id = ?5 AND deleted_at IS NULL",
+                params![
+                    note_id,
+                    input.metrics.like,
+                    input.metrics.collect,
+                    input.metrics.comment,
+                    active.id
+                ],
+            )
+            .map_err(|error| format!("更新笔记即时指标失败: {error}"))?;
+        }
+        if let Some(reference_account_id) = reference_account_id {
+            conn.execute(
+                "UPDATE reference_accounts
+                 SET followers = COALESCE(?1, followers),
+                     note_count = COALESCE(?2, note_count)
+                 WHERE id = ?3 AND account_pool_id = ?4",
+                params![
+                    input.metrics.followers,
+                    input.metrics.note_count,
+                    reference_account_id,
+                    active.id,
+                ],
+            )
+            .map_err(|error| format!("更新榜样主页即时数据失败: {error}"))?;
+        }
+        let id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |row| row.get(0))
+            .map_err(|error| format!("读取快照 ID 失败: {error}"))?;
+        drop(conn);
+        self.page_snapshot_by_id(id)
+    }
+
+    pub fn page_snapshot_by_id(&self, id: i64) -> Result<PageSnapshotSummary, String> {
+        let conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        conn.query_row(
+            "SELECT id, account_pool_id, kind, source_url, title, author, body_excerpt,
+                    like_count, collect_count, comment_count, metrics_json,
+                    note_id, reference_account_id, request_id, observed_at, created_at
+             FROM page_snapshots WHERE id = ?1",
+            params![id],
+            page_snapshot_from_row,
+        )
+        .map_err(|error| format!("读取页面快照失败: {error}"))
+    }
+
+    /// 按来源 URL 读取快照历史（新到旧）。limit 上限 200，防止列表膨胀。
+    pub fn list_page_snapshots(
+        &self,
+        account_pool_id: Option<i64>,
+        source_url: &str,
+        limit: Option<i64>,
+    ) -> Result<Vec<PageSnapshotSummary>, String> {
+        let mut conn = self
+            .connect()
+            .map_err(|error| format!("打开本地数据库失败: {error}"))?;
+        let active = ensure_active_account(&mut conn, &self.path)
+            .map_err(|error| format!("读取激活账号失败: {error}"))?;
+        let expected = account_pool_id.unwrap_or(active.id);
+        ensure_expected_account(&active, Some(expected)).map_err(|error| error.to_string())?;
+        let take = limit.unwrap_or(50).clamp(1, 200);
+        let mut statement = conn
+            .prepare(
+                "SELECT id, account_pool_id, kind, source_url, title, author, body_excerpt,
+                        like_count, collect_count, comment_count, metrics_json,
+                        note_id, reference_account_id, request_id, observed_at, created_at
+                 FROM page_snapshots
+                 WHERE account_pool_id = ?1 AND source_url = ?2
+                 ORDER BY observed_at DESC, id DESC
+                 LIMIT ?3",
+            )
+            .map_err(|error| format!("读取页面快照历史失败: {error}"))?;
+        let rows = statement
+            .query_map(
+                params![active.id, source_url.trim(), take],
+                page_snapshot_from_row,
+            )
+            .map_err(|error| format!("读取页面快照历史失败: {error}"))?
+            .collect::<SqlResult<Vec<_>>>()
+            .map_err(|error| format!("解析页面快照历史失败: {error}"))?;
+        Ok(rows)
     }
 
     /// 在当前运营账号下保存一个手工榜样账号。平台主页抓取仍由旧服务负责，
@@ -3647,6 +4902,112 @@ fn knowledge_preferences_key(account_pool_id: i64) -> String {
 
 fn prompt_configs_key(account_pool_id: i64) -> String {
     format!("prompt_configs:{account_pool_id}")
+}
+
+const MEMORY_L1_OVERRIDE_KEY: &str = "memory_l1_override";
+
+const DEFAULT_MEMORY_L0: &str = "\
+你是「爱吃红薯」小红书家居内容助手，帮助当前运营账号做选题、写稿、改稿与复盘。
+Ask 模式只回答和分析，不执行命令、不修改文件、不访问网络、不写入页面。
+Agent 模式先给出行动计划；涉及发布、删除、修改或外部操作时必须先明确列出待确认动作，不要擅自执行。";
+
+const DEFAULT_MEMORY_L1: &str = "\
+出稿硬性格式（小红书编辑器不识别 Markdown，必须纯文本）：
+1. 禁止任何 Markdown 标记：加粗、标题、列表、代码、引用、表格、链接、分隔线
+2. 禁止会话/元信息与过场开场白；不要在正文里重复标题
+3. 标题一行 ≤20 字，可带数字或痛点；正文分段清晰、口语短句，结尾 5-8 个话题标签，200-500 字
+4. 格式固定为两行块：第一行标题本身，空一行后直接写正文要点/体验/避坑
+方法论：先痛点后解法；真实接地气；参考经验与样本时学习思路，不要照抄，不编造数据与来源。";
+
+fn validate_origin(origin: Option<&str>) -> Result<(), String> {
+    match origin {
+        None | Some("") => Ok(()),
+        Some("pc") | Some("mobile") => Ok(()),
+        Some(_) => Err("端归属只能是 pc 或 mobile".to_string()),
+    }
+}
+
+fn validate_memory_kind(kind: &str) -> Result<(), String> {
+    match kind {
+        "positioning" | "expression" | "fact" | "event" | "content_history" => Ok(()),
+        _ => Err(
+            "记忆类型只能是 positioning / expression / fact / event / content_history".to_string(),
+        ),
+    }
+}
+
+fn validate_confirm_status(status: &str) -> Result<(), String> {
+    match status {
+        "candidate" | "confirmed" | "rejected" | "outdated" => Ok(()),
+        _ => Err("确认状态只能是 candidate / confirmed / rejected / outdated".to_string()),
+    }
+}
+
+fn validate_source_type(source_type: Option<&str>) -> Result<(), String> {
+    match source_type {
+        None | Some("") | Some("user") | Some("ai_draft") | Some("import") | Some("sync") => Ok(()),
+        Some(_) => Err("来源类型只能是 user / ai_draft / import / sync".to_string()),
+    }
+}
+
+fn validate_memory_content(content: &str) -> Result<(), String> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err("记忆内容不能为空".to_string());
+    }
+    if trimmed.chars().count() > 1000 {
+        return Err("记忆内容最多 1000 字".to_string());
+    }
+    Ok(())
+}
+
+fn validate_status_transition(current: &str, next: &str) -> Result<(), String> {
+    let allowed = matches!(
+        (current, next),
+        ("candidate", "confirmed") | ("candidate", "rejected") | ("confirmed", "outdated")
+    );
+    if allowed {
+        Ok(())
+    } else {
+        Err(format!(
+            "不允许从 {current} 迁移到 {next}；候选只能确认/否定，确认只能标记过时，否定与过时不可逆"
+        ))
+    }
+}
+
+fn validate_experience_prompt_fields(title: &str, content: &str) -> Result<(), String> {
+    let title = title.trim();
+    let content = content.trim();
+    if title.is_empty() {
+        return Err("经验提示词标题不能为空".to_string());
+    }
+    if title.chars().count() > 40 {
+        return Err("经验提示词标题最多 40 字".to_string());
+    }
+    if content.is_empty() {
+        return Err("经验提示词内容不能为空".to_string());
+    }
+    if content.chars().count() > 300 {
+        return Err("经验提示词内容最多 300 字".to_string());
+    }
+    Ok(())
+}
+
+fn experience_prompt_from_row(row: &rusqlite::Row<'_>) -> SqlResult<ExperiencePrompt> {
+    Ok(ExperiencePrompt {
+        id: row.get(0)?,
+        account_pool_id: row.get(1)?,
+        origin: row.get(2)?,
+        title: row.get(3)?,
+        content: row.get(4)?,
+        enabled: row.get::<_, i64>(5)? != 0,
+        apply_scope: row.get(6)?,
+        apply_target: row.get(7)?,
+        source: row.get(8)?,
+        sort_order: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+    })
 }
 
 fn default_prompt_configs() -> Vec<PromptConfig> {
@@ -4379,7 +5740,71 @@ fn migrate(conn: &mut Connection) -> SqlResult<()> {
              error TEXT,
              created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
              updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
-         );",
+         );
+         CREATE TABLE IF NOT EXISTS memory_entries (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             account_pool_id INTEGER NOT NULL REFERENCES account_pool(id) ON DELETE CASCADE,
+             origin TEXT NOT NULL DEFAULT 'pc' CHECK(origin IN ('pc', 'mobile')),
+             kind TEXT NOT NULL DEFAULT 'fact'
+                 CHECK(kind IN ('positioning', 'expression', 'fact', 'event', 'content_history')),
+             content TEXT NOT NULL,
+             subject TEXT NOT NULL DEFAULT '',
+             scope TEXT NOT NULL DEFAULT 'account',
+             source TEXT NOT NULL DEFAULT '',
+             source_type TEXT NOT NULL DEFAULT 'user'
+                 CHECK(source_type IN ('user', 'ai_draft', 'import', 'sync')),
+             occurred_at TEXT,
+             confirm_status TEXT NOT NULL DEFAULT 'candidate'
+                 CHECK(confirm_status IN ('candidate', 'confirmed', 'rejected', 'outdated')),
+             valid_status TEXT NOT NULL DEFAULT 'valid'
+                 CHECK(valid_status IN ('valid', 'invalid')),
+             replaced_by INTEGER REFERENCES memory_entries(id) ON DELETE SET NULL,
+             created_at TEXT DEFAULT (datetime('now', 'localtime')),
+             updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_memory_entries_pool_origin
+             ON memory_entries(account_pool_id, origin, confirm_status, valid_status);
+         CREATE TABLE IF NOT EXISTS experience_prompts (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             account_pool_id INTEGER NOT NULL REFERENCES account_pool(id) ON DELETE CASCADE,
+             origin TEXT NOT NULL DEFAULT 'pc' CHECK(origin IN ('pc', 'mobile')),
+             title TEXT NOT NULL,
+             content TEXT NOT NULL,
+             enabled INTEGER NOT NULL DEFAULT 1,
+             apply_scope TEXT NOT NULL DEFAULT 'account'
+                 CHECK(apply_scope IN ('global', 'account')),
+             apply_target TEXT NOT NULL DEFAULT 'all'
+                 CHECK(apply_target IN ('all', 'compose', 'chat')),
+             source TEXT NOT NULL DEFAULT 'user'
+                 CHECK(source IN ('user', 'from_memory')),
+             sort_order INTEGER NOT NULL DEFAULT 0,
+             created_at TEXT DEFAULT (datetime('now', 'localtime')),
+             updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_experience_prompts_pool_origin
+             ON experience_prompts(account_pool_id, origin, enabled);
+         CREATE TABLE IF NOT EXISTS page_snapshots (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             account_pool_id INTEGER NOT NULL REFERENCES account_pool(id) ON DELETE CASCADE,
+             kind TEXT NOT NULL CHECK(kind IN ('note_snapshot', 'ref_snapshot', 'clip')),
+             source_url TEXT NOT NULL DEFAULT '',
+             title TEXT NOT NULL DEFAULT '',
+             author TEXT NOT NULL DEFAULT '',
+             body_excerpt TEXT NOT NULL DEFAULT '',
+             like_count INTEGER,
+             collect_count INTEGER,
+             comment_count INTEGER,
+             metrics_json TEXT NOT NULL DEFAULT '{}',
+             note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL,
+             reference_account_id INTEGER REFERENCES reference_accounts(id) ON DELETE SET NULL,
+             request_id TEXT,
+             observed_at TEXT NOT NULL,
+             created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_page_snapshots_pool_kind
+             ON page_snapshots(account_pool_id, kind, observed_at);
+         CREATE INDEX IF NOT EXISTS idx_page_snapshots_url
+             ON page_snapshots(account_pool_id, source_url);",
     )?;
 
     // 旧数据库可能由 Python 先创建过部分表。只增加缺失列，不重建表、不覆盖字段。
@@ -4481,6 +5906,17 @@ fn migrate(conn: &mut Connection) -> SqlResult<()> {
         ("inspirations", "dedupe_key", "TEXT"),
         ("inspirations", "created_at", "TEXT"),
         ("inspirations", "updated_at", "TEXT"),
+        (
+            "inspirations",
+            "material_type",
+            "TEXT NOT NULL DEFAULT 'web_material'",
+        ),
+        (
+            "inspirations",
+            "capture_modules",
+            "TEXT NOT NULL DEFAULT '[]'",
+        ),
+        ("inspirations", "author", "TEXT NOT NULL DEFAULT ''"),
         ("ai_runs", "run_id", "TEXT"),
         ("ai_runs", "account_pool_id", "INTEGER"),
         ("ai_runs", "note_id", "INTEGER"),
@@ -4526,8 +5962,31 @@ fn migrate(conn: &mut Connection) -> SqlResult<()> {
         ("publish_outbox", "error", "TEXT"),
         ("publish_outbox", "created_at", "TEXT"),
         ("publish_outbox", "updated_at", "TEXT"),
+        ("memory_entries", "enabled", "INTEGER NOT NULL DEFAULT 1"),
     ] {
         ensure_column(&tx, table, column, definition)?;
+    }
+
+    // 记忆启用位一次性回填：原「已确认且有效」为启用，候选/否定/过时为停用。
+    let memory_enabled_migrated: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if memory_enabled_migrated == 0 {
+        tx.execute_batch(
+            "UPDATE memory_entries SET enabled = 1
+             WHERE confirm_status = 'confirmed' AND valid_status = 'valid';
+             UPDATE memory_entries SET enabled = 0
+             WHERE NOT (confirm_status = 'confirmed' AND valid_status = 'valid');",
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name)
+             VALUES (2, 'memory_entries_enabled')",
+            [],
+        )?;
     }
 
     tx.execute_batch(
@@ -4841,6 +6300,127 @@ fn validate_local_inspiration(input: &LocalInspirationCreate) -> Result<(), Stri
     Ok(())
 }
 
+fn validate_page_snapshot(input: &PageSnapshotCreate) -> Result<(), String> {
+    if !matches!(
+        input.kind.as_str(),
+        "note_snapshot" | "ref_snapshot" | "clip"
+    ) {
+        return Err("快照类型无效".to_string());
+    }
+    if input.title.trim().is_empty() {
+        return Err("快照标题不能为空".to_string());
+    }
+    if input.title.trim().chars().count() > 200
+        || input.author.trim().chars().count() > 200
+        || input.body_excerpt.trim().chars().count() > 4_000
+        || input.source_url.trim().chars().count() > 2_000
+    {
+        return Err("快照字段超长".to_string());
+    }
+    let source_url = input.source_url.trim();
+    if !source_url.is_empty()
+        && !source_url.starts_with("http://")
+        && !source_url.starts_with("https://")
+    {
+        return Err("来源链接必须以 http:// 或 https:// 开头".to_string());
+    }
+    if input.observed_at.trim().is_empty() {
+        return Err("快照观察时间不能为空".to_string());
+    }
+    for (label, value) in [
+        ("点赞", input.metrics.like),
+        ("收藏", input.metrics.collect),
+        ("评论", input.metrics.comment),
+        ("粉丝", input.metrics.followers),
+        ("笔记", input.metrics.note_count),
+    ] {
+        if value.is_some_and(|n| n < 0) {
+            return Err(format!("{label}数不能为负"));
+        }
+    }
+    if input
+        .request_id
+        .as_deref()
+        .is_some_and(|value| value.chars().count() > 128)
+    {
+        return Err("请求 ID 不能超过 128 个字符".to_string());
+    }
+    Ok(())
+}
+
+fn resolve_note_id_by_url(
+    conn: &rusqlite::Connection,
+    account_pool_id: i64,
+    source_url: &str,
+) -> SqlResult<Option<i64>> {
+    let Some(normalized_url) = normalize_browser_lookup_url(source_url) else {
+        return Ok(None);
+    };
+    let mut statement = conn.prepare(
+        "SELECT id, note_url FROM notes
+         WHERE account_pool_id = ?1 AND note_url IS NOT NULL AND deleted_at IS NULL
+         ORDER BY updated_at DESC",
+    )?;
+    let rows = statement.query_map(params![account_pool_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id, note_url) = row?;
+        if normalize_browser_lookup_url(&note_url).as_deref() == Some(normalized_url.as_str()) {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+fn normalize_browser_lookup_url(source_url: &str) -> Option<String> {
+    let source_url = source_url.trim();
+    if source_url.chars().count() > 2_000
+        || !(source_url.starts_with("http://") || source_url.starts_with("https://"))
+    {
+        return None;
+    }
+    let without_fragment = source_url.split('#').next().unwrap_or_default();
+    let without_query = without_fragment.split('?').next().unwrap_or_default();
+    let normalized = without_query.trim_end_matches('/');
+    (!normalized.is_empty()).then(|| normalized.to_ascii_lowercase())
+}
+
+fn url_has_path_segment(source_url: &str, candidate: &str) -> bool {
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        return false;
+    }
+    let without_fragment = source_url.split('#').next().unwrap_or_default();
+    let without_query = without_fragment.split('?').next().unwrap_or_default();
+    without_query
+        .split('/')
+        .any(|segment| segment.eq_ignore_ascii_case(candidate))
+}
+
+fn browser_page_context(
+    match_type: &str,
+    page_type: &str,
+    snapshot_kind: Option<&str>,
+    reference_account_id: Option<i64>,
+    matched_title: Option<String>,
+    last_snapshot_at: Option<String>,
+) -> BrowserPageContext {
+    BrowserPageContext {
+        match_type: match_type.to_string(),
+        default_action: if snapshot_kind.is_some() {
+            "update_data".to_string()
+        } else {
+            "collect_material".to_string()
+        },
+        page_type: page_type.to_string(),
+        snapshot_kind: snapshot_kind.map(str::to_string),
+        reference_account_id,
+        matched_title,
+        last_snapshot_at,
+    }
+}
+
 fn validate_local_reference_account(
     account_id: &str,
     name: Option<&str>,
@@ -4953,6 +6533,9 @@ fn validate_ai_object_scope(
 }
 
 fn inspiration_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InspirationSummary> {
+    let material_type: Option<String> = row.get(10)?;
+    let author: Option<String> = row.get(11)?;
+    let capture_modules: Option<String> = row.get(12)?;
     Ok(InspirationSummary {
         id: row.get(0)?,
         account_pool_id: row.get(1)?,
@@ -4964,6 +6547,34 @@ fn inspiration_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Inspiration
         status: row.get(7)?,
         note_id: row.get(8)?,
         dedupe_key: row.get(9)?,
+        material_type: material_type.unwrap_or_else(|| "web_material".to_string()),
+        author: author.unwrap_or_default(),
+        capture_modules: capture_modules
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_default(),
+    })
+}
+
+fn page_snapshot_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PageSnapshotSummary> {
+    let request_id: Option<String> = row.get(13)?;
+    Ok(PageSnapshotSummary {
+        id: row.get(0)?,
+        account_pool_id: row.get(1)?,
+        kind: row.get(2)?,
+        source_url: row.get(3)?,
+        title: row.get(4)?,
+        author: row.get(5)?,
+        body_excerpt: row.get(6)?,
+        like_count: row.get(7)?,
+        collect_count: row.get(8)?,
+        comment_count: row.get(9)?,
+        metrics_json: row.get(10)?,
+        note_id: row.get(11)?,
+        reference_account_id: row.get(12)?,
+        request_id: request_id.filter(|value| !value.is_empty()),
+        observed_at: row.get(14)?,
+        created_at: row.get(15)?,
     })
 }
 
@@ -5359,6 +6970,9 @@ mod tests {
             body: "观察到收纳筐与墙面颜色形成对比".to_string(),
             observed_at: "2026-09-17T10:00:00.000Z".to_string(),
             reason: "可借鉴配色".to_string(),
+            material_type: Some("web_material".to_string()),
+            author: Some(String::new()),
+            capture_modules: Some(vec![]),
             dedupe_key: Some("1|https://example.com/a|租房客厅收纳".to_string()),
         })
         .expect("save local inspiration");
@@ -5377,6 +6991,9 @@ mod tests {
             body: "补充了材质观察".to_string(),
             observed_at: "2026-09-17T10:01:00.000Z".to_string(),
             reason: "更适合当前选题".to_string(),
+            material_type: Some("web_material".to_string()),
+            author: Some(String::new()),
+            capture_modules: Some(vec![]),
             dedupe_key: Some("1|https://example.com/a|租房客厅收纳".to_string()),
         })
         .expect("replace duplicate inspiration");
@@ -5400,6 +7017,9 @@ mod tests {
             body: "不应丢失已关联草稿".to_string(),
             observed_at: "2026-09-17T10:02:00.000Z".to_string(),
             reason: "补充观察".to_string(),
+            material_type: Some("web_material".to_string()),
+            author: Some(String::new()),
+            capture_modules: Some(vec![]),
             dedupe_key: Some("1|https://example.com/a|租房客厅收纳".to_string()),
         })
         .expect("update converted inspiration without duplicating it");
@@ -5421,6 +7041,9 @@ mod tests {
                 body: String::new(),
                 observed_at: "2026-09-17T10:00:00.000Z".to_string(),
                 reason: String::new(),
+                material_type: Some("web_material".to_string()),
+                author: Some(String::new()),
+                capture_modules: Some(vec![]),
                 dedupe_key: None,
             })
             .is_err());
@@ -6132,6 +7755,9 @@ mod tests {
             body: "新观察".to_string(),
             observed_at: "2026-09-18T11:00:00Z".to_string(),
             reason: "手工".to_string(),
+            material_type: Some("web_material".to_string()),
+            author: Some(String::new()),
+            capture_modules: Some(vec![]),
             dedupe_key: None,
         })
         .expect("write UUID-like inspiration id after migration");
@@ -6309,6 +7935,393 @@ mod tests {
         db.clear_local_note_stage(note.id, None)
             .expect("clear stage again");
 
+        fs::remove_dir_all(dir).ok();
+    }
+
+    fn sample_memory_create(content: &str) -> MemoryEntryCreate {
+        MemoryEntryCreate {
+            account_pool_id: 1,
+            origin: "pc".to_string(),
+            kind: "fact".to_string(),
+            content: content.to_string(),
+            subject: Some("门后置物架".to_string()),
+            scope: Some("租房".to_string()),
+            source: Some("用户口述".to_string()),
+            source_type: Some("user".to_string()),
+            occurred_at: Some("2026-03".to_string()),
+            confirm_status: Some("candidate".to_string()),
+            enabled: None,
+        }
+    }
+
+    #[test]
+    fn creates_filters_and_deletes_memory_entries() {
+        let (db, dir) = temp_db();
+        let created = db
+            .create_memory_entry(sample_memory_create("旧塑料架踢脚线卡住"))
+            .expect("create memory");
+        assert_eq!(created.confirm_status, "candidate");
+        assert_eq!(created.origin, "pc");
+        assert_eq!(created.kind, "fact");
+        assert_eq!(created.occurred_at.as_deref(), Some("2026-03"));
+
+        let mobile = db
+            .create_memory_entry(MemoryEntryCreate {
+                origin: "mobile".to_string(),
+                confirm_status: Some("confirmed".to_string()),
+                ..sample_memory_create("手机随手记：阳台推拉门尺寸 1.8m")
+            })
+            .expect("create mobile memory");
+        assert_eq!(mobile.origin, "mobile");
+
+        let pc_only = db
+            .list_memory_entries(MemoryEntryFilter {
+                account_pool_id: Some(1),
+                origin: Some("pc".to_string()),
+                kind: None,
+                confirm_status: None,
+                enabled: None,
+            })
+            .expect("list pc");
+        assert_eq!(pc_only.len(), 1);
+        assert_eq!(pc_only[0].id, created.id);
+
+        let candidates = db
+            .list_memory_entries(MemoryEntryFilter {
+                account_pool_id: Some(1),
+                origin: None,
+                kind: Some("fact".to_string()),
+                confirm_status: Some("candidate".to_string()),
+                enabled: None,
+            })
+            .expect("list candidates");
+        assert_eq!(candidates.len(), 1);
+
+        let updated = db
+            .update_memory_entry(MemoryEntryUpdate {
+                id: created.id,
+                account_pool_id: 1,
+                kind: "event".to_string(),
+                content: "旧塑料架踢脚线卡住，已更换金属架".to_string(),
+                subject: Some("门后置物架".to_string()),
+                scope: Some("租房".to_string()),
+                source: Some("用户口述".to_string()),
+                source_type: Some("user".to_string()),
+                occurred_at: Some("2026-03".to_string()),
+            })
+            .expect("update memory");
+        assert_eq!(updated.kind, "event");
+
+        db.delete_memory_entry(created.id, 1).expect("delete");
+        let after = db
+            .list_memory_entries(MemoryEntryFilter {
+                account_pool_id: Some(1),
+                origin: None,
+                kind: None,
+                confirm_status: None,
+                enabled: None,
+            })
+            .expect("list after delete");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, mobile.id);
+        assert!(db.delete_memory_entry(created.id, 1).is_err());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn enforces_memory_status_machine_and_replacement() {
+        let (db, dir) = temp_db();
+        let candidate = db
+            .create_memory_entry(sample_memory_create("油烟机漏烟（AI 稿推断）"))
+            .expect("create");
+        // 候选 → 过时 非法
+        assert!(db
+            .transition_memory_entry_status(MemoryEntryTransition {
+                id: candidate.id,
+                account_pool_id: 1,
+                next_status: "outdated".to_string(),
+                replaced_by: None,
+            })
+            .is_err());
+
+        let confirmed = db
+            .transition_memory_entry_status(MemoryEntryTransition {
+                id: candidate.id,
+                account_pool_id: 1,
+                next_status: "confirmed".to_string(),
+                replaced_by: None,
+            })
+            .expect("confirm");
+        assert_eq!(confirmed.confirm_status, "confirmed");
+        assert_eq!(confirmed.valid_status, "valid");
+
+        // 确认 → 候选 不可逆
+        assert!(db
+            .transition_memory_entry_status(MemoryEntryTransition {
+                id: candidate.id,
+                account_pool_id: 1,
+                next_status: "candidate".to_string(),
+                replaced_by: None,
+            })
+            .is_err());
+
+        let successor = db
+            .create_memory_entry(MemoryEntryCreate {
+                confirm_status: Some("confirmed".to_string()),
+                ..sample_memory_create("油烟机已换新，漏烟问题解决")
+            })
+            .expect("create successor");
+
+        // 替代条目必须已确认；候选不能当替代目标
+        let pending = db
+            .create_memory_entry(sample_memory_create("临时候选"))
+            .expect("create pending");
+        assert!(db
+            .transition_memory_entry_status(MemoryEntryTransition {
+                id: candidate.id,
+                account_pool_id: 1,
+                next_status: "outdated".to_string(),
+                replaced_by: Some(pending.id),
+            })
+            .is_err());
+
+        let outdated = db
+            .transition_memory_entry_status(MemoryEntryTransition {
+                id: candidate.id,
+                account_pool_id: 1,
+                next_status: "outdated".to_string(),
+                replaced_by: Some(successor.id),
+            })
+            .expect("outdate");
+        assert_eq!(outdated.confirm_status, "outdated");
+        assert_eq!(outdated.valid_status, "invalid");
+        assert_eq!(outdated.replaced_by, Some(successor.id));
+
+        // 被替代引用的条目不可删
+        assert!(db.delete_memory_entry(successor.id, 1).is_err());
+
+        let rejected = db
+            .create_memory_entry(sample_memory_create("未确认推断"))
+            .expect("create reject");
+        let rejected = db
+            .transition_memory_entry_status(MemoryEntryTransition {
+                id: rejected.id,
+                account_pool_id: 1,
+                next_status: "rejected".to_string(),
+                replaced_by: None,
+            })
+            .expect("reject");
+        assert_eq!(rejected.valid_status, "invalid");
+        assert!(db
+            .transition_memory_entry_status(MemoryEntryTransition {
+                id: rejected.id,
+                account_pool_id: 1,
+                next_status: "confirmed".to_string(),
+                replaced_by: None,
+            })
+            .is_err());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn isolates_memory_and_prompts_by_account() {
+        let (db, dir) = temp_db();
+        let entry = db
+            .create_memory_entry(sample_memory_create("账号一的私有事实"))
+            .expect("create a");
+        db.upsert_experience_prompt(ExperiencePromptUpsert {
+            account_pool_id: 1,
+            origin: "pc".to_string(),
+            id: None,
+            title: "账号一经验".to_string(),
+            content: "仅账号一可见".to_string(),
+            enabled: true,
+            apply_scope: None,
+            apply_target: None,
+            source: None,
+            sort_order: None,
+        })
+        .expect("create prompt");
+
+        // 账号不匹配时拒绝读写
+        assert!(db
+            .update_memory_entry(MemoryEntryUpdate {
+                id: entry.id,
+                account_pool_id: 999,
+                kind: "fact".to_string(),
+                content: "越权改写".to_string(),
+                subject: None,
+                scope: None,
+                source: None,
+                source_type: None,
+                occurred_at: None,
+            })
+            .is_err());
+        assert!(db.delete_memory_entry(entry.id, 999).is_err());
+        assert!(db.list_experience_prompts(Some(999), None).is_err());
+
+        // 切到第二个账号后看不到账号一记忆与经验提示词
+        db.create_local_account(LocalAccountCreate {
+            alias: "记忆隔离测试号".to_string(),
+            role: "operation".to_string(),
+        })
+        .expect("create second account");
+        db.set_app_setting("active_account_id", "2")
+            .expect("switch active account");
+        let second_memories = db
+            .list_memory_entries(MemoryEntryFilter {
+                account_pool_id: Some(2),
+                origin: None,
+                kind: None,
+                confirm_status: None,
+                enabled: None,
+            })
+            .expect("list second account");
+        assert!(second_memories.is_empty());
+        let second_prompts = db
+            .list_experience_prompts(Some(2), None)
+            .expect("list second prompts");
+        assert!(second_prompts.is_empty());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn caps_enabled_experience_prompts_and_validates_fields() {
+        let (db, dir) = temp_db();
+        for index in 0..10 {
+            db.upsert_experience_prompt(ExperiencePromptUpsert {
+                account_pool_id: 1,
+                origin: "pc".to_string(),
+                id: None,
+                title: format!("经验{index}"),
+                content: format!("内容{index}"),
+                enabled: true,
+                apply_scope: Some("account".to_string()),
+                apply_target: Some("compose".to_string()),
+                source: Some("user".to_string()),
+                sort_order: Some(index),
+            })
+            .expect("fill enabled prompts");
+        }
+        let overflow = db.upsert_experience_prompt(ExperiencePromptUpsert {
+            account_pool_id: 1,
+            origin: "pc".to_string(),
+            id: None,
+            title: "第11条".to_string(),
+            content: "应被拒绝".to_string(),
+            enabled: true,
+            apply_scope: None,
+            apply_target: None,
+            source: None,
+            sort_order: None,
+        });
+        assert!(overflow.is_err());
+
+        // 停用一条后可再启用新的
+        let list = db
+            .list_experience_prompts(Some(1), Some("pc".to_string()))
+            .expect("list");
+        db.upsert_experience_prompt(ExperiencePromptUpsert {
+            account_pool_id: 1,
+            origin: "pc".to_string(),
+            id: Some(list[0].id),
+            title: list[0].title.clone(),
+            content: list[0].content.clone(),
+            enabled: false,
+            apply_scope: Some(list[0].apply_scope.clone()),
+            apply_target: Some(list[0].apply_target.clone()),
+            source: Some(list[0].source.clone()),
+            sort_order: Some(list[0].sort_order),
+        })
+        .expect("disable one");
+        db.upsert_experience_prompt(ExperiencePromptUpsert {
+            account_pool_id: 1,
+            origin: "pc".to_string(),
+            id: None,
+            title: "第11条".to_string(),
+            content: "应被接受".to_string(),
+            enabled: true,
+            apply_scope: None,
+            apply_target: None,
+            source: None,
+            sort_order: None,
+        })
+        .expect("accept after disable");
+
+        assert!(db
+            .upsert_experience_prompt(ExperiencePromptUpsert {
+                account_pool_id: 1,
+                origin: "pc".to_string(),
+                id: None,
+                title: "".to_string(),
+                content: "无标题".to_string(),
+                enabled: true,
+                apply_scope: None,
+                apply_target: None,
+                source: None,
+                sort_order: None,
+            })
+            .is_err());
+        let long = "字".repeat(301);
+        assert!(db
+            .upsert_experience_prompt(ExperiencePromptUpsert {
+                account_pool_id: 1,
+                origin: "pc".to_string(),
+                id: None,
+                title: "超长".to_string(),
+                content: long,
+                enabled: true,
+                apply_scope: None,
+                apply_target: None,
+                source: None,
+                sort_order: None,
+            })
+            .is_err());
+
+        // mobile 池独立计数
+        db.upsert_experience_prompt(ExperiencePromptUpsert {
+            account_pool_id: 1,
+            origin: "mobile".to_string(),
+            id: None,
+            title: "手机经验".to_string(),
+            content: "手机侧经验提示词".to_string(),
+            enabled: true,
+            apply_scope: None,
+            apply_target: None,
+            source: None,
+            sort_order: None,
+        })
+        .expect("mobile pool has own quota");
+        let mobile_list = db
+            .list_experience_prompts(Some(1), Some("mobile".to_string()))
+            .expect("list mobile");
+        assert_eq!(mobile_list.len(), 1);
+        db.delete_experience_prompt(mobile_list[0].id, 1, "mobile".to_string())
+            .expect("delete mobile prompt");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn stores_and_resets_memory_l1_override() {
+        let (db, dir) = temp_db();
+        let rules = db.read_memory_system_rules().expect("read defaults");
+        assert!(!rules.l1_is_override);
+        assert_eq!(rules.l1_active, rules.l1_default);
+        assert!(!rules.l0.is_empty());
+
+        let overridden = db
+            .save_memory_l1_override("自定义方法论：先列三条避坑点。")
+            .expect("save override");
+        assert!(overridden.l1_is_override);
+        assert_eq!(overridden.l1_active, "自定义方法论：先列三条避坑点。");
+        assert_eq!(overridden.l1_default, rules.l1_default);
+
+        assert!(db.save_memory_l1_override("   ").is_err());
+        assert!(db.save_memory_l1_override(&"字".repeat(2001)).is_err());
+
+        let reset = db.reset_memory_l1_override().expect("reset");
+        assert!(!reset.l1_is_override);
+        assert_eq!(reset.l1_active, reset.l1_default);
         fs::remove_dir_all(dir).ok();
     }
 }

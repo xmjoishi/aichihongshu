@@ -30,6 +30,7 @@ export interface AccountContext {
 
 export const ACCOUNT_CHANGED_EVENT = "aichihongshu:account-changed";
 
+const PinnedAccountContext = createContext(false);
 const AccountContextValue = createContext<AccountContext | null>(null);
 
 export function emitAccountChanged(accountId: number): void {
@@ -42,18 +43,19 @@ export function emitAccountChanged(accountId: number): void {
  * 重绑监听器；页面可在回调里取消旧请求并清空选中项/草稿。
  */
 export function useAccountChange(onChange: (accountId: number) => void): void {
+  const pinned = useContext(PinnedAccountContext);
   const callbackRef = useRef(onChange);
   callbackRef.current = onChange;
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (pinned || typeof window === "undefined") return;
     const handler = (event: Event) => {
       const accountId = (event as CustomEvent<{ accountId?: number }>).detail?.accountId;
       if (typeof accountId === "number") callbackRef.current(accountId);
     };
     window.addEventListener(ACCOUNT_CHANGED_EVENT, handler);
     return () => window.removeEventListener(ACCOUNT_CHANGED_EVENT, handler);
-  }, []);
+  }, [pinned]);
 }
 
 function useAccountContextQueries(): AccountContext {
@@ -111,4 +113,10 @@ export function useAccountContext(): AccountContext {
     throw new Error("useAccountContext must be used within AccountContextProvider");
   }
   return value;
+}
+
+/** Keep retained pages bound to the account that created them. */
+export function AccountSnapshotProvider({ value, children }: PropsWithChildren<{ value: AccountContext }>) {
+  return createElement(PinnedAccountContext.Provider, { value: true },
+    createElement(AccountContextValue.Provider, { value }, children));
 }

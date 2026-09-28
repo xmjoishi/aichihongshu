@@ -1,13 +1,11 @@
 // metro.config.js
-// 修复 pnpm 扁平化依赖下的路径解析问题
+// 修复 pnpm/扁平化依赖下的路径解析问题
 
 const { getDefaultConfig } = require('expo/metro-config');
+const { resolve } = require('metro-resolver');
 const path = require('path');
 
 const config = getDefaultConfig(__dirname);
-
-config.resolver = config.resolver ?? {};
-const originalResolveRequest = config.resolver.resolveRequest;
 
 const legacyBuildPath = path.resolve(
   __dirname,
@@ -26,10 +24,8 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (moduleName === 'react-native/src/private/featureflags/ReactNativeFeatureFlags') {
     return { filePath: rnFeatureFlagsPath, type: 'sourceFile' };
   }
-  if (originalResolveRequest) {
-    return originalResolveRequest(context, moduleName, platform);
-  }
-  return context.resolveRequest(context, moduleName, platform);
+  // 必须回到 metro-resolver，否则相对导入（如 reanimated 的 ./BaseAnimationBuilder）无法命中 .ts
+  return resolve(context, moduleName, platform);
 };
 
 module.exports = config;

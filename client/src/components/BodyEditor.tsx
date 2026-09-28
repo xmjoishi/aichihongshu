@@ -1,3 +1,4 @@
+import { useWorkspaceEffect } from "../lib/workspaceActivity";
 /**
  * BodyEditor — 小红书风格纯文本正文编辑器
  *
@@ -6,7 +7,7 @@
  * - 字数统计（上限 1000）
  */
 
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useCallback } from "react";
 import { Smile } from "lucide-react";
 
 const CHAR_LIMIT = 1000;
@@ -71,7 +72,7 @@ export default function BodyEditor({ value, onChange, placeholder, className, ta
   const pickerRef = useRef<HTMLDivElement>(null);
 
   // 点击外部关闭表情面板
-  useEffect(() => {
+  useWorkspaceEffect(() => {
     if (!showEmoji) return;
     function handler(e: MouseEvent) {
       if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
@@ -151,6 +152,7 @@ export default function BodyEditor({ value, onChange, placeholder, className, ta
       <div className="relative flex-1 min-h-0">
         <textarea
           ref={textareaRef}
+          data-page-scroll="note-body"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           readOnly={readOnly}

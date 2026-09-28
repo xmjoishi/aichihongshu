@@ -25,8 +25,9 @@ body {
 }
 
 /* macOS Tauri overlay title bar: the app header shares the traffic-light row.
-   Dragging is handled by data-tauri-drag-region="deep" and the native API in
-   App.tsx, so buttons and links keep their normal pointer events. */
+   Dragging starts only after the pointer moves (App.tsx), and double-click
+   maximizes once there — no data-tauri-drag-region, so drag sessions cannot
+   race with the title-bar double-click and bounce the window back. */
 .app-topbar {
   cursor: grab;
 }
@@ -91,7 +92,13 @@ body {
 /* Compatibility bridge for existing utility classes while pages migrate to tokens. */
 :root[data-theme="dark"] .bg-white { background-color: var(--color-surface) !important; }
 :root[data-theme="dark"] .bg-zinc-50,
-:root[data-theme="dark"] .bg-zinc-100 { background-color: var(--color-surface-2) !important; }
+:root[data-theme="dark"] .bg-zinc-100,
+:root[data-theme="dark"] .bg-zinc-50\/50,
+:root[data-theme="dark"] .bg-zinc-50\/60,
+:root[data-theme="dark"] .bg-zinc-50\/70,
+:root[data-theme="dark"] .bg-zinc-100\/50,
+:root[data-theme="dark"] .bg-zinc-100\/60,
+:root[data-theme="dark"] .bg-zinc-100\/70 { background-color: var(--color-surface-2) !important; }
 :root[data-theme="dark"] .border-zinc-50,
 :root[data-theme="dark"] .border-zinc-100,
 :root[data-theme="dark"] .border-zinc-200 { border-color: var(--color-border) !important; }
@@ -219,7 +226,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .settings-field { grid-template-columns: 120px minmax(0, 1fr) !important; gap: 0.75rem !important; }
   .data-ai-drawer { width: min(420px, 92vw) !important; }
   .note-ai-drawer { width: min(360px, 92vw) !important; }
-  .ai-panel-drawer { width: min(360px, 92vw) !important; }
+  .ai-panel-drawer:not(.ai-panel-page) { width: min(360px, 92vw) !important; }
   .reference-account-drawer { width: min(360px, 92vw) !important; }
 }
 
@@ -243,12 +250,20 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   display: none;
 }
 
-/* HDR 显示控制：data-hdr="off" 时对所有 img 应用 SDR 压缩 filter */
-:root[data-hdr="off"] img {
+/* 关闭 HDR 时优先要求 WebKit 将 HDR 媒体映射至 SDR；旧 WebView 忽略此属性时保留视觉滤镜回退。 */
+:root[data-hdr="off"] img,
+:root[data-hdr="off"] video {
+  dynamic-range-limit: standard;
   filter: brightness(0.88) saturate(0.92);
+}
+
+:root[data-hdr="on"] img,
+:root[data-hdr="on"] video {
+  dynamic-range-limit: no-limit;
 }
 
 /* 品牌资源必须保持生产导出的纯白底和标准色，不参与显示适配滤镜。 */
 :root[data-hdr="off"] img.hdr-ignore {
+  dynamic-range-limit: no-limit;
   filter: none;
 }

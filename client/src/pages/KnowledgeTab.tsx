@@ -1,3 +1,4 @@
+import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
 import { useState, useEffect, useMemo } from "react";
 import {
   BarChart2, BookOpen, Users, Lightbulb,
@@ -5,7 +6,7 @@ import {
   ChevronDown, ChevronUp, ExternalLink,
   Sparkles, Check,
 } from "lucide-react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, openInBrowser } from "../lib/api";
 import type {
@@ -473,9 +474,12 @@ function LocalKnowledgeTab({
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-sm font-semibold text-zinc-800">经验库</h2>
-        <p className="text-xs text-zinc-400 mt-0.5">当前账号的本地笔记、榜样样本与灵感；不会回退请求旧服务</p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-800">经验库</h2>
+          <p className="text-xs text-zinc-400 mt-0.5">当前账号的本地笔记、榜样样本与灵感；不会回退请求旧服务</p>
+        </div>
+        <Link to="/memory" className="shrink-0 text-xs text-[#ff2442] hover:underline">维护记忆与经验提示词 →</Link>
       </div>
       <Section icon={BarChart2} title="互动规律" badge={rules.length ? `${rules.length} 条` : undefined}>
         {!rules.length ? (
@@ -592,6 +596,7 @@ export default function KnowledgeTab({ notes = [], referenceAccounts = [] }: { n
             沉淀下来的创作经验，生成笔记时自动注入 prompt
           </p>
         </div>
+        <Link to="/memory" className="shrink-0 text-xs text-[#ff2442] hover:underline">记忆中心 →</Link>
       </div>
       <RulesSection />
       <MySamplesSection />

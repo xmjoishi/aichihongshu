@@ -2,15 +2,16 @@
  * AI 服务层
  *
  * 支持的 Provider：
- *  - minimax   : MiniMax（VL-01 图片分析 / M3 文本）
+ *  - minimax   : MiniMax（M3 等多模态模型，图文）
  *  - deepseek  : DeepSeek（OpenAI 兼容接口，仅文本）
  *  - openai    : OpenAI 官方接口（gpt-4o 等，仅文本）
  *  - custom    : 用户自定义 OpenAI 兼容端点
  *
- * 图片分析固定走 MiniMax VL-01（其他 provider 没有免费多模态）。
- * 文本生成走用户选定的默认 provider + model。
+ * 图片分析与文本生成都走用户选定的默认 provider + model；
+ * 带图时要求所选模型支持视觉（如 MiniMax-M3），否则回退同供应商视觉模型。
  */
 import * as SecureStore from 'expo-secure-store';
+import { sniffImageMimeFromBase64 } from './media';
 
 // ── Provider / Model 目录 ────────────────────────────────────────
 export type ProviderId = 'minimax' | 'deepseek' | 'openai' | 'custom';
@@ -40,7 +41,7 @@ export const PROVIDERS: ProviderDef[] = [
     keyPlaceholder: 'eyJ...',
     keyHint: '前往 Token Plan 获取订阅 Key',
     models: [
-      { id: 'MiniMax-M3', label: 'MiniMax M3', vision: false },
+      { id: 'MiniMax-M3', label: 'MiniMax M3', vision: true },
       { id: 'MiniMax-VL-01', label: 'MiniMax VL-01（图文）', vision: true },
     ],
   },
@@ -135,6 +136,15 @@ function getProvider(id: ProviderId): ProviderDef {
   return PROVIDERS.find((p) => p.id === id) ?? PROVIDERS[0];
 }
 
+function resolveModelId(provider: ProviderDef, config: AiConfig, messages: ChatMessage[]): string {
+  const wantsVision = messages.some((m) => (m.images?.length ?? 0) > 0);
+  const current = provider.models.find((m) => m.id === config.modelId);
+  // 优先用用户已选模型；仅当带图且所选模型不支持视觉时才回退到同供应商视觉模型
+  if (!wantsVision || current?.vision) return config.modelId;
+  const vision = provider.models.find((m) => m.vision);
+  return vision?.id ?? config.modelId;
+}
+
 function getEndpoint(provider: ProviderDef, config: AiConfig): string {
   const base = config.providerId === 'custom' && config.customBaseUrl
     ? config.customBaseUrl.replace(/\/$/, '')
@@ -142,34 +152,60 @@ function getEndpoint(provider: ProviderDef, config: AiConfig): string {
   return `${base}${provider.chatPath}`;
 }
 
-// ── 图片分析（固定 MiniMax VL-01）────────────────────────────────
+// ── 图片分析（走用户选定的多模态模型，如 MiniMax-M3）────────────────
 export async function analyzeImage(base64: string): Promise<string> {
-  const key = (await getApiKey('minimax')) ?? (await legacyMiniMaxKey());
-  if (!key) throw new Error('请先在设置中配置 MiniMax API Key（用于图片分析）');
-
-  const endpoint = 'https://api.minimaxi.com/v1/text/chatcompletion_v2';
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model: 'MiniMax-VL-01',
-      messages: [{
+  const raw = base64.replace(/^data:image\/\w+;base64,/, '');
+  const result = await chat(
+    [
+      {
         role: 'user',
-        content: [
-          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
-          { type: 'text', text: '请描述这张家居图片的内容，包括物品名称、颜色、风格、材质、使用场景等，用于后续创作小红书内容。50-100字。' },
-        ],
-      }],
-    }),
-  });
-  if (!res.ok) throw new Error(`图片分析失败: ${await res.text()}`);
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content ?? '';
+        content:
+          '请描述这张家居图片的内容，包括物品名称、颜色、风格、材质、使用场景等，用于后续创作小红书内容。50-100字。',
+        images: [raw],
+      },
+    ],
+    '你是家居软装领域的图片分析助手，只输出图片内容描述，不要寒暄或额外说明。'
+  );
+  const text = result.trim();
+  if (!text) {
+    throw new Error('图片分析返回为空，请在「设置 → AI 模型配置」检查模型是否支持识图（如 MiniMax-M3）后重试');
+  }
+  return text;
 }
 
 // ── 文本对话（走用户选定的 provider）────────────────────────────
+export type ChatMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+  /** 仅 user 消息可带图；有图时走多模态 */
+  images?: string[];
+};
+
+function buildChatContent(message: ChatMessage, format: 'anthropic' | 'openai' = 'openai') {
+  const images = message.images?.filter(Boolean) ?? [];
+  if (message.role !== 'user' || images.length === 0) return message.content;
+  const blocks: any[] = images.map((base64) => {
+    const raw = base64.replace(/^data:image\/[\w.+-]+;base64,/, '');
+    // 按真实字节标注 MIME；HEIC 等已在 readBase64* 转成 JPEG
+    const mime = sniffImageMimeFromBase64(raw) ?? 'image/jpeg';
+    if (format === 'anthropic') {
+      // Anthropic Messages API：image + source.base64
+      return {
+        type: 'image' as const,
+        source: { type: 'base64' as const, media_type: mime, data: raw },
+      };
+    }
+    return {
+      type: 'image_url' as const,
+      image_url: { url: `data:${mime};base64,${raw}` },
+    };
+  });
+  blocks.push({ type: 'text' as const, text: message.content || '请根据图片内容创作小红书笔记。' });
+  return blocks;
+}
+
 export async function chat(
-  messages: { role: 'user' | 'assistant'; content: string }[],
+  messages: ChatMessage[],
   systemPrompt: string
 ): Promise<string> {
   const config = await getAiConfig();
@@ -189,12 +225,12 @@ export async function chat(
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: config.modelId,
+        model: resolveModelId(provider, config, messages),
         max_tokens: 2000,
         system: systemPrompt,
         messages: messages.map((message) => ({
           role: message.role,
-          content: [{ type: 'text', text: message.content }],
+          content: buildChatContent(message, 'anthropic'),
         })),
       }),
     });
@@ -208,10 +244,13 @@ export async function chat(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({
-      model: config.modelId,
+      model: resolveModelId(provider, config, messages),
       messages: [
         { role: 'system', content: systemPrompt },
-        ...messages,
+        ...messages.map((message) => ({
+          role: message.role,
+          content: buildChatContent(message, 'openai'),
+        })),
       ],
     }),
   });
@@ -221,7 +260,7 @@ export async function chat(
 }
 
 export async function chatStream(
-  messages: { role: 'user' | 'assistant'; content: string }[],
+  messages: ChatMessage[],
   systemPrompt: string,
   onDelta: (delta: string, fullText: string) => void
 ): Promise<string> {
@@ -235,7 +274,8 @@ export async function chatStream(
   const key = (await getApiKey('minimax')) ?? (await legacyMiniMaxKey());
   if (!key) throw new Error('请先在 AI 模型设置中配置 MiniMax API Key');
 
-  const endpoint = getEndpoint(getProvider('minimax'), config);
+  const provider = getProvider('minimax');
+  const endpoint = getEndpoint(provider, config);
   const res = await fetch(endpoint, {
     method: 'POST',
     headers: {
@@ -244,13 +284,13 @@ export async function chatStream(
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: config.modelId,
+      model: resolveModelId(provider, config, messages),
       max_tokens: 2000,
       stream: true,
       system: systemPrompt,
       messages: messages.map((message) => ({
         role: message.role,
-        content: [{ type: 'text', text: message.content }],
+        content: buildChatContent(message, 'anthropic'),
       })),
     }),
   });
@@ -321,8 +361,18 @@ export function buildSystemPrompt(profile: {
 内容语气：${profile.personaTone ?? '真实、接地气，短句换行，先痛点后解法'}
 禁忌词：${tabooList || '无'}
 
-请根据用户诉求，生成适合小红书发布的标题和正文。
+请根据用户诉求，生成可直接发布到小红书的标题和正文（不是聊天回复）。
+
 标题：吸引眼球，包含数字或痛点，20字以内。
-正文：分段清晰，使用emoji，加话题标签，200-500字。
+正文：就是发布出去的文案本体，分段清晰，用 emoji，结尾加 5-8 个话题标签，200-500字。
+
+硬性输出格式（小红书编辑器不识别 Markdown，必须纯文本）：
+1. 禁止任何 Markdown 标记：**加粗**、# 标题、- 或 1. 列表、\`代码\`、> 引用、表格、[链接](url)、分隔线 ---
+2. 禁止会话/元信息，不要出现：「谁懂啊」「今天给大家分享」「希望对你有帮助」「标题：」「正文：」「废话不多说」等任何解说或过场
+3. 不要在正文里重复写一遍标题
+4. 格式固定为两行块：
+   第一行：标题本身
+   空一行
+   然后：正文内容（直接开始写要点/体验/避坑，不要开场白）
 ${analysisText}`;
 }

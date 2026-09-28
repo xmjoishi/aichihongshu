@@ -5,11 +5,11 @@ import {
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
 import { useStore } from '../../../store';
 import { getAiConfig, getApiKey, PROVIDERS } from '../../../services/ai';
 import { getMediaPermission } from '../../../services/media';
-import { AuroraBackground, LiquidCard } from '../../../components/ui';
+import { AuroraBackground, LiquidCard, PageTitleBlock } from '../../../components/ui';
 import { Glass, Brand, Text as TText, Font, Sys, Radius } from '../../../utils/theme';
 
 type MenuIconName = keyof typeof Ionicons.glyphMap;
@@ -61,7 +61,6 @@ function MenuItem({
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
   const profile = useStore((s) => s.profile);
   const notes = useStore((s) => s.notes);
   const items = useStore((s) => s.items);
@@ -102,18 +101,8 @@ export default function SettingsScreen() {
     }, [])
   );
 
-  const readyCount = notes.filter((n) => n.status === 'ready').length;
-  const draftCount = notes.length - readyCount;
   const personaReady = !!(profile?.personaName && profile?.personaTone);
   const aiReady = hasProviderKey && hasMiniMaxKey;
-
-  const workflowText = (() => {
-    if (draftCount > 0) return `有 ${draftCount} 篇草稿待修改`;
-    if (readyCount > 0) return `有 ${readyCount} 篇内容待导出或发布`;
-    if (items.length > 0) return `已有 ${items.length} 张图，可直接去出稿`;
-    return '先选图，再让 AI 帮你出稿';
-  })();
-
   const mediaLabel = mediaState === 'granted'
     ? '已授权全部照片'
     : mediaState === 'limited'
@@ -124,32 +113,9 @@ export default function SettingsScreen() {
 
   return (
     <AuroraBackground style={{ flex: 1 }}>
-      <View style={[styles.pageHeader, { paddingTop: insets.top + 8 }]}>
-        <Text style={styles.pageTitle}>设置</Text>
-      </View>
+      <PageTitleBlock title="设置" />
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
-        <LiquidCard style={styles.workflowCard}>
-          <Text style={styles.workflowEyebrow}>移动端工作流</Text>
-          <Text style={styles.workflowTitle}>选图 → 出稿 → 改稿 → 待发布 / 导出</Text>
-          <Text style={styles.workflowDesc}>{workflowText}</Text>
-
-          <View style={styles.workflowChips}>
-            <View style={styles.workflowChip}>
-              <Text style={styles.workflowChipNum}>{items.length}</Text>
-              <Text style={styles.workflowChipLabel}>已入库</Text>
-            </View>
-            <View style={styles.workflowChip}>
-              <Text style={styles.workflowChipNum}>{draftCount}</Text>
-              <Text style={styles.workflowChipLabel}>待改稿</Text>
-            </View>
-            <View style={styles.workflowChip}>
-              <Text style={styles.workflowChipNum}>{readyCount}</Text>
-              <Text style={styles.workflowChipLabel}>待发布</Text>
-            </View>
-          </View>
-        </LiquidCard>
-
         <Text style={styles.groupLabel}>核心配置</Text>
         <LiquidCard style={styles.menuCard}>
           <MenuItem
@@ -160,11 +126,23 @@ export default function SettingsScreen() {
             onPress={() => router.push('/(tabs)/profile/persona')}
           />
           <MenuItem
+            icon="library-outline"
+            label="记忆"
+            value="手机池事实 / 经验提示词 · 可同步 PC"
+            onPress={() => router.push('/(tabs)/profile/memory')}
+          />
+          <MenuItem
             icon="sparkles-outline"
             label="AI 模型"
             value={aiReady ? aiLabel : `${aiLabel} · Key 未就绪`}
             ok={aiReady}
             onPress={() => router.push('/(tabs)/profile/ai-config')}
+          />
+          <MenuItem
+            icon="desktop-outline"
+            label="PC Harness"
+            value="手机 Companion · 同 Wi-Fi 连接"
+            onPress={() => router.push('/(tabs)/profile/pc-harness')}
           />
           <MenuItem
             icon="pulse-outline"
@@ -190,7 +168,7 @@ export default function SettingsScreen() {
           <MenuItem
             icon="folder-open-outline"
             label="数据管理"
-            value="清理图库 / 草稿 / 本地记录"
+            value="清理素材库 / 草稿 / 本地记录"
             onPress={() => router.push('/(tabs)/profile/danger')}
             last
           />
@@ -203,9 +181,12 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
-  pageHeader: { paddingHorizontal: 18, paddingBottom: 8 },
-  pageTitle: { fontSize: Font.title2, fontWeight: Font.bold, color: TText.primary },
-  content: { padding: 16, paddingBottom: 110, gap: 0 },
+  content: {
+    paddingHorizontal: 18,
+    paddingTop: 0,
+    paddingBottom: 110,
+    gap: 0,
+  },
 
   workflowCard: { marginBottom: 20 },
   workflowEyebrow: {
@@ -256,8 +237,8 @@ const styles = StyleSheet.create({
     color: TText.tertiary,
     textTransform: 'uppercase',
     letterSpacing: 0.6,
-    marginBottom: 6,
-    marginTop: 4,
+    marginBottom: 8,
+    marginTop: 0,
     paddingHorizontal: 4,
   },
   menuCard: { gap: 0, paddingHorizontal: 0, paddingVertical: 0, marginBottom: 20 },
@@ -276,7 +257,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   menuLabel: { fontSize: Font.body, color: TText.primary, fontWeight: Font.medium },
-  menuRight: { flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: '52%' },
+  menuRight: { flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: '58%' },
   menuValue: { fontSize: Font.subheadline, color: TText.tertiary, flexShrink: 1, textAlign: 'right' },
   menuChevron: { fontSize: 20, color: TText.tertiary, lineHeight: 22 },
   menuDivider: { height: StyleSheet.hairlineWidth, backgroundColor: Glass.borderSubtle, marginLeft: 52 },

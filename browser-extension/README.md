@@ -1,6 +1,6 @@
-# 爱吃红薯剪藏扩展（N12 最小原型 · 代号周星星）
+# 爱吃红薯浏览器扩展（剪藏与单篇快照 · Native Messaging v3）
 
-把当前网页剪藏进爱吃红薯灵感待确认队列。扩展是**纯消息传输**：不接触数据库、Cookie、浏览器 profile；校验、账号盖章与入库都在爱吃红薯桌面端（Tauri/Rust）完成。
+把当前网页剪藏进爱吃红薯「素材库 → 网页收藏」。扩展不接触 Cookie 或浏览器 profile；消息由桌面端校验并盖当前激活账号，Rust 在向扩展确认成功前直接写入本地 SQLite。
 
 ## 链路
 
@@ -10,8 +10,8 @@
   → 原生宿主 host/host.cjs（仅封帧转发）
   → ~/.aichihongshu/browser-capture.sock（owner-only Unix socket）
   → Tauri Rust：镜像再校验 + 以当前激活账号盖章 targetAccountId
-  → browser-capture://message 事件 → 灵感页待确认队列
-  → 用户确认后写入本地 SQLite
+  → 本地 SQLite 网页收藏表（写入成功后才返回收藏成功）
+  → browser-capture://message 事件通知桌面端刷新卡片状态
 ```
 
 ## 权限（最小化、可撤销）
@@ -29,9 +29,9 @@ node browser-extension/install-host.mjs
 
 # 2) Chrome → 扩展程序 → 打开「开发者模式」→「加载已解压的扩展程序」→ 选择 browser-extension/ 目录
 
-# 3) 启动爱吃红薯桌面端，并停留在「灵感」页
+# 3) 启动爱吃红薯桌面端；可停留在任意页面
 
-# 4) 在任意网页点击扩展按钮：✓ 成功 / ! 失败；回到灵感页确认剪藏
+# 4) 在网页点击扩展按钮：剪藏入库后显示成功；打开「素材库 → 网页收藏」查看「已收藏」状态
 ```
 
 卸载：Chrome 移除扩展；删除 `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.aichihongshu.host.json`。
@@ -41,16 +41,16 @@ node browser-extension/install-host.mjs
 ```bash
 npm run qa:prepare && npm run tauri:qa   # 使用 .qa/desktop-workspace
 # 打开公开页面（或本地 fixture），点击扩展按钮，
-# 在灵感页确认剪藏，验证写入 QA-A/QA-B 而非正式 data/app.db
+# 点击剪藏并检查网页收藏卡片，验证写入 QA-A/QA-B 而非正式 data/app.db
 ```
 
 ## 已知限制（原型）
 
-- 需停留在灵感页接收事件（与既有窗口消息通道同款限制）；不在页上时点击会得到「应用未运行或链路未就绪」类错误
+- 桌面端必须运行、扩展与原生宿主必须已安装，且当前激活账号可用；无需停留在特定业务页
 - 桌面端单实例：socket 先到先得，多实例时后启动者不接收
 - `chrome://` 等受限页面无法注入（按钮显示 !）
 - 剪藏目标账号 = 应用当前激活账号（Rust 盖章，扩展无法指定）
-- 同一页面重复剪藏按 `requestId`/`dedupeKey` 幂等去重
+- 同一页面重复剪藏按 `requestId`/`dedupeKey` 幂等去重；旧版待确认队列会在打开网页收藏页时迁入 SQLite，迁移失败可重试
 
 ## 自动检查
 

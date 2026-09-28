@@ -1,6 +1,7 @@
+import { useWorkspaceEffect } from "../lib/workspaceActivity";
+import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
 import { FileText, Image, Lightbulb, Search as SearchIcon, Users, X } from "lucide-react";
 import { api } from "../lib/api";
 import { Empty, Spinner } from "../components/ui";
@@ -60,8 +61,8 @@ export default function WorkspaceSearch() {
   const listRef = useRef<HTMLDivElement>(null);
 
   const localQuery = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-search", scopeKey],
-    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    queryKey: ["local-workspace", scopeKey, "workspace"],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined, "workspace"),
     enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
   const remoteNotes = useQuery<Note[]>({
@@ -123,7 +124,7 @@ export default function WorkspaceSearch() {
     setParams(next, { replace: true });
   }, [query, scopeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
+  useWorkspaceEffect(() => {
     const key = `${storageKey(scopeKey)}:scroll`;
     try {
       const value = Number(window.sessionStorage.getItem(key));

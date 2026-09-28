@@ -1,5 +1,8 @@
+mod ai_settings;
 mod browser_capture;
+mod cli_models;
 mod db;
+mod model_api;
 mod pc_harness;
 
 use serde::Serialize;
@@ -16,6 +19,17 @@ pub(crate) struct AppState {
     pub(crate) db: Arc<db::LocalDb>,
     ai_processes: Arc<Mutex<HashMap<String, Child>>>,
     pc_harness: Mutex<pc_harness::PcHarnessRuntime>,
+    model_api: model_api::ModelApiRuntime,
+}
+
+async fn run_blocking_task<T, F>(operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|error| format!("等待后台阻塞任务失败: {error}"))?
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,11 +153,14 @@ fn probe_local_ai_provider(id: &str, label: &str) -> LocalAIProviderStatus {
 }
 
 #[tauri::command]
-fn probe_local_ai_providers() -> Vec<LocalAIProviderStatus> {
-    local_ai_specs()
-        .into_iter()
-        .map(|(id, label)| probe_local_ai_provider(id, label))
-        .collect()
+async fn probe_local_ai_providers() -> Result<Vec<LocalAIProviderStatus>, String> {
+    run_blocking_task(|| {
+        Ok(local_ai_specs()
+            .into_iter()
+            .map(|(id, label)| probe_local_ai_provider(id, label))
+            .collect())
+    })
+    .await
 }
 
 fn command_for_provider(provider: &str, prompt: &str) -> Result<Command, String> {
@@ -527,6 +544,20 @@ fn pc_harness_status(state: State<'_, AppState>) -> Result<pc_harness::PcHarness
     Ok(runtime.status(&state.db))
 }
 
+/// 轻量查询手机前台连接状态，供记忆页轮询，不重复探测局域网地址。
+#[tauri::command]
+fn pc_harness_mobile_connection(state: State<'_, AppState>) -> Result<bool, String> {
+    let runtime = state
+        .pc_harness
+        .lock()
+        .map_err(|_| "PC Harness 状态锁不可用")?;
+    Ok(runtime.mobile_connected(&state.db))
+}
+
+/// PC Harness 启停意图持久化键：仅记录用户显式开关，默认不自动启动。
+const PC_HARNESS_DESIRED_RUNNING_KEY: &str = "pc_harness_desired_running";
+const PC_HARNESS_TOKEN_KEY: &str = "pc_harness_token";
+
 /// 显式开启手机 Companion 局域网服务。默认不监听。
 #[tauri::command]
 fn start_pc_harness(state: State<'_, AppState>) -> Result<pc_harness::PcHarnessStatus, String> {
@@ -534,7 +565,14 @@ fn start_pc_harness(state: State<'_, AppState>) -> Result<pc_harness::PcHarnessS
         .pc_harness
         .lock()
         .map_err(|_| "PC Harness 状态锁不可用")?;
-    runtime.start(state.db.clone())
+    let status = runtime.start(state.db.clone())?;
+    let _ = state
+        .db
+        .set_app_setting(PC_HARNESS_DESIRED_RUNNING_KEY, "1");
+    if let Some(token) = status.pairing_token.as_deref() {
+        let _ = state.db.set_app_setting(PC_HARNESS_TOKEN_KEY, token);
+    }
+    Ok(status)
 }
 
 /// 停止手机 Companion 局域网服务并释放端口。
@@ -544,7 +582,11 @@ fn stop_pc_harness(state: State<'_, AppState>) -> Result<pc_harness::PcHarnessSt
         .pc_harness
         .lock()
         .map_err(|_| "PC Harness 状态锁不可用")?;
-    runtime.stop(&state.db)
+    let status = runtime.stop(&state.db)?;
+    let _ = state
+        .db
+        .set_app_setting(PC_HARNESS_DESIRED_RUNNING_KEY, "0");
+    Ok(status)
 }
 
 /// 轮换配对令牌（旧令牌立即失效）。
@@ -556,8 +598,226 @@ fn rotate_pc_harness_token(
         .pc_harness
         .lock()
         .map_err(|_| "PC Harness 状态锁不可用")?;
-    runtime.rotate_token();
+    let token = runtime.rotate_token();
+    let _ = state.db.set_app_setting(PC_HARNESS_TOKEN_KEY, &token);
     Ok(runtime.status(&state.db))
+}
+
+/// 通过在线手机写入手机记忆池；Rust 侧不直接更改 origin=mobile 缓存。
+#[tauri::command]
+async fn pc_harness_mobile_memory_command(
+    state: State<'_, AppState>,
+    operation: String,
+    payload: Value,
+) -> Result<pc_harness::MobileMemoryCommandReceipt, String> {
+    let account_id = state
+        .db
+        .current_active_account()
+        .map_err(|error| format!("读取当前账号失败: {error}"))?
+        .id;
+    let broker = state
+        .pc_harness
+        .lock()
+        .map_err(|_| "PC Harness 状态锁不可用")?
+        .memory_command_broker();
+    tauri::async_runtime::spawn_blocking(move || broker.execute(account_id, operation, payload))
+        .await
+        .map_err(|error| format!("等待手机记忆命令失败: {error}"))?
+}
+
+/// 读取应用级 Model API 配置（脱敏视图）。
+#[tauri::command]
+async fn read_model_api_settings(
+    state: State<'_, AppState>,
+) -> Result<model_api::ModelApiSettingsView, String> {
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || {
+        let settings = model_api::read_settings(&db)?;
+        Ok(model_api::settings_view(&settings))
+    })
+    .await
+}
+
+/// 新建或更新一个 Model API Provider。
+#[tauri::command]
+fn upsert_model_api_provider(
+    state: State<'_, AppState>,
+    input: model_api::ModelApiProviderInput,
+) -> Result<model_api::ModelApiSettingsView, String> {
+    model_api::upsert_provider(&state.db, input)
+}
+
+/// 删除自定义 Provider（内置项只允许清空密钥）。
+#[tauri::command]
+fn delete_model_api_provider(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<model_api::ModelApiSettingsView, String> {
+    model_api::delete_provider(&state.db, &provider_id)
+}
+
+/// 设置全局默认「Provider + 模型」。
+#[tauri::command]
+fn set_model_api_default_target(
+    state: State<'_, AppState>,
+    input: model_api::ModelApiDefaultTargetInput,
+) -> Result<model_api::ModelApiSettingsView, String> {
+    model_api::set_default_target(&state.db, input)
+}
+
+/// 用最小请求验证 Provider 配置是否可用。
+#[tauri::command]
+async fn test_model_api_provider(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<String, String> {
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || {
+        let settings = model_api::read_settings(&db)?;
+        model_api::test_provider(&settings, &provider_id)
+    })
+    .await
+}
+
+/// 读取 AI 运行时设置（默认目标 + 本地 CLI 配置）。
+#[tauri::command]
+async fn read_ai_runtime_settings(
+    state: State<'_, AppState>,
+) -> Result<ai_settings::AiRuntimeSettings, String> {
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || ai_settings::read_settings(&db)).await
+}
+
+/// 保存 AI 运行时设置（即时保存入口）。
+#[tauri::command]
+fn save_ai_runtime_settings(
+    state: State<'_, AppState>,
+    settings: ai_settings::AiRuntimeSettings,
+) -> Result<ai_settings::AiRuntimeSettings, String> {
+    ai_settings::save_settings(&state.db, settings)
+}
+
+/// 拉取 Provider 可用模型列表。
+#[tauri::command]
+async fn list_model_api_models(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<Vec<String>, String> {
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || {
+        let settings = model_api::read_settings(&db)?;
+        model_api::list_models(&settings, &provider_id)
+    })
+    .await
+}
+
+/// 扫描本地 CLI 可用模型（预置 + 发现/配置项）。
+#[tauri::command]
+async fn list_local_cli_models(provider: String) -> Result<Vec<cli_models::LocalCliModel>, String> {
+    run_blocking_task(move || cli_models::list_local_cli_models(&provider)).await
+}
+
+/// 启动一次 Model API 流式文本调用；事件与本地 CLI 共用 `local-ai://*`。
+#[tauri::command]
+fn start_model_api_run(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: model_api::ModelApiRunRequest,
+) -> Result<(), String> {
+    if request.run_id.trim().is_empty() || request.run_id.len() > 120 {
+        return Err("Model API 运行 ID 无效".to_string());
+    }
+    if request.prompt.trim().is_empty() || request.prompt.len() > 64_000 {
+        return Err("Model API 提示词为空或超过 64000 字符".to_string());
+    }
+    let settings = model_api::read_settings(&state.db)?;
+    let provider = settings
+        .providers
+        .iter()
+        .find(|item| item.id == request.provider_id)
+        .cloned()
+        .ok_or_else(|| format!("未找到 Model API Provider：{}", request.provider_id))?;
+    let model = request
+        .model
+        .as_deref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            if provider.model.trim().is_empty() {
+                provider.enabled_models.first().cloned().unwrap_or_default()
+            } else {
+                provider.model.clone()
+            }
+        });
+    if model.is_empty() {
+        return Err("该 Provider 未配置模型".to_string());
+    }
+    let stop = state.model_api.register(&request.run_id)?;
+    let run_id = request.run_id.clone();
+    let prompt = request.prompt.clone();
+    thread::spawn(move || {
+        let mut on_text = |delta: String| {
+            if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                return false;
+            }
+            model_api::emit_event(
+                &app,
+                "local-ai://chunk",
+                model_api::ModelApiEvent {
+                    run_id: run_id.clone(),
+                    text: Some(delta),
+                    error: None,
+                },
+            );
+            true
+        };
+        let result = model_api::run_stream(&provider, &model, &prompt, &stop, &mut on_text);
+        let app_state = app.state::<AppState>();
+        app_state.model_api.finish(&run_id);
+        let cancelled = stop.load(std::sync::atomic::Ordering::SeqCst);
+        match result {
+            Ok(()) => {
+                model_api::emit_event(
+                    &app,
+                    "local-ai://done",
+                    model_api::ModelApiEvent {
+                        run_id,
+                        text: None,
+                        error: None,
+                    },
+                );
+            }
+            Err(_error) if cancelled => {
+                model_api::emit_event(
+                    &app,
+                    "local-ai://done",
+                    model_api::ModelApiEvent {
+                        run_id,
+                        text: None,
+                        error: None,
+                    },
+                );
+            }
+            Err(error) => {
+                model_api::emit_event(
+                    &app,
+                    "local-ai://error",
+                    model_api::ModelApiEvent {
+                        run_id,
+                        text: None,
+                        error: Some(error),
+                    },
+                );
+            }
+        }
+    });
+    Ok(())
+}
+
+/// 取消进行中的 Model API 调用。
+#[tauri::command]
+fn cancel_model_api_run(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
+    state.model_api.cancel(&run_id)
 }
 
 #[derive(Debug, Serialize)]
@@ -584,29 +844,36 @@ fn runtime_status(state: State<'_, AppState>) -> RuntimeStatus {
 /// 读取当前运营账号隔离范围内的最小本地工作区快照。
 /// 这是首个 vertical slice：只读 profile/items/notes，不替换全站 HTTP adapter。
 #[tauri::command]
-fn read_status(
+async fn read_status(
     state: State<'_, AppState>,
     account_pool_id: Option<i64>,
+    section: Option<String>,
 ) -> Result<db::WorkspaceSnapshot, String> {
-    state
-        .db
-        .snapshot_for_account(account_pool_id)
-        .map_err(|error| format!("读取本地工作区失败: {error}"))
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || {
+        db.snapshot_section_for_account(account_pool_id, section.as_deref().unwrap_or("all"))
+            .map_err(|error| format!("读取本地工作区失败: {error}"))
+    })
+    .await
 }
 
 /// 读取当前运营账号隔离范围内的图片，避免桌面端依赖旧 Python HTTP 图片接口。
 #[tauri::command]
-fn read_local_image(
+async fn read_local_image(
     state: State<'_, AppState>,
     item_id: i64,
     account_pool_id: Option<i64>,
     variant: Option<String>,
 ) -> Result<Option<String>, String> {
-    state.db.image_data_url_for_account(
-        item_id,
-        account_pool_id,
-        variant.as_deref().unwrap_or("original"),
-    )
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || {
+        db.image_data_url_for_account(
+            item_id,
+            account_pool_id,
+            variant.as_deref().unwrap_or("original"),
+        )
+    })
+    .await
 }
 
 /// 创建一个属于当前运营账号的本地草稿，用于验证 Rust SQLite 写入和账号池边界。
@@ -862,11 +1129,12 @@ fn update_local_profile(
 
 /// 读取当前账号的本地灵感/浏览器剪藏。
 #[tauri::command]
-fn read_local_inspirations(
+async fn read_local_inspirations(
     state: State<'_, AppState>,
     account_pool_id: Option<i64>,
 ) -> Result<Vec<db::InspirationSummary>, String> {
-    state.db.local_inspirations(account_pool_id)
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || db.local_inspirations(account_pool_id)).await
 }
 
 /// 保存当前账号的本地灵感/浏览器剪藏。
@@ -900,6 +1168,77 @@ fn create_local_reference_account(
     state.db.create_local_reference_account(account)
 }
 
+/// 保存一条页面快照（扩展解析当前页 / 单篇刷新）。
+#[tauri::command]
+fn save_page_snapshot(
+    state: State<'_, AppState>,
+    snapshot: db::PageSnapshotCreate,
+) -> Result<db::PageSnapshotSummary, String> {
+    state.db.save_page_snapshot(snapshot)
+}
+
+/// 按来源 URL 读取页面快照历史。
+#[tauri::command]
+fn list_page_snapshots(
+    state: State<'_, AppState>,
+    account_pool_id: Option<i64>,
+    source_url: String,
+    limit: Option<i64>,
+) -> Result<Vec<db::PageSnapshotSummary>, String> {
+    state
+        .db
+        .list_page_snapshots(account_pool_id, &source_url, limit)
+}
+
+/// 安装到指定浏览器（chrome / edge）：写宿主 + 打开扩展页 + 打开扩展目录。
+#[tauri::command]
+fn install_browser_capture_host(browser: String) -> Result<String, String> {
+    browser_capture::install_for_browser(&browser)
+}
+
+/// 复制扩展目录到 ~/aichihongshu-extensions/vX.Y.Z/（NOOMD 式副本）。
+#[tauri::command]
+fn copy_browser_extension_dir() -> Result<String, String> {
+    browser_capture::copy_extension_dir()
+}
+
+/// 复制扩展目录路径到剪贴板。
+#[tauri::command]
+fn copy_browser_extension_path() -> Result<String, String> {
+    browser_capture::copy_extension_path()
+}
+
+/// 在访达中显示扩展目录（项目目录）。
+#[tauri::command]
+fn open_browser_extension_dir() -> Result<String, String> {
+    browser_capture::open_extension_dir()
+}
+
+/// 连接自检：扩展文件 / 宿主脚本 / 宿主清单 / 应用 socket。
+#[tauri::command]
+fn test_browser_capture_link() -> Result<Vec<(String, bool, String)>, String> {
+    browser_capture::test_link()
+}
+
+/// 浏览器剪藏链路状态（扩展版本 / 协议版本 / 宿主安装情况）。
+#[tauri::command]
+fn browser_capture_status() -> browser_capture::BrowserCaptureStatus {
+    browser_capture::status()
+}
+
+/// 打开浏览器扩展管理页（Chrome / Edge 分流）。
+#[tauri::command]
+fn open_browser_extensions_page(browser: Option<String>) -> Result<String, String> {
+    let kind = browser.as_deref().unwrap_or("chrome").to_ascii_lowercase();
+    browser_capture::open_extensions_page(&kind)
+}
+
+/// 本机可用浏览器（chrome / edge）。
+#[tauri::command]
+fn detect_capture_browsers() -> Vec<String> {
+    browser_capture::detect_browsers()
+}
+
 /// 更新当前账号下榜样账号的名称、粉丝数或风格描述。
 #[tauri::command]
 fn update_local_reference_account(
@@ -921,11 +1260,12 @@ fn delete_local_reference_account(
 
 /// 读取当前账号的经验库注入开关。
 #[tauri::command]
-fn read_local_knowledge_preferences(
+async fn read_local_knowledge_preferences(
     state: State<'_, AppState>,
     account_pool_id: Option<i64>,
 ) -> Result<db::LocalKnowledgePreferences, String> {
-    state.db.local_knowledge_preferences(account_pool_id)
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || db.local_knowledge_preferences(account_pool_id)).await
 }
 
 /// 保存当前账号的经验库注入开关。
@@ -939,11 +1279,12 @@ fn save_local_knowledge_preferences(
 
 /// 读取当前账号的本地 AI 快捷操作。
 #[tauri::command]
-fn list_prompt_configs(
+async fn list_prompt_configs(
     state: State<'_, AppState>,
     account_pool_id: Option<i64>,
 ) -> Result<Vec<db::PromptConfig>, String> {
-    state.db.list_prompt_configs(account_pool_id)
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || db.list_prompt_configs(account_pool_id)).await
 }
 
 /// 新增或更新当前账号的本地 AI 快捷操作。
@@ -963,6 +1304,120 @@ fn delete_prompt_config(
     account_pool_id: i64,
 ) -> Result<Vec<db::PromptConfig>, String> {
     state.db.delete_prompt_config(&key, account_pool_id)
+}
+
+/// 列出记忆条目（L3），按账号隔离，可按 origin/kind/确认状态过滤。
+#[tauri::command]
+async fn list_memory_entries(
+    state: State<'_, AppState>,
+    filter: db::MemoryEntryFilter,
+) -> Result<Vec<db::MemoryEntry>, String> {
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || db.list_memory_entries(filter)).await
+}
+
+/// 新增记忆条目（默认候选）。
+#[tauri::command]
+fn create_memory_entry(
+    state: State<'_, AppState>,
+    entry: db::MemoryEntryCreate,
+) -> Result<db::MemoryEntry, String> {
+    state.db.create_memory_entry(entry)
+}
+
+/// 编辑记忆内容字段。
+#[tauri::command]
+fn update_memory_entry(
+    state: State<'_, AppState>,
+    entry: db::MemoryEntryUpdate,
+) -> Result<db::MemoryEntry, String> {
+    state.db.update_memory_entry(entry)
+}
+
+/// 删除记忆条目。
+#[tauri::command]
+fn delete_memory_entry(
+    state: State<'_, AppState>,
+    id: i64,
+    account_pool_id: i64,
+) -> Result<(), String> {
+    state.db.delete_memory_entry(id, account_pool_id)
+}
+
+/// 启用/停用记忆条目。
+#[tauri::command]
+fn set_memory_entry_enabled(
+    state: State<'_, AppState>,
+    id: i64,
+    account_pool_id: i64,
+    enabled: bool,
+) -> Result<db::MemoryEntry, String> {
+    state
+        .db
+        .set_memory_entry_enabled(id, account_pool_id, enabled)
+}
+
+/// 记忆确认状态迁移（候选→确认/否定，确认→过时）。
+#[tauri::command]
+fn transition_memory_entry_status(
+    state: State<'_, AppState>,
+    transition: db::MemoryEntryTransition,
+) -> Result<db::MemoryEntry, String> {
+    state.db.transition_memory_entry_status(transition)
+}
+
+/// 列出经验提示词（L2）。
+#[tauri::command]
+async fn list_experience_prompts(
+    state: State<'_, AppState>,
+    account_pool_id: Option<i64>,
+    origin: Option<String>,
+) -> Result<Vec<db::ExperiencePrompt>, String> {
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || db.list_experience_prompts(account_pool_id, origin)).await
+}
+
+/// 新增或更新经验提示词。
+#[tauri::command]
+fn upsert_experience_prompt(
+    state: State<'_, AppState>,
+    prompt: db::ExperiencePromptUpsert,
+) -> Result<Vec<db::ExperiencePrompt>, String> {
+    state.db.upsert_experience_prompt(prompt)
+}
+
+/// 删除经验提示词。
+#[tauri::command]
+fn delete_experience_prompt(
+    state: State<'_, AppState>,
+    id: i64,
+    account_pool_id: i64,
+    origin: String,
+) -> Result<Vec<db::ExperiencePrompt>, String> {
+    state
+        .db
+        .delete_experience_prompt(id, account_pool_id, origin)
+}
+
+/// 读取 L0/L1 系统经验规则。
+#[tauri::command]
+fn read_memory_system_rules(state: State<'_, AppState>) -> Result<db::MemorySystemRules, String> {
+    state.db.read_memory_system_rules()
+}
+
+/// 保存 L1 系统经验覆盖文本。
+#[tauri::command]
+fn save_memory_l1_override(
+    state: State<'_, AppState>,
+    content: String,
+) -> Result<db::MemorySystemRules, String> {
+    state.db.save_memory_l1_override(&content)
+}
+
+/// 恢复 L1 系统经验默认。
+#[tauri::command]
+fn reset_memory_l1_override(state: State<'_, AppState>) -> Result<db::MemorySystemRules, String> {
+    state.db.reset_memory_l1_override()
 }
 
 /// 更新当前账号笔记的互动统计。
@@ -1073,11 +1528,34 @@ pub fn run() {
             let db_path = resolve_database_path(app.handle())?;
             let db = db::LocalDb::open(db_path)
                 .map_err(|error| setup_error(format!("初始化本地数据库失败: {error}")))?;
+            let db = Arc::new(db);
+            // 恢复 PC Harness：上次配对令牌 + 用户显式开启意图；默认仍不自动启动。
+            let mut harness_runtime = pc_harness::PcHarnessRuntime::new();
+            match db.get_app_setting(PC_HARNESS_TOKEN_KEY) {
+                Ok(Some(token)) => harness_runtime.restore_token(&token),
+                Ok(None) => {
+                    let _ = db.set_app_setting(PC_HARNESS_TOKEN_KEY, &harness_runtime.token());
+                }
+                Err(error) => {
+                    eprintln!("[aichihongshu] 读取 PC Harness 令牌失败: {error}");
+                }
+            }
+            let restore_harness = matches!(
+                db.get_app_setting(PC_HARNESS_DESIRED_RUNNING_KEY),
+                Ok(Some(value)) if value == "1"
+            );
             app.manage(AppState {
-                db: Arc::new(db),
+                db,
                 ai_processes: Arc::new(Mutex::new(HashMap::new())),
-                pc_harness: Mutex::new(pc_harness::PcHarnessRuntime::new()),
+                pc_harness: Mutex::new(harness_runtime),
+                model_api: model_api::ModelApiRuntime::default(),
             });
+            if restore_harness {
+                let state = app.state::<AppState>();
+                if let Err(error) = start_pc_harness(state) {
+                    eprintln!("[aichihongshu] 恢复 PC Harness 监听失败: {error}");
+                }
+            }
             // 浏览器剪藏回传链路（N12 最小原型）：owner-only Unix socket，
             // 失败只记日志，不影响应用启动。
             browser_capture::spawn(app.handle().clone());
@@ -1119,11 +1597,33 @@ pub fn run() {
             create_local_reference_account,
             update_local_reference_account,
             delete_local_reference_account,
+            save_page_snapshot,
+            list_page_snapshots,
+            install_browser_capture_host,
+            copy_browser_extension_dir,
+            copy_browser_extension_path,
+            open_browser_extensions_page,
+            open_browser_extension_dir,
+            test_browser_capture_link,
+            detect_capture_browsers,
+            browser_capture_status,
             read_local_knowledge_preferences,
             save_local_knowledge_preferences,
             list_prompt_configs,
             upsert_prompt_config,
             delete_prompt_config,
+            list_memory_entries,
+            create_memory_entry,
+            update_memory_entry,
+            delete_memory_entry,
+            set_memory_entry_enabled,
+            transition_memory_entry_status,
+            list_experience_prompts,
+            upsert_experience_prompt,
+            delete_experience_prompt,
+            read_memory_system_rules,
+            save_memory_l1_override,
+            reset_memory_l1_override,
             update_local_note_stats,
             save_local_ai_run,
             update_local_ai_run,
@@ -1134,9 +1634,22 @@ pub fn run() {
             start_local_ai,
             cancel_local_ai,
             pc_harness_status,
+            pc_harness_mobile_connection,
             start_pc_harness,
             stop_pc_harness,
-            rotate_pc_harness_token
+            rotate_pc_harness_token,
+            pc_harness_mobile_memory_command,
+            read_model_api_settings,
+            upsert_model_api_provider,
+            delete_model_api_provider,
+            set_model_api_default_target,
+            test_model_api_provider,
+            start_model_api_run,
+            cancel_model_api_run,
+            read_ai_runtime_settings,
+            save_ai_runtime_settings,
+            list_model_api_models,
+            list_local_cli_models
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

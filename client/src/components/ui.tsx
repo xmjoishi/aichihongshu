@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useWorkspaceEffect } from "../lib/workspaceActivity";
+import { useId, useRef, type ReactNode } from "react";
 
 export const primaryButtonClass =
   "inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--color-action-primary)] px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50";
@@ -26,7 +27,7 @@ export function Dialog({
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
-  useEffect(() => {
+  useWorkspaceEffect(() => {
     closeRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();

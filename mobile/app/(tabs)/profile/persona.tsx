@@ -1,3 +1,4 @@
+import { Stack } from 'expo-router';
 import {
   View, Text, ScrollView, TextInput,
   StyleSheet, Alert, KeyboardAvoidingView, Platform,
@@ -74,7 +75,9 @@ export default function PersonaScreen() {
   }
 
   return (
-    <AuroraBackground style={{ flex: 1 }}>
+    <>
+      <Stack.Screen options={{ title: "人设" }} />
+          <AuroraBackground style={{ flex: 1 }}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -120,6 +123,7 @@ export default function PersonaScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
     </AuroraBackground>
+    </>
   );
 }
 

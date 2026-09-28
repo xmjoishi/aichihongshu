@@ -29,5 +29,8 @@
     "check:local-knowledge": "node ./scripts/check-local-knowledge.mjs",
     "tauri:build": "npm --prefix client run tauri -- build",
     "build": "npm --prefix client run build"
+  },
+  "dependencies": {
+    "expo": "^57.0.24"
   }
 }

@@ -8,6 +8,26 @@
 export type AIHostMode = "floating" | "sidebar" | "page";
 export type AIConnectionKind = "model-api" | "agent-cli";
 
+export const GLOBAL_AI_EVENT = "aichihongshu:open-global-ai";
+export const PAGE_AI_SIDEBAR_EVENT = "aichihongshu:page-ai-sidebar-visibility";
+const openPageAISidebarSources = new Set<string>();
+
+export function openGlobalAIHost(options?: { sessionKey?: string; historyKey?: string }): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(GLOBAL_AI_EVENT, { detail: options }));
+}
+
+export function publishPageAISidebarVisibility(source: string, open: boolean): void {
+  if (typeof window === "undefined") return;
+  if (open) openPageAISidebarSources.add(source);
+  else openPageAISidebarSources.delete(source);
+  window.dispatchEvent(new CustomEvent(PAGE_AI_SIDEBAR_EVENT, { detail: { source, open } }));
+}
+
+export function getOpenPageAISidebarSources(): string[] {
+  return [...openPageAISidebarSources];
+}
+
 export interface AIContextRef {
   accountId: number | null;
   noteId?: number;

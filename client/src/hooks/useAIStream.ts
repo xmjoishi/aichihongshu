@@ -3,12 +3,22 @@ import { api, API_BASE } from "../lib/api";
 import { ACCOUNT_CHANGED_EVENT, useAccountContext } from "../lib/accountContext";
 import { IS_TAURI_RUNTIME } from "../lib/local";
 import { readLocalAIRun, readLocalAIRunArtifacts, saveLocalAIRun, saveLocalAIRunArtifact, updateLocalAIRun } from "../lib/local";
-import { markLocalAITextVerified, probeLocalAIProviders, streamLocalAI, type LocalAIProviderId } from "../lib/localAi";
+import { markLocalAITextVerified, probeLocalAIProviders, streamLocalAI, streamModelApi, type LocalAIProviderId } from "../lib/localAi";
 import { publishAISession, subscribeAISession } from "../lib/aiSession";
 
 export interface AIMessage {
   role: "user" | "assistant";
   content: string;
+  /** Note content version captured when a structured edit proposal was requested. */
+  proposalBaseVersion?: number;
+  proposalNoteId?: number;
+  proposalAccountId?: number | null;
+}
+
+export interface AIMessageProposalContext {
+  proposalBaseVersion?: number;
+  proposalNoteId?: number;
+  proposalAccountId?: number | null;
 }
 
 interface UseAIStreamOptions {
@@ -18,6 +28,12 @@ interface UseAIStreamOptions {
   systemExtra?: string;
   localProviderId?: LocalAIProviderId;
   localProviderScope?: string;
+  /** model-api 走 Rust 端多 Provider 调用；agent-cli 走本地 CLI。 */
+  connection?: "agent-cli" | "model-api";
+  /** connection=model-api 时的目标 Provider id。 */
+  modelApiProviderId?: string;
+  /** 可选覆盖模型；留空用 Provider 默认模型。 */
+  modelApiModel?: string;
   /** Shared conversation identity used by all AI host presentations. */
   sessionKey?: string;
   /** Stable Agent session id used to isolate restart-safe history. */
@@ -84,7 +100,20 @@ function normalizeHistory(value: unknown): AIMessage[] {
       ((message as AIMessage).role === "user" || (message as AIMessage).role === "assistant") &&
       typeof (message as AIMessage).content === "string",
     )
-    .map((message) => ({ role: message.role, content: message.content.slice(0, MAX_MESSAGE_CHARS) }))
+    .map((message) => ({
+      role: message.role,
+      content: message.content.slice(0, MAX_MESSAGE_CHARS),
+      ...(typeof (message as AIMessage).proposalBaseVersion === "number" && Number.isFinite((message as AIMessage).proposalBaseVersion)
+        ? { proposalBaseVersion: (message as AIMessage).proposalBaseVersion }
+        : {}),
+      ...(typeof (message as AIMessage).proposalNoteId === "number" && Number.isSafeInteger((message as AIMessage).proposalNoteId)
+        ? { proposalNoteId: (message as AIMessage).proposalNoteId }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(message, "proposalAccountId") &&
+        ((message as AIMessage).proposalAccountId === null || typeof (message as AIMessage).proposalAccountId === "number")
+        ? { proposalAccountId: (message as AIMessage).proposalAccountId }
+        : {}),
+    }))
     .slice(-MAX_HISTORY_MESSAGES);
 }
 
@@ -94,6 +123,17 @@ function loadHistory(databaseIdentity: string, accountId: number | null | undefi
   try {
     const raw = storage?.getItem(key);
     if (raw) return normalizeHistory(JSON.parse(raw));
+    // When an existing note conversation becomes a shared session, copy its
+    // note-scoped history into the session key on first access.
+    if (historyKey && (noteId != null || itemId != null)) {
+      const previousObjectKey = storageKey(databaseIdentity, accountId, noteId, itemId);
+      const previousObjectHistory = storage?.getItem(previousObjectKey);
+      const migrated = previousObjectHistory ? normalizeHistory(JSON.parse(previousObjectHistory)) : [];
+      if (migrated.length > 0) {
+        saveHistory(databaseIdentity, accountId, noteId, itemId, migrated, historyKey);
+        return migrated;
+      }
+    }
   } catch {
     // 存储不可用或历史损坏时从空历史开始，不影响当前流。
   }
@@ -363,7 +403,7 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
   // 清空对话或切换账号/对象来显式取消。这样浮窗、侧栏、独立页之间可安全切换。
 
   const send = useCallback(
-    (userText: string, replaceLastUser = false) => {
+    (userText: string, replaceLastUser = false, proposalContext?: AIMessageProposalContext) => {
       if (!userText.trim() || loading) return;
       setError(null);
 
@@ -373,7 +413,19 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
       const originItemId = opts.itemId;
       const isCurrent = () => requestSeq === requestSeqRef.current;
 
-      const userMsg: AIMessage = { role: "user", content: userText };
+      const userMsg: AIMessage = {
+        role: "user",
+        content: userText,
+        ...(typeof proposalContext?.proposalBaseVersion === "number" && Number.isFinite(proposalContext.proposalBaseVersion)
+          ? { proposalBaseVersion: proposalContext.proposalBaseVersion }
+          : {}),
+        ...(typeof proposalContext?.proposalNoteId === "number" && Number.isSafeInteger(proposalContext.proposalNoteId)
+          ? { proposalNoteId: proposalContext.proposalNoteId }
+          : {}),
+        ...(proposalContext && Object.prototype.hasOwnProperty.call(proposalContext, "proposalAccountId")
+          ? { proposalAccountId: proposalContext.proposalAccountId ?? null }
+          : {}),
+      };
       const baseMessages = replaceLastUser && messages[messages.length - 1]?.role === "user"
         ? messages.slice(0, -1)
         : messages;
@@ -433,7 +485,13 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
           })).catch(() => {});
         }
         setMessages((prev) => {
-          const updated = [...prev, { role: "assistant" as const, content: buffer }];
+          const updated = [...prev, {
+            role: "assistant" as const,
+            content: buffer,
+            ...(userMsg.proposalBaseVersion != null ? { proposalBaseVersion: userMsg.proposalBaseVersion } : {}),
+            ...(userMsg.proposalNoteId != null ? { proposalNoteId: userMsg.proposalNoteId } : {}),
+            ...(Object.prototype.hasOwnProperty.call(userMsg, "proposalAccountId") ? { proposalAccountId: userMsg.proposalAccountId } : {}),
+          }];
           saveHistory(databaseIdentity, originAccountId, originNoteId, originItemId, updated, opts.historyKey);
           publishAISession({ sessionKey, messages: updated, streaming: "", loading: false });
           return updated;
@@ -452,6 +510,30 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
       };
 
       if (IS_TAURI_RUNTIME) {
+        if (opts.connection === "model-api") {
+          const providerId = opts.modelApiProviderId?.trim();
+          if (!providerId) {
+            onError(new Error("请先选择一个已连接的 Model API Provider"));
+            return;
+          }
+          const runWithProvider: AIRunMetadata = {
+            ...startedRun,
+            provider: `model-api:${providerId}`,
+          };
+          runRef.current = runWithProvider;
+          setRun(runWithProvider);
+          saveRunMetadata(databaseIdentity, runWithProvider, opts.historyKey);
+          ctrlRef.current = streamModelApi(
+            startedRun.runId,
+            providerId,
+            opts.modelApiModel,
+            buildLocalAIPrompt(newMessages, opts.systemExtra, opts.assistantMode),
+            onChunk,
+            onDone,
+            onError,
+          );
+          return;
+        }
         // 本地模式只走已允许的 CLI 命令；探测和启动均不经过 shell，且不写配置。
         const placeholder = new AbortController();
         ctrlRef.current = placeholder;
@@ -507,7 +589,7 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
         );
       }
     },
-    [databaseIdentity, effectiveAccountId, finishRun, loading, messages, opts.assistantMode, opts.historyKey, opts.localProviderId, opts.localProviderScope, opts.noteId, opts.itemId, opts.systemExtra, sessionKey],
+    [databaseIdentity, effectiveAccountId, finishRun, loading, messages, opts.assistantMode, opts.connection, opts.historyKey, opts.localProviderId, opts.localProviderScope, opts.modelApiModel, opts.modelApiProviderId, opts.noteId, opts.itemId, opts.systemExtra, sessionKey],
   );
 
   const clear = useCallback(() => {
@@ -533,7 +615,11 @@ export function useAIStream(opts: UseAIStreamOptions = {}) {
 
   const retry = useCallback(() => {
     const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
-    if (lastUserMessage) send(lastUserMessage.content, true);
+    if (lastUserMessage) send(lastUserMessage.content, true, {
+      ...(lastUserMessage.proposalBaseVersion != null ? { proposalBaseVersion: lastUserMessage.proposalBaseVersion } : {}),
+      ...(lastUserMessage.proposalNoteId != null ? { proposalNoteId: lastUserMessage.proposalNoteId } : {}),
+      ...(Object.prototype.hasOwnProperty.call(lastUserMessage, "proposalAccountId") ? { proposalAccountId: lastUserMessage.proposalAccountId } : {}),
+    });
   }, [messages, send]);
 
   return { messages, streaming, loading, error, run, send, retry, clear, abort };

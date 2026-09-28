@@ -1,6 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useWorkspaceActive, useWorkspaceEffect } from "../lib/workspaceActivity";
+import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
+import { useMemo, useState, useEffect, useLayoutEffect, useRef } from "react";
 import { usePanelResize } from "../hooks/usePanelResize";
-import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, API_BASE, openInBrowser, openInSystemBrowser, riskAckHeader } from "../lib/api";
 import { NOTE_TYPE_GROUPS, getNoteTypeBadge, type NoteType } from "../lib/noteTypes";
@@ -17,7 +19,8 @@ import {
   secondaryButtonClass,
 } from "../components/ui";
 import LocalImage from "../components/LocalImage";
-import { Save, Copy, ChevronRight, Sparkles, ImagePlus, Hash, FileText, Trash2, X, Search, Send, Check, ExternalLink, Rocket, Loader2, FolderOpen, Images, LayoutList, Columns3 } from "lucide-react";
+import { DataCaptureButton } from "../components/DataCapture";
+import { Save, Copy, ChevronRight, ImagePlus, Hash, FileText, Trash2, X, Search, Send, Check, ExternalLink, Rocket, Loader2, FolderOpen, Images, LayoutList, Columns3 } from "lucide-react";
 import AIPanel from "../components/AIPanel";
 import { useToast } from "../components/Toast";
 import { useRiskConfirm } from "../components/useRiskConfirm";
@@ -48,35 +51,54 @@ import {
 } from "../lib/aiProposal";
 import { preparePublish, type PublishPreparation } from "../lib/publishPreparation";
 import { noteToMarkdown } from "../lib/noteMarkdown";
-import { publishPageAIContext } from "../lib/pageAIContext";
+import { makeAISessionKey, publishPageAISidebarVisibility } from "../lib/aiHost";
+import { PAGE_AI_ACTION_EVENT, publishPageAIContext } from "../lib/pageAIContext";
+import type { AIResponseEnvelope } from "../lib/aiResponse";
 import Publish from "./Publish";
 
 
 const AUTOSAVE_DELAY = 1500; // ms
 const NOTES_VIEW_KEY = "aichihongshu.notes-view.v1";
 
-function NotesWorkspaceViewSwitcher({ publishView, onChange }: { publishView: boolean; onChange: (publishView: boolean) => void }) {
+const EMPTY_NOTES: Note[] = [];
+
+type NotesWorkspaceMode = "list" | "waterfall" | "publish";
+
+function NotesWorkspaceViewSwitcher({ mode, onChange }: { mode: NotesWorkspaceMode; onChange: (mode: NotesWorkspaceMode) => void }) {
   return (
-    <div className="flex items-center gap-0.5 rounded-lg border border-zinc-200 bg-zinc-50 p-0.5" role="group" aria-label="切换笔记视图">
+    <div className="flex items-center gap-0.5 rounded-lg border border-zinc-200 bg-zinc-50 p-0.5" role="group" aria-label="切换笔记工作区">
       <button
         type="button"
-        aria-pressed={!publishView}
-        aria-label="笔记列表视图"
-        title="笔记列表视图"
-        onClick={() => onChange(false)}
-        className={`rounded-md p-1.5 transition-colors ${!publishView ? "bg-white text-[#ff2442] shadow-sm" : "text-zinc-400 hover:bg-white hover:text-zinc-600"}`}
+        aria-pressed={mode === "list"}
+        aria-label="笔记列表"
+        title="笔记列表"
+        onClick={() => onChange("list")}
+        className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${mode === "list" ? "bg-white text-[#ff2442] shadow-sm" : "text-zinc-500 hover:bg-white hover:text-zinc-700"}`}
       >
-        <LayoutList size={15} />
+        <LayoutList size={14} />
+        <span>笔记列表</span>
       </button>
       <button
         type="button"
-        aria-pressed={publishView}
-        aria-label="发布看板视图"
-        title="发布看板视图"
-        onClick={() => onChange(true)}
-        className={`rounded-md p-1.5 transition-colors ${publishView ? "bg-white text-[#ff2442] shadow-sm" : "text-zinc-400 hover:bg-white hover:text-zinc-600"}`}
+        aria-pressed={mode === "waterfall"}
+        aria-label="瀑布流"
+        title="瀑布流"
+        onClick={() => onChange("waterfall")}
+        className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${mode === "waterfall" ? "bg-white text-[#ff2442] shadow-sm" : "text-zinc-500 hover:bg-white hover:text-zinc-700"}`}
       >
-        <Columns3 size={15} />
+        <Columns3 size={14} />
+        <span>瀑布流</span>
+      </button>
+      <button
+        type="button"
+        aria-pressed={mode === "publish"}
+        aria-label="发布准备"
+        title="发布准备"
+        onClick={() => onChange("publish")}
+        className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${mode === "publish" ? "bg-white text-[#ff2442] shadow-sm" : "text-zinc-500 hover:bg-white hover:text-zinc-700"}`}
+      >
+        <Send size={14} />
+        <span>发布准备</span>
       </button>
     </div>
   );
@@ -100,6 +122,18 @@ function formatSaveError(cause: unknown, fallback = "保存失败，请重试"):
 
 function notesViewKey(scopeKey: string): string {
   return `${NOTES_VIEW_KEY}:${encodeURIComponent(scopeKey)}`;
+}
+
+function notesWorkspaceViewKey(scopeKey: string): string {
+  return `${notesViewKey(scopeKey)}:workspace-view`;
+}
+
+function readNotesWorkspaceView(scopeKey: string): NotesWorkspaceMode {
+  try {
+    const saved = sessionStorage.getItem(notesWorkspaceViewKey(scopeKey));
+    if (saved === "waterfall" || saved === "publish") return saved;
+  } catch { /* optional */ }
+  return "list";
 }
 
 // ── Publish Modal ─────────────────────────────────────────────────────────────
@@ -348,7 +382,7 @@ function PublishModal({
 
 export function NoteList() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const qc = useQueryClient();
   const { toast } = useToast();
   const { accountId, scopeKey } = useAccountContext();
@@ -358,12 +392,25 @@ export function NoteList() {
   const noteDelete = getCapability("note.delete");
   const publish = getCapability("publish");
   const { confirmAndRetry, dialog: riskDialog } = useRiskConfirm();
+  const requestedWorkspaceView = searchParams.get("view");
+  const [savedWorkspaceView, setSavedWorkspaceView] = useState<NotesWorkspaceMode>(() =>
+    requestedWorkspaceView === "waterfall" || requestedWorkspaceView === "publish"
+      ? requestedWorkspaceView
+      : readNotesWorkspaceView(scopeKey)
+  );
+  const workspaceView: NotesWorkspaceMode = requestedWorkspaceView === "waterfall" || requestedWorkspaceView === "publish"
+    ? requestedWorkspaceView
+    : requestedWorkspaceView === null ? savedWorkspaceView : "list";
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("created_desc");
   const [showTrash, setShowTrash] = useState(false);
+  const [viewPrefsLoadedScope, setViewPrefsLoadedScope] = useState<string | null>(null);
 
   function handleStatusChange(key: string) {
+    // 状态页签（尤其是“全部”）必须离开回收站视图，否则 showTrash
+    // 会继续决定数据源，导致点击“全部”后仍停留在回收站。
+    setShowTrash(false);
     setStatusFilter(key);
     // 已发 tab 默认按发布时间倒序，其他 tab 保持最新创建
     if (key === "published") setSort("published_desc");
@@ -379,27 +426,110 @@ export function NoteList() {
   const [creatingDraft, setCreatingDraft] = useState(false);
   const notesScrollRef = useRef<HTMLDivElement>(null);
   const viewScopeRef = useRef<string | null>(null);
+  const publishView = workspaceView === "publish";
+  const waterfallView = workspaceView === "waterfall";
+  const scrollViewMode = workspaceView;
+  const workspaceViewStorageKey = notesWorkspaceViewKey(scopeKey);
+  const scrollStorageKey = `${notesViewKey(scopeKey)}:scroll:${showTrash ? "trash" : statusFilter || "all"}:${scrollViewMode}`;
+  const activeScrollStorageKeyRef = useRef(scrollStorageKey);
+  const pendingScrollRestoreKeyRef = useRef<string | null>(scrollStorageKey);
+  const suppressScrollSaveRef = useRef(true);
 
-  useEffect(() => {
-    const publishView = searchParams.get("view") === "publish";
+  useLayoutEffect(() => {
+    if (activeScrollStorageKeyRef.current === scrollStorageKey) return;
+    activeScrollStorageKeyRef.current = scrollStorageKey;
+    pendingScrollRestoreKeyRef.current = scrollStorageKey;
+    suppressScrollSaveRef.current = true;
+  }, [scrollStorageKey]);
+
+  function changeWorkspaceMode(mode: NotesWorkspaceMode) {
+    try { sessionStorage.setItem(workspaceViewStorageKey, mode); } catch { /* optional */ }
+    setSavedWorkspaceView(mode);
+    setSearchParams(mode === "list" ? {} : { view: mode });
+  }
+
+  useWorkspaceEffect(() => {
     publishPageAIContext({
       route: "/notes",
-      page: publishView ? "笔记 · 发布" : "笔记",
+      page: publishView ? "笔记 · 发布" : waterfallView ? "笔记 · 瀑布流" : "笔记",
       accountId,
       selectedIds: [],
       availableActions: publishView
         ? [
             { id: "review-outbox", label: "检查发布队列" },
             { id: "prepare-publish", label: "准备发布", requiresConfirmation: true },
+            ...(noteWrite.available ? [{ id: "save-note-draft", label: "保存笔记草稿", description: "将本轮生成的结构化笔记保存为草稿", requiresConfirmation: true, handler: "save-note-draft" as const }] : []),
           ]
         : [
             { id: "triage-notes", label: "整理笔记" },
             { id: "find-draft", label: "找一篇可发布草稿" },
+            ...(noteWrite.available ? [{ id: "save-note-draft", label: "保存笔记草稿", description: "将本轮生成的结构化笔记保存为草稿", requiresConfirmation: true, handler: "save-note-draft" as const }] : []),
           ],
       source: "page",
       permissionScope: ["note.read", "note.write", "note.status.write", "publish"],
     });
-  }, [accountId, searchParams]);
+  }, [accountId, noteWrite.available, publishView, waterfallView]);
+
+  useWorkspaceEffect(() => {
+    const handleAIAction = (event: Event) => {
+      const detail = (event as CustomEvent<{ actionId?: string; response?: AIResponseEnvelope; sessionKey?: string; accountId?: number | null; onComplete?: () => void }>).detail;
+      if (detail?.actionId !== "save-note-draft" || !detail.response) return;
+      if (detail.accountId !== accountId) {
+        toast("账号已切换，请在当前账号下重新生成草稿", "warning");
+        return;
+      }
+      const draft = detail.response.blocks.find((block) => block.type === "note-draft");
+      if (!draft || draft.type !== "note-draft") {
+        toast("这条回复没有可保存的笔记草稿", "info");
+        return;
+      }
+      if (!noteWrite.available) {
+        toast(`${noteWrite.reason}。${noteWrite.nextStep}`, "info");
+        return;
+      }
+      void (async () => {
+        setCreatingDraft(true);
+        try {
+          const title = draft.title?.trim() || "新建草稿";
+          const tags = draft.tags.map((tag) => tag.replace(/^#+/, "")).filter(Boolean);
+          let createdId: number;
+          if (IS_TAURI_RUNTIME) {
+            if (accountId == null) throw new Error("当前没有可用账号，无法保存笔记草稿");
+            const created = await createLocalDraft(title, accountId);
+            const saved = await updateLocalNote({
+              noteId: created.id,
+              accountPoolId: accountId,
+              expectedVersion: created.contentVersion,
+              title,
+              body: draft.body ?? "",
+              tags,
+              itemIds: [],
+              noteType: "text",
+            });
+            createdId = saved.id;
+            await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
+          } else {
+            const created = await api.post("/api/content/", { title, body: draft.body ?? "", tags });
+            const saved = await api.patch(`/api/content/${created.id}`, { title, body: draft.body ?? "", tags, item_ids: [], note_type: "text" });
+            createdId = Number(saved.id ?? created.id);
+            await qc.invalidateQueries({ queryKey: ["notes"] });
+          }
+          if (!Number.isSafeInteger(createdId) || createdId <= 0) throw new Error("草稿已创建，但返回的笔记编号无效");
+          const query = new URLSearchParams({ aiHost: "sidebar" });
+          if (detail.sessionKey) query.set("aiSession", detail.sessionKey);
+          navigate(`/notes/${createdId}?${query.toString()}`);
+          toast("笔记草稿已保存", "success");
+          detail.onComplete?.();
+        } catch (cause) {
+          toast(`保存失败：${cause instanceof Error ? cause.message : String(cause)}`, "error");
+        } finally {
+          setCreatingDraft(false);
+        }
+      })();
+    };
+    window.addEventListener(PAGE_AI_ACTION_EVENT, handleAIAction);
+    return () => window.removeEventListener(PAGE_AI_ACTION_EVENT, handleAIAction);
+  }, [accountId, navigate, noteWrite.available, noteWrite.nextStep, noteWrite.reason, qc, scopeKey, toast]);
 
   useAccountChange(() => {
     setNewDraftOpen(false);
@@ -417,10 +547,18 @@ export function NoteList() {
         if (typeof saved.sort === "string") setSort(saved.sort);
         if (typeof saved.showTrash === "boolean") setShowTrash(saved.showTrash);
       }
-      const scroll = Number(sessionStorage.getItem(`${notesViewKey(scopeKey)}:scroll`));
-      if (Number.isFinite(scroll) && notesScrollRef.current) notesScrollRef.current.scrollTop = scroll;
     } catch { /* preferences are optional */ }
+    setViewPrefsLoadedScope(scopeKey);
   }, [scopeKey]);
+
+  useEffect(() => {
+    if (requestedWorkspaceView === "waterfall" || requestedWorkspaceView === "publish") {
+      setSavedWorkspaceView(requestedWorkspaceView);
+      try { sessionStorage.setItem(workspaceViewStorageKey, requestedWorkspaceView); } catch { /* optional */ }
+    } else if (requestedWorkspaceView === null) {
+      setSavedWorkspaceView(readNotesWorkspaceView(scopeKey));
+    }
+  }, [requestedWorkspaceView, scopeKey, workspaceViewStorageKey]);
 
   useEffect(() => {
     if (viewScopeRef.current !== scopeKey) return;
@@ -429,7 +567,7 @@ export function NoteList() {
 
   const searchDebounced = useDebounce(search, 300);
 
-  const { data: remoteNotes = [], isLoading: remoteNotesLoading } = useQuery<Note[]>({
+  const { data: remoteNotes = EMPTY_NOTES, isLoading: remoteNotesLoading } = useQuery<Note[]>({
     queryKey: ["notes", statusFilter, searchDebounced, sort],
     queryFn: () => {
       const params = new URLSearchParams();
@@ -442,11 +580,11 @@ export function NoteList() {
     enabled: !IS_TAURI_RUNTIME,
   });
   const { data: localWorkspace, isLoading: localNotesLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-notes", scopeKey, statusFilter, searchDebounced, sort],
-    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    queryKey: ["local-workspace", scopeKey, "notes"],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined, "notes"),
     enabled: IS_TAURI_RUNTIME && noteRead.available && accountId !== null,
   });
-  const notes: Note[] = IS_TAURI_RUNTIME
+  const notes: Note[] = useMemo(() => IS_TAURI_RUNTIME
     ? (showTrash ? (localWorkspace?.trashNotes ?? []) : (localWorkspace?.notes ?? []))
         .map(localNoteToNote)
         .filter((note) => !statusFilter || note.status === statusFilter)
@@ -455,8 +593,39 @@ export function NoteList() {
           if (sort === "published_desc") return (b.published_at ?? "").localeCompare(a.published_at ?? "");
           return (b.created_at ?? "").localeCompare(a.created_at ?? "");
         })
-    : remoteNotes;
+    : remoteNotes, [showTrash, localWorkspace?.trashNotes, localWorkspace?.notes, statusFilter, searchDebounced, sort, remoteNotes]);
   const isLoading = IS_TAURI_RUNTIME ? localNotesLoading : remoteNotesLoading;
+
+  useEffect(() => {
+    if (viewPrefsLoadedScope !== scopeKey || isLoading || pendingScrollRestoreKeyRef.current !== scrollStorageKey) return;
+    const element = notesScrollRef.current;
+    if (!element) return;
+
+    const legacyKey = `${notesViewKey(scopeKey)}:scroll`;
+    let saved: number;
+    try {
+      const stored = sessionStorage.getItem(scrollStorageKey) ?? sessionStorage.getItem(legacyKey);
+      saved = Number(stored ?? 0);
+    } catch {
+      saved = 0;
+    }
+    const targetScrollTop = Number.isFinite(saved) ? Math.max(0, saved) : 0;
+    let secondFrame: number | undefined;
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        if (activeScrollStorageKeyRef.current !== scrollStorageKey) return;
+        element.scrollTop = targetScrollTop;
+        try { sessionStorage.setItem(scrollStorageKey, String(element.scrollTop)); } catch { /* optional */ }
+        pendingScrollRestoreKeyRef.current = null;
+        suppressScrollSaveRef.current = false;
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      if (secondFrame !== undefined) cancelAnimationFrame(secondFrame);
+    };
+  }, [isLoading, notes.length, scopeKey, scrollStorageKey, viewPrefsLoadedScope]);
 
   async function deleteNote(id: number) {
     if (!noteDelete.available) {
@@ -468,7 +637,6 @@ export function NoteList() {
       if (IS_TAURI_RUNTIME) {
         if (accountId === null) throw new Error("当前账号尚未就绪");
         await deleteLocalNote(id, accountId);
-        await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
         await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       } else {
         await api.delete(`/api/content/${id}`);
@@ -488,7 +656,6 @@ export function NoteList() {
     setDeletingId(id);
     try {
       await restoreLocalNote(id, accountId);
-      await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
       await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       toast("笔记已恢复", "success");
     } catch (e: unknown) {
@@ -517,8 +684,7 @@ export function NoteList() {
           status: newStatus,
           noteUrl,
         });
-        await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
-      await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
+        await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       } catch (e: unknown) {
         toast((e as Error).message, "error");
       }
@@ -610,7 +776,6 @@ export function NoteList() {
     setCreatingDraft(true);
     try {
       await createLocalDraft(newDraftTitle.trim() || "新建草稿", accountId ?? undefined);
-      await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
       await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       setNewDraftOpen(false);
       setNewDraftTitle("");
@@ -625,10 +790,10 @@ export function NoteList() {
   if (searchParams.get("view") === "publish") {
     return (
       <div className="flex h-full flex-col overflow-hidden">
-        <div className="flex shrink-0 items-center gap-3 border-b border-zinc-100 bg-white px-6 py-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-zinc-100 bg-white px-6 py-2">
           <h1 className="text-lg font-semibold text-zinc-900">笔记</h1>
-          <NotesWorkspaceViewSwitcher publishView onChange={(publishView) => navigate(publishView ? "/notes?view=publish" : "/notes")} />
-          <span className="ml-2 text-xs text-zinc-400">发布准备、平台交接与结果回填</span>
+          <NotesWorkspaceViewSwitcher mode="publish" onChange={changeWorkspaceMode} />
+          <span className="ml-1 text-xs text-zinc-500">平台交接与结果回填</span>
         </div>
         <div className="min-h-0 flex-1"><Publish embedded /></div>
       </div>
@@ -648,10 +813,29 @@ export function NoteList() {
 
       {/* Toolbar */}
       <div className="border-b border-zinc-100 bg-white shrink-0">
-        <div className="flex items-center gap-1 px-6 pt-1">
-          <h1 className="mr-2 text-lg font-semibold text-zinc-900">笔记</h1>
-          <NotesWorkspaceViewSwitcher publishView={false} onChange={(publishView) => navigate(publishView ? "/notes?view=publish" : "/notes")} />
-          <div role="tablist" aria-label="笔记筛选" className="flex min-w-0 items-stretch gap-1">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-6 py-2">
+          <h1 className="text-lg font-semibold text-zinc-900">笔记</h1>
+          <NotesWorkspaceViewSwitcher mode={waterfallView ? "waterfall" : "list"} onChange={changeWorkspaceMode} />
+          <button
+            type="button"
+            onClick={() => {
+              if (!noteWrite.available) {
+                toast(`${noteWrite.reason}。${noteWrite.nextStep}`, "info");
+              } else if (IS_TAURI_RUNTIME) {
+                setNewDraftOpen(true);
+              } else {
+                toast("请先在图库选择素材后生成草稿", "info");
+              }
+            }}
+            disabled={!noteWrite.available}
+            title={noteWrite.available ? "新建草稿" : `${noteWrite.reason}；${noteWrite.nextStep}`}
+            className="ml-auto text-sm px-4 py-1.5 rounded-lg bg-[#ff2442] text-white hover:bg-[#e01f3a] transition-colors"
+          >
+            + 新建
+          </button>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-1 gap-y-0 border-t border-[var(--color-border)] px-6">
+          <div role="tablist" aria-label="笔记筛选" className="flex min-w-0 flex-wrap items-stretch gap-1">
           {statusTabs.map((t) => (
             <button
               key={t.key}
@@ -677,31 +861,14 @@ export function NoteList() {
             </button>
           )}
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              if (!noteWrite.available) {
-                toast(`${noteWrite.reason}。${noteWrite.nextStep}`, "info");
-              } else if (IS_TAURI_RUNTIME) {
-                setNewDraftOpen(true);
-              } else {
-                toast("请先在图库选择素材后生成草稿", "info");
-              }
-            }}
-            disabled={!noteWrite.available}
-            title={noteWrite.available ? "新建草稿" : `${noteWrite.reason}；${noteWrite.nextStep}`}
-            className="ml-auto text-sm px-4 py-1.5 rounded-lg bg-[#ff2442] text-white hover:bg-[#e01f3a] transition-colors"
-          >
-            + 新建
-          </button>
         </div>
         {IS_TAURI_RUNTIME && (
-          <div className="border-b border-[var(--color-border)] bg-[var(--color-selected)] px-6 py-2 text-xs text-[var(--color-text-secondary)]">
-            当前笔记来自本地数据库；编辑、状态变更和素材关联已可用，{noteDelete.available ? "删除会进入回收站" : "删除仍需迁移"}，{publish.available ? "发布已可用" : "发布准备已可用，自动发布仍需迁移"}。
+          <div className="border-y border-[var(--color-border)] bg-[var(--color-surface-2)] px-6 py-1.5 text-xs text-[var(--color-text-secondary)]">
+            本地笔记 · 编辑、状态变更、素材关联可用；{noteDelete.available ? "删除进入回收站" : "删除仍需迁移"}；{publish.available ? "发布可用" : "发布准备可用，自动发布仍需迁移"}
           </div>
         )}
-        <div className="flex items-center gap-3 px-6 pb-3">
-          <div className="relative flex-1 max-w-sm">
+        <div className="flex flex-wrap items-center gap-3 px-6 py-2.5">
+          <div className="relative w-full max-w-xl flex-1">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
             <input
               type="text"
@@ -731,33 +898,61 @@ export function NoteList() {
 
       {/* List */}
       <div ref={notesScrollRef} className="flex-1 overflow-y-auto p-6" onScroll={(event) => {
-        try { sessionStorage.setItem(`${notesViewKey(scopeKey)}:scroll`, String(event.currentTarget.scrollTop)); } catch { /* optional */ }
+        if (suppressScrollSaveRef.current) return;
+        try { sessionStorage.setItem(activeScrollStorageKeyRef.current, String(event.currentTarget.scrollTop)); } catch { /* optional */ }
       }}>
         {isLoading ? (
           <Spinner />
         ) : notes.length === 0 ? (
           <Empty message="暂无笔记，先到图库导入图片并生成草稿" />
         ) : (
-          <div className="space-y-3 max-w-2xl">
-            {notes.map((note) => (
+          <div className={waterfallView
+            ? "mx-auto w-full max-w-[1600px] columns-1 gap-2.5 sm:columns-2 md:columns-3 lg:columns-4 xl:columns-5"
+            : "mx-auto grid w-full max-w-[1240px] grid-cols-1 items-start gap-3 xl:grid-cols-2"}>
+            {notes.map((note) => {
+              const coverItemId = note.item_ids?.[0] ?? note.item_id;
+              const mediaCount = note.item_ids?.length || (note.item_id != null ? 1 : 0);
+              const coverMarker = note.note_type === "video"
+                ? "视频"
+                : mediaCount > 1
+                  ? `多图 · ${mediaCount}`
+                  : null;
+              return (
               <div key={note.id}
-                className="bg-white rounded-xl p-4 border border-zinc-100 hover:border-zinc-200 transition-colors group relative"
+                // Multicol balancing needs real card heights; size containment makes
+                // WebKit balance against placeholders and leave later columns empty.
+                style={waterfallView ? undefined : { contentVisibility: "auto", containIntrinsicSize: "auto 180px" }}
+                className={`${waterfallView ? "mb-3 inline-block w-full break-inside-avoid overflow-hidden align-top" : "p-4"} bg-white rounded-xl border border-zinc-100 hover:border-zinc-200 transition-colors group relative`}
               >
                 {/* 主体内容行 */}
-                <div className={`flex items-start gap-3 ${showTrash ? "" : "cursor-pointer"}`} onClick={() => { if (!showTrash) navigate(`/notes/${note.id}`); }}>
-                  {note.item_id ? (
-                    <LocalImage
-                      itemId={note.item_id}
-                      src={`${API_BASE}/api/library/${note.item_id}/image`}
-                      alt=""
-                      style={imgStyle()}
-                      className="w-14 h-14 rounded-lg object-cover shrink-0 bg-zinc-100"
-                    />
+                <div className={`flex ${waterfallView ? "flex-col gap-0" : "items-start gap-3"} ${showTrash ? "" : "cursor-pointer"}`} onClick={() => { if (!showTrash) navigate(`/notes/${note.id}`); }}>
+                  {coverItemId != null ? (
+                    <div className={waterfallView ? "relative w-full" : "relative h-16 w-16 shrink-0"}>
+                      <LocalImage
+                        itemId={coverItemId}
+                        src={`${API_BASE}/api/library/${coverItemId}/image`}
+                        alt=""
+                        style={imgStyle()}
+                        variant="thumbnail"
+                        className={waterfallView
+                          ? "block max-h-[420px] w-full bg-zinc-100 object-cover"
+                          : "h-16 w-16 rounded-lg object-cover bg-zinc-100"}
+                      />
+                      {waterfallView && coverMarker && (
+                        <span className="absolute right-2 top-2 rounded-md bg-black/60 px-2 py-1 text-[11px] font-medium text-white shadow-sm">
+                          {coverMarker}
+                        </span>
+                      )}
+                    </div>
                   ) : (
-                    <div className="w-14 h-14 rounded-lg bg-zinc-100 shrink-0 flex items-center justify-center text-zinc-300 text-xs">无图</div>
+                    <div className={waterfallView
+                      ? "flex aspect-[4/5] w-full items-center justify-center gap-2 bg-zinc-50 px-3 text-xs text-zinc-400"
+                      : "flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-zinc-100 text-xs text-zinc-400"}>
+                      {waterfallView ? <><FileText size={14} />暂无封面</> : "无图"}
+                    </div>
                   )}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
+                  <div className={`min-w-0 flex-1 ${waterfallView ? "w-full p-2.5" : ""}`}>
+                    <div className="flex flex-wrap items-center gap-1.5 mb-1">
                       <StatusBadge status={note.status} />
                       {(() => {
                         const badge = getNoteTypeBadge(note.note_type);
@@ -768,26 +963,29 @@ export function NoteList() {
                           </span>
                         );
                       })()}
-                      <span className="text-xs text-zinc-400">{note.created_at?.slice(0, 10)}</span>
+                      <span className="ml-auto whitespace-nowrap text-xs text-zinc-500">{note.created_at?.slice(0, 10)}</span>
                     </div>
-                    <p className="text-sm font-medium text-zinc-900 truncate">
+                    <p className="text-base font-semibold leading-snug text-zinc-900 truncate">
                       {note.title || "（未填写标题）"}
                     </p>
                     {note.body && (
-                      <p className="text-xs text-zinc-500 mt-1 line-clamp-2">{note.body}</p>
+                      <p className="mt-1 line-clamp-2 text-xs text-zinc-500">{note.body}</p>
                     )}
                     {note.tags.length > 0 && (
-                      <p className="text-xs text-[#ff2442] mt-1">
-                        {note.tags.slice(0, 4).map((t) => `#${t}`).join(" ")}
-                      </p>
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        {note.tags.slice(0, waterfallView ? 3 : 4).map((t) => (
+                          <span key={t} className="rounded-md bg-[#ff2442]/5 px-1.5 py-0.5 text-[11px] text-[#d91f3b]">#{t}</span>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </div>
 
                 {/* 底部操作栏 */}
-                <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-zinc-50">
+                <div className={`flex items-center justify-between border-t border-zinc-100 pt-2.5 ${waterfallView ? "mx-2.5 mb-2.5" : "mt-3"}`}>
                   {/* 左侧：互动数据（已发布）/ 状态推进按钮（草稿/待发） */}
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    {!showTrash && note.note_url && <DataCaptureButton url={note.note_url} />}
                     {!showTrash && note.status === "published" && publish.available && (
                       <div className="flex gap-2 items-center">
                         {note.note_url && (
@@ -843,7 +1041,7 @@ export function NoteList() {
                         <button
                           onClick={(e) => { e.stopPropagation(); autoPublish(note); }}
                           disabled={autoPublishingId !== null || !publish.available}
-                          className="flex items-center gap-1 text-xs text-white bg-violet-500 px-2.5 py-1 rounded-lg hover:bg-violet-600 disabled:opacity-50 transition-colors font-medium"
+                          className="flex items-center gap-1 text-xs text-violet-700 border border-violet-200 bg-violet-50 px-2.5 py-1 rounded-lg hover:bg-violet-100 disabled:opacity-50 transition-colors font-medium"
                           title="Playwright 自动发布到小红书"
                         >
                           {autoPublishingId === note.id
@@ -855,7 +1053,7 @@ export function NoteList() {
                     )}
                   </div>
                   {/* 右侧：编辑 + 删除 */}
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
                     {!showTrash && (
                       <button
                         onClick={() => navigate(`/notes/${note.id}`)}
@@ -887,7 +1085,8 @@ export function NoteList() {
                   </div>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -930,10 +1129,15 @@ export function NoteList() {
 export function NoteEditor() {
   const { id } = useParams<{ id: string }>();
   const noteId = Number(id);
+  const [searchParams] = useSearchParams();
+  const requestedAISessionKey = searchParams.get("aiSession") || undefined;
+  const linkedAISessionKey = requestedAISessionKey && requestedAISessionKey.length <= 180 ? requestedAISessionKey : undefined;
+  const linkedAIHostMode = searchParams.get("aiHost") === "sidebar" ? "sidebar" : undefined;
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { toast } = useToast();
   const { accountId, accountAlias, databaseIdentity, scopeKey } = useAccountContext();
+  const noteAISessionKey = linkedAISessionKey ?? makeAISessionKey({ accountId, noteId });
   const noteRead = getCapability("note.read");
   const noteWrite = getCapability("note.write");
   const noteItemsWrite = getCapability("note.items.write");
@@ -947,13 +1151,14 @@ export function NoteEditor() {
     enabled: !IS_TAURI_RUNTIME,
   });
   const { data: localWorkspace, isLoading: localNoteLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-note", scopeKey, noteId],
-    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    queryKey: ["local-workspace", scopeKey, "notes"],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined, "notes"),
     enabled: IS_TAURI_RUNTIME && noteRead.available && accountId !== null,
   });
-  const note = IS_TAURI_RUNTIME
-    ? localWorkspace?.notes.map(localNoteToNote).find((item) => item.id === noteId)
-    : remoteNote;
+  const note = useMemo(() => IS_TAURI_RUNTIME
+    ? (() => { const found = localWorkspace?.notes.find((item) => item.id === noteId); return found ? localNoteToNote(found) : undefined; })()
+    : remoteNote, [localWorkspace?.notes, noteId, remoteNote]);
+  const editorItems = useMemo(() => localWorkspace?.items.map(localItemToItem), [localWorkspace?.items]);
   const isLoading = IS_TAURI_RUNTIME ? localNoteLoading : remoteNoteLoading;
   const localMode = IS_TAURI_RUNTIME;
 
@@ -966,7 +1171,12 @@ export function NoteEditor() {
   const [copied, setCopied] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [showPrompt, setShowPrompt] = useState(false);
-  const [showAI, setShowAI] = useState(() => aiGenerate.available && (typeof window === "undefined" || window.innerWidth >= 900));
+  const [showAI, setShowAI] = useState(() => Boolean(linkedAISessionKey) || (aiGenerate.available && (typeof window === "undefined" || window.innerWidth >= 900)));
+  useEffect(() => {
+    const source = `notes-editor:${noteId}`;
+    publishPageAISidebarVisibility(source, showAI);
+    return () => publishPageAISidebarVisibility(source, false);
+  }, [noteId, showAI]);
   const [publishPreparation, setPublishPreparation] = useState<PublishPreparation | null>(null);
   const { width: promptWidth, dragging: promptDragging, onDragStart: onPromptDragStart } = usePanelResize({
     defaultWidth: 320,
@@ -980,15 +1190,23 @@ export function NoteEditor() {
   const [inited, setInited] = useState(false);
   const [noteVersion, setNoteVersion] = useState(1);
   const noteVersionRef = useRef(1);
-  // A proposal keeps the version from the AI session that produced it. This
-  // ref deliberately does not follow editor saves while the panel is open, so
-  // an older suggestion cannot silently overwrite a newer draft.
+  // Capture the note version at each AI request. Ordinary editor saves do not
+  // advance this baseline; saves caused by applying that same AI draft are
+  // tracked separately so sibling fields from one reply remain usable.
   const aiProposalBaseVersionRef = useRef(1);
+  const lastAIAppliedProposalBaseVersionRef = useRef<number | null>(null);
+  const lastAIAppliedProposalVersionRef = useRef<number | null>(null);
+  const pendingAIAppliedProposalBaseVersionRef = useRef<number | null>(null);
   const [lastAIProposal, setLastAIProposal] = useState<AIProposal | null>(null);
   const [proposalHistory, setProposalHistory] = useState<AIProposal[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (linkedAISessionKey) setShowAI(true);
+  }, [linkedAISessionKey]);
+
+  useWorkspaceEffect(() => {
+    const linkedItemIds = note?.item_ids?.length ? note.item_ids : (note?.item_id != null ? [note.item_id] : []);
     publishPageAIContext({
       route: `/notes/${noteId}`,
       page: "笔记编辑",
@@ -996,8 +1214,13 @@ export function NoteEditor() {
       objectType: "note",
       objectId: noteId,
       objectVersion: noteVersion,
-      selectedIds: note?.item_ids ?? (note?.item_id != null ? [note.item_id] : []),
-      referenceIds: note?.item_ids ?? (note?.item_id != null ? [note.item_id] : []),
+      selectedIds: linkedItemIds,
+      selectedItems: linkedItemIds.map((id) => ({
+        id,
+        kind: "素材",
+        label: localWorkspace?.items.find((item) => item.id === id)?.title,
+      })),
+      referenceIds: linkedItemIds,
       draft: {
         title,
         body,
@@ -1008,12 +1231,18 @@ export function NoteEditor() {
       availableActions: [
         { id: "rewrite-note", label: "改写正文" },
         { id: "suggest-title", label: "生成标题" },
+        ...(noteWrite.available ? [
+          { id: "apply-note-title", label: "替换标题", handler: "apply-note-title" as const },
+          { id: "apply-note-body-replace", label: "替换正文", handler: "apply-note-body-replace" as const },
+          { id: "apply-note-body-append", label: "追加正文", handler: "apply-note-body-append" as const },
+          { id: "apply-note-tags", label: "替换标签", handler: "apply-note-tags" as const },
+        ] : []),
         { id: "check-publish", label: "检查发布", requiresConfirmation: true },
       ],
       source: "page",
       permissionScope: ["note.read", "note.write", "note.status.write", "publish"],
     });
-  }, [accountId, body, note, noteId, noteVersion, saveError, saving, tagsInput, title]);
+  }, [accountId, body, localWorkspace?.items, note, noteId, noteVersion, noteWrite.available, saveError, saving, tagsInput, title]);
   if (note && !inited) {
     setTitle(note.title ?? "");
     // body 直接存纯文本；兼容旧版 HTML 存储：自动剥离标签
@@ -1059,6 +1288,9 @@ export function NoteEditor() {
     setNoteVersion(1);
     noteVersionRef.current = 1;
     aiProposalBaseVersionRef.current = 1;
+    lastAIAppliedProposalBaseVersionRef.current = null;
+    lastAIAppliedProposalVersionRef.current = null;
+    pendingAIAppliedProposalBaseVersionRef.current = null;
     setLastAIProposal(null);
     setProposalHistory([]);
     setAutoSaved(false);
@@ -1084,6 +1316,7 @@ export function NoteEditor() {
     epoch: number;
     accountId: number | null;
     noteId: number;
+    aiProposalBaseVersion?: number;
   };
 
   function enqueueSave(payload: SavePayload): Promise<void> {
@@ -1111,8 +1344,13 @@ export function NoteEditor() {
             const nextVersion = updated.contentVersion ?? noteVersionRef.current + 1;
             noteVersionRef.current = nextVersion;
             setNoteVersion(nextVersion);
-            await qc.invalidateQueries({ queryKey: ["local-note", scopeKey, payload.noteId] });
-            await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
+            if (payload.aiProposalBaseVersion != null && aiProposalBaseVersionRef.current === payload.aiProposalBaseVersion) {
+              lastAIAppliedProposalBaseVersionRef.current = payload.aiProposalBaseVersion;
+              lastAIAppliedProposalVersionRef.current = nextVersion;
+              if (pendingAIAppliedProposalBaseVersionRef.current === payload.aiProposalBaseVersion) {
+                pendingAIAppliedProposalBaseVersionRef.current = null;
+              }
+            }
             await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
           } else {
             await api.patch(`/api/content/${payload.noteId}`, {
@@ -1142,7 +1380,8 @@ export function NoteEditor() {
     return queued;
   }
 
-  function scheduleAutoSave(newTitle: string, newBody: string, newTags: string, nextNoteType = noteType) {
+  function scheduleAutoSave(newTitle: string, newBody: string, newTags: string, nextNoteType = noteType, aiProposalBaseVersion?: number, delayMs = AUTOSAVE_DELAY) {
+    if (aiProposalBaseVersion == null) pendingAIAppliedProposalBaseVersionRef.current = null;
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     const saveEpoch = saveEpochRef.current;
     const originAccountId = accountId;
@@ -1158,8 +1397,9 @@ export function NoteEditor() {
         epoch: saveEpoch,
         accountId: originAccountId,
         noteId: originNoteId,
+        ...(aiProposalBaseVersion != null ? { aiProposalBaseVersion } : {}),
       }).catch(() => undefined);
-    }, AUTOSAVE_DELAY);
+    }, delayMs);
   }
 
   // 清理 timer
@@ -1180,6 +1420,7 @@ export function NoteEditor() {
         epoch: saveEpoch,
         accountId: originAccountId,
         noteId: originNoteId,
+        ...(pendingAIAppliedProposalBaseVersionRef.current != null ? { aiProposalBaseVersion: pendingAIAppliedProposalBaseVersionRef.current } : {}),
       });
       if (saveEpoch !== saveEpochRef.current || originAccountId !== accountId) return;
       toast("已保存", "success");
@@ -1188,7 +1429,7 @@ export function NoteEditor() {
     }
   }
 
-  useEffect(() => {
+  useWorkspaceEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
@@ -1217,8 +1458,7 @@ export function NoteEditor() {
         noteVersionRef.current = nextVersion;
         setNoteVersion(nextVersion);
         setSaveError(null);
-        await qc.invalidateQueries({ queryKey: ["local-note", scopeKey, noteId] });
-        await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
+        await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       } else {
         await api.patch(`/api/content/${noteId}/status`, { status: "ready" });
         qc.invalidateQueries({ queryKey: ["note", noteId] });
@@ -1261,37 +1501,42 @@ export function NoteEditor() {
     setShowPrompt(true);
   }
 
-  function adoptAIProposal(field: AIProposal["field"], value: string, apply: () => void) {
+  function adoptAIProposal(field: AIProposal["field"], value: string, apply: (baseVersion: number) => void, proposalBaseVersion?: number): boolean {
     const previousValue = field === "title" ? title : field === "body" ? body : tagsInput;
     const proposal = createProposal({
       accountId,
       noteId,
-      baseVersion: aiProposalBaseVersionRef.current,
+      baseVersion: proposalBaseVersion ?? aiProposalBaseVersionRef.current,
       field,
       previousValue,
       value,
     });
-    if (!isProposalCurrent(proposal, { accountId, noteId, version: noteVersionRef.current })) {
+    const followsSameAIAppliedDraft =
+      lastAIAppliedProposalBaseVersionRef.current === proposal.baseVersion &&
+      lastAIAppliedProposalVersionRef.current === noteVersionRef.current;
+    if (!isProposalCurrent(proposal, { accountId, noteId, version: noteVersionRef.current }) && !followsSameAIAppliedDraft) {
       const next = { ...proposal, status: "conflict" as const };
       saveProposal(databaseIdentity, next);
       setProposalHistory((current) => [next, ...current.filter((item) => item.id !== next.id)].slice(0, 40));
       setLastAIProposal(next);
       toast("AI 提案基于旧版本，原文已保留；请重新生成后再采用", "info");
-      return;
+      return false;
     }
-    apply();
+    pendingAIAppliedProposalBaseVersionRef.current = proposal.baseVersion;
+    apply(proposal.baseVersion);
     const next = { ...proposal, status: "applied" as const };
     saveProposal(databaseIdentity, next);
     setProposalHistory((current) => [next, ...current.filter((item) => item.id !== next.id)].slice(0, 40));
     setLastAIProposal(next);
+    return true;
   }
 
   /** AIPanel 点击「应用到编辑器」时，将文本追加到正文。 */
   function handleAIApply(text: string) {
-    adoptAIProposal("body", text, () => {
+    adoptAIProposal("body", text, (baseVersion) => {
       const newBody = body ? body + "\n" + text : text;
       setBody(newBody);
-      scheduleAutoSave(title, newBody, tagsInput);
+      scheduleAutoSave(title, newBody, tagsInput, noteType, baseVersion, 0);
     });
   }
 
@@ -1337,22 +1582,6 @@ export function NoteEditor() {
             </span>
           )}
           <div className="creator-note-toolbar-actions ml-auto flex min-w-0 flex-wrap justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => { setShowAI(true); setShowPrompt(false); }}
-              aria-disabled={!aiGenerate.available}
-              title={aiGenerate.available ? "打开 AI 助手" : "打开 AI 助手并检测本地 CLI"}
-              className={`flex items-center gap-1.5 text-xs border px-3 py-1.5 rounded-lg transition-colors ${
-                showAI
-                  ? "bg-[#fff0f2] border-[#ff2442] text-[#ff2442]"
-                  : aiGenerate.available
-                    ? "border-zinc-200 text-zinc-500 hover:bg-zinc-50"
-                    : "border-amber-200 text-amber-600 hover:bg-amber-50"
-              }`}
-            >
-              <Sparkles size={13} />
-              AI 助手
-            </button>
             {note.prompt_used && (
               <button
                 onClick={() => { loadPrompt(); setShowAI(false); }}
@@ -1393,6 +1622,7 @@ export function NoteEditor() {
             >
               发布检查
             </button>
+            <DataCaptureButton url={note.note_url} size="sm" />
             <button
               onClick={save}
               disabled={saving}
@@ -1442,7 +1672,7 @@ export function NoteEditor() {
               title={title}
               body={body}
               tags={note.tags}
-              localItems={localWorkspace?.items.map(localItemToItem)}
+              localItems={editorItems}
               localProfile={localWorkspace?.profile}
             />
 
@@ -1453,7 +1683,7 @@ export function NoteEditor() {
                 <NoteImageStrip
                   itemIds={note.item_ids?.length ? note.item_ids : (note.item_id ? [note.item_id] : [])}
                   noteId={noteId}
-                  localItems={localWorkspace?.items.map(localItemToItem)}
+                  localItems={editorItems}
                   onItemIdsChange={async (itemIds) => {
                     const saveEpoch = saveEpochRef.current;
                     if (localMode) {
@@ -1468,8 +1698,7 @@ export function NoteEditor() {
                       if (saveEpoch !== saveEpochRef.current) return;
                       noteVersionRef.current = updated.contentVersion;
                       setNoteVersion(updated.contentVersion);
-                      await qc.invalidateQueries({ queryKey: ["local-note", scopeKey, noteId] });
-                      await qc.invalidateQueries({ queryKey: ["local-notes", scopeKey] });
+                      await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
                     } else {
                       await api.patch(`/api/content/${noteId}`, { item_ids: itemIds });
                       await qc.invalidateQueries({ queryKey: ["note", noteId] });
@@ -1649,25 +1878,25 @@ export function NoteEditor() {
           systemExtra={`当前笔记标题：${title || "（空）"}\n当前笔记正文：${body.slice(0, 12000) || "（空）"}\n当前话题：${tagsInput || "（空）"}`}
           sourceNotice={`AI 提案仅基于当前笔记、已选素材和已注入经验；只有带正文的真实来源才可用于摘要。${lastAIProposal?.status === "conflict" ? "上次提案版本已变化，未覆盖原文。" : ""}`}
           onApply={handleAIApply}
-          onApplyTitle={(t) => {
-            adoptAIProposal("title", t, () => {
+          onApplyTitle={(t, proposalBaseVersion) => adoptAIProposal("title", t, (baseVersion) => {
               setTitle(t);
-              scheduleAutoSave(t, body, tagsInput);
-            });
-          }}
-          onApplyTags={(tags) => {
-            adoptAIProposal("tags", tags, () => {
+              scheduleAutoSave(t, body, tagsInput, noteType, baseVersion, 0);
+            }, proposalBaseVersion)}
+          onApplyTags={(tags, proposalBaseVersion) => adoptAIProposal("tags", tags, (baseVersion) => {
               setTagsInput(tags);
-              scheduleAutoSave(title, body, tags);
-            });
-          }}
-          onApplyBody={(text, mode) => {
-            adoptAIProposal("body", text, () => {
+              scheduleAutoSave(title, body, tags, noteType, baseVersion, 0);
+            }, proposalBaseVersion)}
+          onApplyBody={(text, mode, proposalBaseVersion) => adoptAIProposal("body", text, (baseVersion) => {
               const newBody = mode === "replace" ? text : (body ? body + "\n\n" + text : text);
               setBody(newBody);
-              scheduleAutoSave(title, newBody, tagsInput);
-            });
+              scheduleAutoSave(title, newBody, tagsInput, noteType, baseVersion, 0);
+            }, proposalBaseVersion)}
+          onAIRequestStart={() => {
+            aiProposalBaseVersionRef.current = noteVersionRef.current;
           }}
+          hostMode={linkedAIHostMode ?? "sidebar"}
+          sessionKey={noteAISessionKey}
+          historyKey={noteAISessionKey}
           onClose={() => setShowAI(false)}
         />
       )}
@@ -1986,12 +2215,13 @@ function NoteImagePanel({ itemIds, title, body, tags, localItems, localProfile }
   localProfile?: LocalWorkspaceSnapshot["profile"];
 }) {
   const { imgStyle } = useHDRSetting();
-  const localItemsById = new Map((localItems ?? []).map((item) => [item.id, item]));
+  const localItemsById = useMemo(() => new Map((localItems ?? []).map((item) => [item.id, item])), [localItems]);
+  const workspaceActive = useWorkspaceActive();
   const results = useQueries({
     queries: itemIds.map((id) => ({
       queryKey: ["item", id],
       queryFn: () => api.get(`/api/library/${id}`) as Promise<Item>,
-      enabled: !!id && !IS_TAURI_RUNTIME && !localItemsById.has(id),
+      enabled: workspaceActive && !!id && !IS_TAURI_RUNTIME && !localItemsById.has(id),
     })),
   });
   const images = itemIds
@@ -2016,7 +2246,7 @@ function NoteImagePanel({ itemIds, title, body, tags, localItems, localProfile }
   const coverImg = images[0];
 
   return (
-    <div className="note-preview-panel w-[230px] shrink-0 border-r border-zinc-100 bg-zinc-50 flex flex-col items-center py-4 px-3 gap-3 overflow-y-auto">
+    <div data-page-scroll="note-preview" className="note-preview-panel w-[230px] shrink-0 border-r border-zinc-100 bg-zinc-50 flex flex-col items-center py-4 px-3 gap-3 overflow-y-auto">
 
       {/* 切换 Tab */}
       <div className="w-full flex bg-zinc-100 rounded-xl p-0.5 shrink-0">
@@ -2286,15 +2516,16 @@ function NoteImageStrip({ itemIds, noteId, localItems, onItemIdsChange, readOnly
   const dragIdxRef = useRef<number | null>(null);
   const overIdxRef = useRef<number | null>(null);
   const isDraggingRef = useRef(false);
-  const localItemsById = new Map((localItems ?? []).map((item) => [item.id, item]));
+  const localItemsById = useMemo(() => new Map((localItems ?? []).map((item) => [item.id, item])), [localItems]);
   async function persistItemIds(nextItemIds: number[]) {
     await onItemIdsChange(nextItemIds);
   }
+  const workspaceActive = useWorkspaceActive();
   const results = useQueries({
     queries: itemIds.map((id) => ({
       queryKey: ["item", id],
       queryFn: () => api.get(`/api/library/${id}`) as Promise<Item>,
-      enabled: !!id && !IS_TAURI_RUNTIME && !localItemsById.has(id),
+      enabled: workspaceActive && !!id && !IS_TAURI_RUNTIME && !localItemsById.has(id),
     })),
   });
   const images = itemIds
@@ -2302,7 +2533,7 @@ function NoteImageStrip({ itemIds, noteId, localItems, onItemIdsChange, readOnly
     .filter((d): d is Item => !!d);
 
   // ESC 关闭灯箱
-  useEffect(() => {
+  useWorkspaceEffect(() => {
     if (lightboxIdx === null) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") setLightboxIdx(null);

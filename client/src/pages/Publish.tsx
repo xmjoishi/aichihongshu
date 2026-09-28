@@ -1,12 +1,14 @@
+import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { Copy, ExternalLink, Check, X, Send, FolderOpen, Images, Loader2 } from "lucide-react";
 import { api, API_BASE, openInSystemBrowser } from "../lib/api";
 import { Note } from "../lib/types";
 import { Spinner, StatusBadge } from "../components/ui";
 import { useToast } from "../components/Toast";
 import LocalImage from "../components/LocalImage";
+import { DataCaptureButton } from "../components/DataCapture";
 import {
   IS_TAURI_RUNTIME,
   localNoteToNote,
@@ -180,6 +182,11 @@ function PublishModal({
               className="w-full text-xs border border-zinc-200 rounded-xl px-3 py-2
                          outline-none focus:border-[#ff2442] transition-colors placeholder:text-zinc-300"
             />
+            {(noteUrl || note.note_url) && (
+              <div className="mt-2">
+                <DataCaptureButton url={noteUrl || note.note_url} />
+              </div>
+            )}
           </div>
         </div>
 
@@ -354,8 +361,8 @@ function LocalPublishWorkflow({ embedded = false }: { embedded?: boolean } = {})
   const [publishingNote, setPublishingNote] = useState<Note | null>(null);
   const autoOpenedNoteRef = useRef<number | null>(null);
   const { data: workspace, isLoading, error } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-publish", scopeKey],
-    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    queryKey: ["local-workspace", scopeKey, "workspace"],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined, "workspace"),
     enabled: accountId !== null,
   });
   const { data: outbox = [] } = useQuery<LocalPublishOutboxSummary[]>({
@@ -398,7 +405,7 @@ function LocalPublishWorkflow({ embedded = false }: { embedded?: boolean } = {})
         status,
         noteUrl,
       });
-      await qc.invalidateQueries({ queryKey: ["local-publish", scopeKey] });
+      await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       toast(status === "published" ? "已记录为手工确认发布" : "状态已更新", "success");
       return true;
     } catch (cause) {
@@ -670,7 +677,7 @@ function LocalPublishModal({
           </div>
           <button type="button" onClick={onClose} className="shrink-0 text-zinc-400 hover:text-zinc-600" aria-label="关闭发布准备"><X size={18} /></button>
         </div>
-        <div className="flex-1 overflow-y-auto px-6 py-5">
+        <div data-page-scroll="publish-outbox" className="flex-1 overflow-y-auto px-6 py-5">
           <div className="grid gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
             <div className="space-y-4">
               <div className={`rounded-xl border px-4 py-3 text-xs ${preparation.ready ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"}`} role="status">
@@ -722,6 +729,9 @@ function LocalPublishModal({
               <button type="button" onClick={() => void copy("all")} className="w-full rounded-xl border-2 border-dashed border-zinc-200 py-3 text-xs text-zinc-500 hover:border-[#ff2442] hover:text-[#ff2442]">{copied === "all" ? "已复制全文" : "一键复制全文（标题 + 正文 + 标签）"}</button>
               <button type="button" onClick={() => openInSystemBrowser("https://creator.xiaohongshu.com/publish/publish")} className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[#ff2442] text-white text-xs font-medium hover:bg-[#e01f3a]"><ExternalLink size={13} />打开小红书发布页</button>
               <label className="block text-xs text-[var(--color-text-secondary)]">发布后粘贴笔记链接（可选）<input value={noteUrl} onChange={(event) => setNoteUrl(event.target.value)} placeholder="https://www.xiaohongshu.com/explore/..." className="mt-1.5 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5 text-xs" /></label>
+              {(noteUrl || note.note_url) && (
+                <DataCaptureButton url={noteUrl || note.note_url} />
+              )}
               <p className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-3 py-2.5">这里不会自动提交平台。完成平台操作后先记录“已提交”，结果不明时标记待核查，系统不会自动重复提交。</p>
             </div>
           </div>

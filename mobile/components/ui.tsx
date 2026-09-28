@@ -26,11 +26,11 @@ import {
   TextInputProps,
   Animated,
 } from 'react-native';
-import { resolveLocalUri } from '../services/media';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Glass, Brand, Text as TextTokens, Font, Radius, Border, BG, Sys } from '../utils/theme';
+import { resolveLocalUri } from '../services/media';
 
 // ═══════════════════════════════════════════════════════════════
 // AuroraBackground — 纯白页面背景（保留旧名兼容）
@@ -119,7 +119,7 @@ export const Card = LiquidCard;
 interface LiquidButtonProps {
   label: string;
   onPress: () => void;
-  variant?: 'brand' | 'glass' | 'success';
+  variant?: 'brand' | 'glass' | 'success' | 'ghost';
   size?: 'sm' | 'md' | 'lg';
   style?: ViewStyle;
   disabled?: boolean;
@@ -157,9 +157,10 @@ export function LiquidButton({
   const btnStyle =
     variant === 'brand'   ? styles.btnBrand :
     variant === 'success' ? styles.btnSuccess :
+    variant === 'ghost'   ? styles.btnGhost :
                             styles.btnGlass;
   const textStyle =
-    variant === 'glass' ? styles.btnTextGlass : styles.btnTextWhite;
+    variant === 'glass' || variant === 'ghost' ? styles.btnTextGlass : styles.btnTextWhite;
 
   return (
     <Pressable onPress={disabled ? undefined : onPress} onPressIn={onPressIn} onPressOut={onPressOut}>
@@ -209,6 +210,147 @@ export function LiquidInput({ label, containerStyle, style, ...props }: LiquidIn
 export const GlassInput = LiquidInput;
 export const FieldInput = LiquidInput;
 
+export function Chip({
+  label,
+  tone = 'info',
+  icon,
+  style,
+}: {
+  label: string;
+  tone?: 'info' | 'brand' | 'success';
+  icon?: React.ReactNode;
+  style?: ViewStyle;
+}) {
+  const bg =
+    tone === 'brand' ? Brand.redSoft :
+    tone === 'success' ? Sys.successBg :
+    '#F4F4F5';
+  const color =
+    tone === 'brand' ? Brand.red :
+    tone === 'success' ? Sys.success :
+    TextTokens.secondary;
+  const border = tone === 'brand' ? Brand.redMid : 'transparent';
+  return (
+    <View style={[{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: Radius.pill, backgroundColor: bg, borderWidth: 1, borderColor: border }, style]}>
+      {icon}
+      <Text style={{ fontSize: Font.caption, color, fontWeight: Font.medium }}>{label}</Text>
+    </View>
+  );
+}
+
+export function Field({
+  label,
+  hint,
+  children,
+  right,
+  style,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+  right?: React.ReactNode;
+  style?: ViewStyle;
+}) {
+  return (
+    <View style={[{ gap: 6 }, style]}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={styles.inputLabel}>{label}</Text>
+        {right}
+      </View>
+      {children}
+      {hint ? <Text style={{ fontSize: Font.caption, color: TextTokens.tertiary, lineHeight: 17 }}>{hint}</Text> : null}
+    </View>
+  );
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════════
+// Chip — 信息 / 强调 / 成功 三态
+
+// ═══════════════════════════════════════════════════════════════
+// Field — 标签 + 输入 + 提示（统一表单字段）
+
+
+
+// ═══════════════════════════════════════════════════════════════
+// GlassBackBar — iOS 原生玻璃返回栏（设置页同款）
+// ═══════════════════════════════════════════════════════════════
+export function GlassBackBar({
+  title,
+  backLabel = '返回',
+  onBack,
+  right,
+}: {
+  title?: string;
+  backLabel?: string;
+  onBack: () => void;
+  right?: React.ReactNode;
+}) {
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={[gbb.wrap, { paddingTop: Math.max(insets.top, 12) + 6 }]}>
+      <Pressable onPress={onBack} style={gbb.backBtn} hitSlop={8}>
+        <Text style={gbb.chevron}>‹</Text>
+        <Text style={gbb.backText} numberOfLines={1}>{backLabel}</Text>
+      </Pressable>
+      {title ? (
+        <Text style={gbb.titlePlain} numberOfLines={1}>{title}</Text>
+      ) : <View style={{ flex: 1 }} />}
+      <View style={gbb.right}>{right}</View>
+    </View>
+  );
+}
+
+const gbb = StyleSheet.create({
+  wrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+    gap: 8,
+  },
+  backBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: Radius.pill,
+    backgroundColor: Glass.bgStrong,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Glass.border,
+    minWidth: 72,
+  },
+  chevron: { fontSize: 22, color: TextTokens.primary, marginTop: -2 },
+  backText: { fontSize: Font.subheadline, color: TextTokens.primary, fontWeight: Font.medium, maxWidth: 96 },
+  titlePlain: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: Font.subheadline,
+    fontWeight: Font.semibold,
+    color: TextTokens.primary,
+  },
+  right: { minWidth: 72, alignItems: 'flex-end' },
+});
+
 // ═══════════════════════════════════════════════════════════════
 // FloatingHeader — 顶部导航（白底毛玻璃，systemMaterialLight）
 // ═══════════════════════════════════════════════════════════════
@@ -241,6 +383,52 @@ export function FloatingHeader({ title, subtitle, right, left, large = false }: 
 // 向后兼容
 export const GlassHeader = FloatingHeader;
 export const PageHeader = FloatingHeader;
+
+// ═══════════════════════════════════════════════════════════════
+// PageTitleBlock — Tab 主页大标题（三页统一：相册 / 创作 / 设置）
+// 上边距只压到 safe-area + 2，减少顶栏留白
+// ═══════════════════════════════════════════════════════════════
+export function PageTitleBlock({
+  title,
+  count,
+  subtitle,
+  right,
+  children,
+}: {
+  title: string;
+  /** 标题右侧小号数量，如「相册 8」 */
+  count?: string | number;
+  subtitle?: string;
+  right?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={{ paddingTop: insets.top + 2, paddingHorizontal: 18, paddingBottom: 8 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', height: 40 }}>
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
+            <Text style={{ fontSize: Font.title2, fontWeight: Font.bold, color: TextTokens.primary, lineHeight: 30 }}>
+              {title}
+            </Text>
+            {count !== undefined && count !== null && (
+              <Text style={{ fontSize: Font.caption, color: TextTokens.tertiary, fontWeight: '400' }}>
+                {count}
+              </Text>
+            )}
+          </View>
+          {subtitle ? (
+            <Text style={{ fontSize: Font.caption, color: TextTokens.tertiary, marginTop: 1 }}>
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+        {right}
+      </View>
+      {children}
+    </View>
+  );
+}
 
 // ═══════════════════════════════════════════════════════════════
 // InlineNav — 子页面导航
@@ -331,6 +519,7 @@ const styles = StyleSheet.create({
   btnSuccess: {
     backgroundColor: Sys.success,
   },
+  btnGhost: { backgroundColor: 'transparent' },
   btnGlass: {
     backgroundColor: BG.card,
     borderWidth: 1,
@@ -478,7 +667,8 @@ const styles = StyleSheet.create({
 
 // ── PhImage ──────────────────────────────────────────────────────
 /**
- * 自动将 ph:// URI 解析为 file:// 后再渲染。
+ * 渲染相册图片。ph:// 先经 resolveLocalUri（带缓存）换成 file:// 再渲染
+ * （New Architecture 下 RN Image 不认 ph://）。
  * 用法与 <Image> 完全相同，只需把 source={{ uri }} 换成 <PhImage uri={...} />
  */
 export function PhImage({
@@ -493,18 +683,43 @@ export function PhImage({
   const [localUri, setLocalUri] = useState<string | null>(
     uri.startsWith('ph://') ? null : uri
   );
+  const [resolving, setResolving] = useState(uri.startsWith('ph://'));
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    if (!uri.startsWith('ph://')) { setLocalUri(uri); return; }
+    setFailed(false);
+    if (!uri.startsWith('ph://')) {
+      setLocalUri(uri);
+      setResolving(false);
+      return;
+    }
+    setLocalUri(null);
+    setResolving(true);
     let cancelled = false;
     resolveLocalUri(uri)
-      .then((u) => { if (!cancelled) setLocalUri(u); })
-      .catch(() => {});
+      .then((u) => {
+        if (cancelled) return;
+        setResolving(false);
+        if (u.startsWith('ph://')) setFailed(true);
+        else setLocalUri(u);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setResolving(false);
+        setFailed(true);
+      });
     return () => { cancelled = true; };
   }, [uri]);
 
-  if (!localUri) {
+  if (resolving) {
     return <View style={[{ backgroundColor: '#e5e5e5' }, style as ViewStyle]} />;
   }
-  return <Image source={{ uri: localUri }} style={style} resizeMode={resizeMode} />;
+  if (!localUri || failed) {
+    return (
+      <View style={[{ backgroundColor: '#e5e5e5', alignItems: 'center', justifyContent: 'center' }, style as ViewStyle]}>
+        <Text style={{ color: '#737373', fontSize: 12 }}>原图不可访问</Text>
+      </View>
+    );
+  }
+  return <Image source={{ uri: localUri }} style={style} resizeMode={resizeMode} onError={() => setFailed(true)} />;
 }

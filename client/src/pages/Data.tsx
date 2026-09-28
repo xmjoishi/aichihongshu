@@ -1,3 +1,5 @@
+import { useWorkspaceActive } from "../lib/workspaceActivity";
+import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -6,7 +8,7 @@ import {
   ExternalLink, RefreshCw, ChevronUp, ChevronDown,
   Sparkles, X, CornerDownLeft, StopCircle,
 } from "lucide-react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, API_BASE, openInBrowser } from "../lib/api";
 import type { Analytics, AnalyticsNote, Insights, Note, ReferenceAccount } from "../lib/types";
 import { MdContent } from "../components/MdContent";
@@ -553,10 +555,13 @@ function DataAIDrawer({
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const pageActive = useWorkspaceActive();
 
   useEffect(() => {
-    if (open) setTimeout(() => inputRef.current?.focus(), 100);
-  }, [open]);
+    if (!open || !pageActive) return;
+    const timer = setTimeout(() => inputRef.current?.focus(), 100);
+    return () => clearTimeout(timer);
+  }, [open, pageActive]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -568,6 +573,7 @@ function DataAIDrawer({
     setInput("");
   }
 
+  if (!pageActive) return null;
   return createPortal(
     <>
       {/* 遮罩 */}
@@ -762,8 +768,8 @@ export default function Data() {
     enabled: !IS_TAURI_RUNTIME,
   });
   const { data: localWorkspace } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-workspace", scopeKey],
-    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    queryKey: ["local-workspace", scopeKey, "workspace"],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined, "workspace"),
     enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
   const allNotes = IS_TAURI_RUNTIME
@@ -809,7 +815,7 @@ export default function Data() {
       </div>
 
       {/* 内容区 */}
-      <div className="flex-1 overflow-y-auto px-6 py-5">
+      <div data-page-scroll="data-main" className="flex-1 overflow-y-auto px-6 py-5">
         {tab === "overview" && <OverviewTab summary={summary} />}
         {tab === "ranking" && <RankingTab allNotes={allNotes} accountId={accountId} scopeKey={scopeKey} />}
         {tab === "insights" && <InsightsTab insights={insights} />}

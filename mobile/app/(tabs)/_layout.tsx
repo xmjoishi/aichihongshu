@@ -214,7 +214,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="library"
         options={{
-          title: '图库',
+          title: '相册',
           tabBarIcon: ({ color }) => <IconLibrary color={color as string} />,
         }}
       />

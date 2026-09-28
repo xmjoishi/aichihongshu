@@ -1,3 +1,4 @@
+import { Stack } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet } from 'react-native';
 import { useStore } from '../../../store';
@@ -45,12 +46,14 @@ export default function DiagnosticsScreen() {
   const analyzedCount = items.filter((i) => !!i.analysis).length;
 
   return (
-    <AuroraBackground style={{ flex: 1 }}>
+    <>
+      <Stack.Screen options={{ title: "诊断" }} />
+          <AuroraBackground style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={styles.content}>
         <SectionLabel>运行状态</SectionLabel>
         <LiquidCard style={styles.card}>
           <Row label="人设" value={profile?.personaName ? `已配置（${profile.personaName}）` : '未配置'} ok={!!profile?.personaName} />
-          <Row label="图库分析" value={`${analyzedCount}/${items.length}`} ok={analyzedCount > 0 || items.length === 0} />
+          <Row label="素材库分析" value={`${analyzedCount}/${items.length}`} ok={analyzedCount > 0 || items.length === 0} />
           <Row label="待发布草稿" value={`${readyCount} 篇`} ok />
           <Row label="草稿总数" value={`${draftCount} 篇`} ok />
         </LiquidCard>
@@ -66,6 +69,7 @@ export default function DiagnosticsScreen() {
         <Text style={styles.footer}>若 Key 未配置：设置 → AI 模型，填写对应 API Key</Text>
       </ScrollView>
     </AuroraBackground>
+    </>
   );
 }
 

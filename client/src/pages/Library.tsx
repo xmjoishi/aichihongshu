@@ -1,9 +1,13 @@
-import { useState, useRef, useEffect, useCallback } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import VirtualAssetGrid from "../components/VirtualAssetGrid";
+import { useWorkspaceEffect } from "../lib/workspaceActivity";
+import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
+import { useMemo, useState, useRef, useEffect, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, API_BASE } from "../lib/api";
 import { Item } from "../lib/types";
 import { Spinner, Tag } from "../components/ui";
 import LocalImage from "../components/LocalImage";
+import BrowserCollectionPanel from "../components/BrowserCollectionPanel";
 import {
   Upload, Plus, X, FileText, ChevronLeft, ChevronRight,
   LayoutGrid, Grid2x2, Grid3x3, Sparkles, Trash2, FolderOpen, RotateCcw,
@@ -12,6 +16,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useToast } from "../components/Toast";
 import { useHDRSetting } from "../hooks/useHDRSetting";
+import { useSavedScrollPosition } from "../hooks/useSavedScrollPosition";
 import {
   IS_TAURI_RUNTIME,
   createLocalDraftFromItems,
@@ -30,18 +35,8 @@ import {
 import { getCapability } from "../lib/capabilities";
 import { useAccountChange, useAccountContext } from "../lib/accountContext";
 
-// 列数 → Tailwind grid class
-const COLS_CLASS: Record<number, string> = {
-  2: "grid-cols-2",
-  3: "grid-cols-3",
-  4: "grid-cols-4",
-  5: "grid-cols-5",
-  6: "grid-cols-6",
-  7: "grid-cols-7",
-  8: "grid-cols-8",
-};
-
 const PAGE_SIZE = 40;
+const EMPTY_ITEMS: Item[] = [];
 
 const LIBRARY_VIEW_KEY = "aichihongshu.library-view.v1";
 
@@ -71,6 +66,7 @@ export default function Library() {
   // hdr 必须解构（即使不直接使用），变化时会触发组件重渲染，imgStyle() 才能读到最新值
   const { hdr: _hdr, imgStyle } = useHDRSetting();
   const [selected, setSelected] = useState<Item | null>(null);
+  const [libraryTab, setLibraryTab] = useState<"creative" | "web">("creative");
   const [multiSelected, setMultiSelected] = useState<Set<number>>(new Set());
   const [draftingMulti, setDraftingMulti] = useState(false);
   const [filterTag, setFilterTag] = useState("");
@@ -89,7 +85,7 @@ export default function Library() {
   const fileRef = useRef<HTMLInputElement>(null);
   const repairFileRef = useRef<HTMLInputElement>(null);
   const libraryScrollRef = useRef<HTMLDivElement>(null);
-  const viewScopeRef = useRef<string | null>(null);
+  const [viewPreferencesScope, setViewPreferencesScope] = useState<string | null>(null);
 
   useAccountChange(() => {
     setSelected(null);
@@ -104,7 +100,6 @@ export default function Library() {
   });
 
   useEffect(() => {
-    viewScopeRef.current = scopeKey;
     try {
       const saved = JSON.parse(localStorage.getItem(libraryViewKey(scopeKey)) ?? "null") as Partial<{ filterTag: string; filterUnanalyzed: boolean; page: number; cols: number }> | null;
       if (saved) {
@@ -113,9 +108,8 @@ export default function Library() {
         if (typeof saved.page === "number" && Number.isInteger(saved.page) && saved.page >= 0) setPage(saved.page);
         if (typeof saved.cols === "number" && Number.isInteger(saved.cols) && saved.cols >= 2 && saved.cols <= 8) setCols(saved.cols);
       }
-      const scroll = Number(sessionStorage.getItem(`${libraryViewKey(scopeKey)}:scroll`));
-      if (Number.isFinite(scroll) && libraryScrollRef.current) libraryScrollRef.current.scrollTop = scroll;
     } catch { /* preferences are optional */ }
+    setViewPreferencesScope(scopeKey);
   }, [scopeKey]);
 
   useEffect(() => {
@@ -135,17 +129,17 @@ export default function Library() {
   }, [selected?.id, selected?.metadata_version]);
 
   useEffect(() => {
-    if (viewScopeRef.current !== scopeKey) return;
+    if (viewPreferencesScope !== scopeKey) return;
     try {
       localStorage.setItem(libraryViewKey(scopeKey), JSON.stringify({ filterTag, filterUnanalyzed, page, cols }));
     } catch { /* preferences are optional */ }
-  }, [scopeKey, filterTag, filterUnanalyzed, page, cols]);
+  }, [scopeKey, viewPreferencesScope, filterTag, filterUnanalyzed, page, cols]);
 
   function explainCapability(capability: ReturnType<typeof getCapability>) {
     toast(`${capability.reason ?? "当前操作不可用"}。${capability.nextStep ?? "请稍后重试"}`, "info");
   }
 
-  const { data: remoteItems = [], isLoading: remoteItemsLoading } = useQuery<Item[]>({
+  const { data: remoteItems = EMPTY_ITEMS, isLoading: remoteItemsLoading } = useQuery<Item[]>({
     queryKey: ["items", filterTag, page],
     queryFn: () =>
       api.get(
@@ -158,23 +152,21 @@ export default function Library() {
     refetchInterval: analyzingIds.size > 0 ? 3000 : false,
   });
   const { data: localWorkspace, isLoading: localItemsLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-library", scopeKey, filterTag, filterUnanalyzed, page],
-    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    queryKey: ["local-workspace", scopeKey, "library"],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined, "library"),
     enabled: IS_TAURI_RUNTIME && libraryRead.available && accountId !== null,
   });
-  const items: Item[] = IS_TAURI_RUNTIME
+  const items: Item[] = useMemo(() => IS_TAURI_RUNTIME
     ? (showTrash ? (localWorkspace?.trashItems ?? []) : (localWorkspace?.items ?? [])).map(localItemToItem)
-    : remoteItems;
-  const missingImageIds = new Set(IS_TAURI_RUNTIME ? (localWorkspace?.missingImageIds ?? []) : []);
+    : remoteItems, [showTrash, localWorkspace?.trashItems, localWorkspace?.items, remoteItems]);
+  const missingImageIds = useMemo(() => new Set(IS_TAURI_RUNTIME ? (localWorkspace?.missingImageIds ?? []) : []), [localWorkspace?.missingImageIds]);
   const isLoading = IS_TAURI_RUNTIME ? localItemsLoading : remoteItemsLoading;
 
-  useEffect(() => {
-    const element = libraryScrollRef.current;
-    if (!element) return;
-    const save = () => { try { sessionStorage.setItem(`${libraryViewKey(scopeKey)}:scroll`, String(element.scrollTop)); } catch { /* optional */ } };
-    element.addEventListener("scroll", save, { passive: true });
-    return () => element.removeEventListener("scroll", save);
-  }, [scopeKey, items.length]);
+  useSavedScrollPosition(
+    libraryScrollRef,
+    `${libraryViewKey(scopeKey)}:scroll`,
+    viewPreferencesScope === scopeKey && !isLoading,
+  );
 
   useEffect(() => {
     const rawTarget = searchParams.get("item");
@@ -230,7 +222,7 @@ export default function Library() {
           }
         }
         if (imported > 0) {
-          await qc.invalidateQueries({ queryKey: ["local-library"] });
+          await qc.invalidateQueries({ queryKey: ["local-workspace"] });
         }
         if (failures.length === 0) {
           toast(`已导入 ${imported} 张图片`, "success");
@@ -327,7 +319,7 @@ export default function Library() {
       });
       setSelected(localItemToItem(updated));
       setEditingMetadata(false);
-      await qc.invalidateQueries({ queryKey: ["local-library"] });
+      await qc.invalidateQueries({ queryKey: ["local-workspace"] });
       toast("素材元数据已保存", "success");
     } catch (e: unknown) {
       toast((e as Error).message, "error");
@@ -355,7 +347,7 @@ export default function Library() {
         thumbnailDataBase64: await fileToThumbnailBase64(file),
       });
       setSelected(localItemToItem(updated));
-      await qc.invalidateQueries({ queryKey: ["local-library"] });
+      await qc.invalidateQueries({ queryKey: ["local-workspace"] });
       toast("素材图片已修复，旧分析结果已清除", "success");
     } catch (e: unknown) {
       toast((e as Error).message, "error");
@@ -383,7 +375,7 @@ export default function Library() {
       if (IS_TAURI_RUNTIME) {
         if (accountId == null) throw new Error("当前账号尚未就绪");
         await deleteLocalItem(selected.id, accountId);
-        await qc.invalidateQueries({ queryKey: ["local-library"] });
+        await qc.invalidateQueries({ queryKey: ["local-workspace"] });
       } else {
         await api.delete(`/api/library/${selected.id}`);
         qc.invalidateQueries({ queryKey: ["items"] });
@@ -422,7 +414,7 @@ export default function Library() {
     setDeletingMulti(false);
     setDeleteMultiConfirm(false);
     setMultiSelected(new Set());
-    await qc.invalidateQueries({ queryKey: [IS_TAURI_RUNTIME ? "local-library" : "items"] });
+    await qc.invalidateQueries({ queryKey: [IS_TAURI_RUNTIME ? "local-workspace" : "items"] });
     if (failed === 0) {
       toast(`已删除 ${ids.length} 张图片`, "success");
     } else {
@@ -444,7 +436,7 @@ export default function Library() {
     }
     setRestoringMulti(false);
     setMultiSelected(new Set());
-    await qc.invalidateQueries({ queryKey: ["local-library"] });
+    await qc.invalidateQueries({ queryKey: ["local-workspace"] });
     if (failed === 0) {
       toast(`已恢复 ${ids.length} 张图片`, "success");
     } else {
@@ -459,7 +451,7 @@ export default function Library() {
       const result = await purgeLocalItems(Array.from(multiSelected), accountId);
       setMultiSelected(new Set());
       setDeleteMultiConfirm(false);
-      await qc.invalidateQueries({ queryKey: ["local-library"] });
+      await qc.invalidateQueries({ queryKey: ["local-workspace"] });
       toast(result.cleanupWarnings.length > 0
         ? `已永久清理 ${result.purgedIds.length} 张图片，但有 ${result.cleanupWarnings.length} 个文件待清理`
         : `已永久清理 ${result.purgedIds.length} 张图片`, result.cleanupWarnings.length > 0 ? "info" : "success");
@@ -512,7 +504,7 @@ export default function Library() {
     try {
       await restoreLocalItem(selected.id, accountId);
       setSelected(null);
-      await qc.invalidateQueries({ queryKey: ["local-library"] });
+      await qc.invalidateQueries({ queryKey: ["local-workspace"] });
       toast("素材已恢复到图库", "success");
     } catch (e: unknown) {
       toast((e as Error).message, "error");
@@ -542,11 +534,13 @@ export default function Library() {
   }
 
   // 收集所有标签（仅当前页，做标签过滤）
-  const allTags = Array.from(new Set(items.flatMap((i) => i.tags)));
+  const allTags = useMemo(() => Array.from(new Set(items.flatMap((i) => i.tags))), [items]);
   // 客户端二次筛选：未识别
-  const visibleItems = filterUnanalyzed ? items.filter((i) => !i.analysis_raw) : items;
-  const hasPrev = page > 0;
-  const hasNext = items.length === PAGE_SIZE;
+  const visibleItems = useMemo(() => items.filter((i) =>
+    (!IS_TAURI_RUNTIME || !filterTag || i.tags.includes(filterTag)) && (!filterUnanalyzed || !i.analysis_raw)
+  ), [items, filterTag, filterUnanalyzed]);
+  const hasPrev = !IS_TAURI_RUNTIME && page > 0;
+  const hasNext = !IS_TAURI_RUNTIME && items.length === PAGE_SIZE;
 
   function changeFilter(tag: string) {
     setFilterTag(tag);
@@ -626,7 +620,7 @@ export default function Library() {
     [uploading, accountId, libraryImport, qc, toast],
   );
 
-  useEffect(() => {
+  useWorkspaceEffect(() => {
     document.addEventListener("paste", handlePaste);
     return () => document.removeEventListener("paste", handlePaste);
   }, [handlePaste]);
@@ -637,7 +631,7 @@ export default function Library() {
   const previewItemRef = useRef<Item | null>(null);
   previewItemRef.current = previewItem;
 
-  useEffect(() => {
+  useWorkspaceEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       // 如果焦点在输入框内，不拦截空格
       const tag = (e.target as HTMLElement).tagName;
@@ -662,13 +656,33 @@ export default function Library() {
   }, []);
 
   return (
-    <>
-      <div className="library-shell relative flex h-full min-h-0 min-w-0">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-zinc-100 bg-white px-6 py-2.5">
+        <h1 className="mr-1 text-base font-semibold text-zinc-900">素材库</h1>
+        <div role="tablist" aria-label="素材库分类" className="flex items-center gap-1 rounded-xl bg-zinc-100 p-1">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={libraryTab === "creative"}
+            onClick={() => { setLibraryTab("creative"); setSelected(null); setPreviewItem(null); }}
+            className={`rounded-lg px-3 py-1.5 text-sm transition ${libraryTab === "creative" ? "bg-white font-medium text-[#ff2442] shadow-sm" : "text-zinc-500 hover:text-zinc-800"}`}
+          >创作素材</button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={libraryTab === "web"}
+            onClick={() => { setLibraryTab("web"); setSelected(null); setPreviewItem(null); setMultiSelected(new Set()); }}
+            className={`rounded-lg px-3 py-1.5 text-sm transition ${libraryTab === "web" ? "bg-white font-medium text-[#ff2442] shadow-sm" : "text-zinc-500 hover:text-zinc-800"}`}
+          >网页收藏</button>
+        </div>
+      </div>
+      {libraryTab === "creative" && <>
+      <div className="library-shell relative flex min-h-0 min-w-0 flex-1">
       {/* Main area */}
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* 第一行：操作栏 */}
         <div className="flex flex-wrap items-center gap-3 px-6 py-3 border-b border-zinc-100 bg-white">
-          <h1 className="text-lg font-semibold text-zinc-900">图库</h1>
+          <h2 className="text-lg font-semibold text-zinc-900">创作素材</h2>
           <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-3">
             {/* 尺寸调节 */}
             <div className="flex items-center gap-1.5">
@@ -834,8 +848,8 @@ export default function Library() {
             </div>
           ) : (
             <>
-              <div className={`library-grid grid ${COLS_CLASS[cols] ?? "grid-cols-4"} gap-4`}>
-                {visibleItems.map((item) => {
+              <VirtualAssetGrid items={visibleItems} columns={cols} scrollRef={libraryScrollRef}>
+                {(item) => {
                   const isMulti = multiSelected.has(item.id);
                   const isSingle = selected?.id === item.id;
                   const isAnalyzing = analyzingIds.has(item.id);
@@ -896,7 +910,7 @@ export default function Library() {
                           </div>
                         )}
                       </div>
-                      <div className="p-2">
+                      <div className="h-[68px] overflow-hidden p-2">
                         <p className="text-xs font-medium text-zinc-800 truncate">{item.title}</p>
                         {item.style && (
                           <p className="text-xs text-zinc-400 truncate">{item.style}</p>
@@ -910,8 +924,8 @@ export default function Library() {
                       </div>
                     </div>
                   );
-                })}
-              </div>
+                }}
+              </VirtualAssetGrid>
 
               {/* 分页 */}
               {(hasPrev || hasNext) && (
@@ -1231,7 +1245,9 @@ export default function Library() {
         </div>
       </div>
     )}
-    </>
+      </>}
+      {libraryTab === "web" && <BrowserCollectionPanel />}
+    </div>
   );
 }
 

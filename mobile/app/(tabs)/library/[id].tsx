@@ -1,17 +1,17 @@
 import {
-  View, Text, Image, ScrollView, TouchableOpacity,
+  View, Text, ScrollView, TouchableOpacity,
   StyleSheet, Alert, TextInput, ActivityIndicator,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useStore } from '../../../store';
-import { resolveLocalUri, readBase64FromUri } from '../../../services/media';
+import { readBase64FromUri } from '../../../services/media';
 import { analyzeImage } from '../../../services/ai';
 import {
   AuroraBackground, LiquidCard, LiquidButton,
-  InlineNav, SectionLabel,
+  InlineNav, SectionLabel, PhImage,
 } from '../../../components/ui';
 import { Glass, Brand, Text as TText, Font, Radius } from '../../../utils/theme';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -26,9 +26,9 @@ export default function ItemDetailScreen() {
   const addNote = useStore((s) => s.addNote);
   const updateItemAnalysis = useStore((s) => s.updateItemAnalysis);
   const updateItemTags = useStore((s) => s.updateItemTags);
+  const markItemsUsed = useStore((s) => s.markItemsUsed);
   const item = items.find((i) => i.id === itemId);
 
-  const [imageUri, setImageUri] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [tagInput, setTagInput] = useState('');
 
@@ -38,15 +38,6 @@ export default function ItemDetailScreen() {
     try { return (JSON.parse(n.itemIds ?? '[]') as number[]).includes(itemId); }
     catch { return false; }
   });
-
-  useEffect(() => {
-    if (!item) return;
-    let cancelled = false;
-    resolveLocalUri(item.imagePath)
-      .then((u) => { if (!cancelled) setImageUri(u); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [item?.imagePath]);
 
   if (!item) {
     return (
@@ -60,13 +51,14 @@ export default function ItemDetailScreen() {
     if (!item) return;
     setAnalyzing(true);
     try {
+      await markItemsUsed([item.id], 'image_analysis');
       const b64 = await readBase64FromUri(item.imagePath);
       const result = await analyzeImage(b64);
       await updateItemAnalysis(item.id, result);
     } catch (e: any) {
       const msg: string = e.message ?? '未知错误';
-      if (msg.includes('MiniMax') || msg.includes('Key')) {
-        Alert.alert('需要 MiniMax API Key', '图片分析需要 MiniMax Key，请在「设置 → AI 模型配置」中填写', [
+      if (msg.includes('API Key') || msg.includes('模型配置') || msg.includes('返回为空')) {
+        Alert.alert('图片分析失败', `${msg}`, [
           { text: '去配置', onPress: () => router.push('/(tabs)/profile/ai-config') },
           { text: '取消', style: 'cancel' },
         ]);
@@ -79,10 +71,10 @@ export default function ItemDetailScreen() {
   }
 
   async function handleDelete() {
-    Alert.alert('删除图片', '确认从图库中删除此图片？', [
+    Alert.alert('移除照片标记', '确认移除此照片的应用记录？系统相册中的照片不会删除。', [
       { text: '取消', style: 'cancel' },
       {
-        text: '删除', style: 'destructive',
+        text: '移除', style: 'destructive',
         onPress: async () => {
           await deleteItem(itemId);
           router.back();
@@ -92,6 +84,7 @@ export default function ItemDetailScreen() {
   }
 
   async function handleCreateNote() {
+    await markItemsUsed([itemId], 'note_attachment');
     const note = await addNote({ itemIds: [itemId] });
     router.push(`/(tabs)/create/edit/${note.id}`);
   }
@@ -118,7 +111,7 @@ export default function ItemDetailScreen() {
         onBack={() => router.back()}
         right={
           <TouchableOpacity onPress={handleDelete}>
-            <Text style={{ color: Brand.red, fontSize: Font.body }}>删除</Text>
+            <Text style={{ color: Brand.red, fontSize: Font.body }}>移除标记</Text>
           </TouchableOpacity>
         }
       />
@@ -126,7 +119,7 @@ export default function ItemDetailScreen() {
       <ScrollView showsVerticalScrollIndicator={false}>
         {/* 全宽主图 */}
         <View style={styles.heroWrap}>
-          <Image source={{ uri: imageUri ?? undefined }} style={styles.heroImg} resizeMode="cover" />
+          <PhImage uri={item.imagePath} style={styles.heroImg} resizeMode="cover" />
           <LinearGradient
             colors={['transparent', 'rgba(30,10,15,0.65)']}
             style={StyleSheet.absoluteFill}

@@ -1,4 +1,5 @@
 export type InspirationStatus = "saved" | "converted";
+export type MaterialType = "note_material" | "profile_material" | "web_material";
 
 export interface Inspiration {
   id: string;
@@ -12,6 +13,9 @@ export interface Inspiration {
   noteId?: number;
   /** 由浏览器剪藏宿主生成，防止同一账号重复写入同一来源。 */
   dedupeKey?: string;
+  materialType?: MaterialType;
+  author?: string;
+  captureModules?: string[];
 }
 
 function storageKey(databaseIdentity: string, accountId: number): string {

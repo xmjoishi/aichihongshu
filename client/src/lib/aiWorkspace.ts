@@ -28,6 +28,7 @@ export interface CreateAgentSessionInput {
 }
 
 const STORAGE_VERSION = "v1";
+const LAST_SESSION_VERSION = "v1";
 const MAX_TITLE_LENGTH = 120;
 const MAX_PREVIEW_LENGTH = 240;
 export const AGENT_SESSIONS_CHANGED_EVENT = "aichihongshu:agent-sessions-changed";
@@ -43,6 +44,29 @@ function accountKey(accountId: number | null): string {
 
 function sessionsKey(accountId: number | null): string {
   return `aichihongshu.agent-sessions.${STORAGE_VERSION}.account-${encodeURIComponent(accountKey(accountId))}`;
+}
+
+function lastSessionKey(accountId: number | null): string {
+  return `aichihongshu.agent-last-session.${LAST_SESSION_VERSION}.account-${encodeURIComponent(accountKey(accountId))}`;
+}
+
+/** The workspace tab resumes its last session; explicit new-session controls create another one. */
+export function readLastAgentSession(accountId: number | null): string | null {
+  try {
+    const id = window.sessionStorage.getItem(lastSessionKey(accountId));
+    return id && id.length <= 180 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberLastAgentSession(accountId: number | null, id: string): void {
+  if (!id || id.length > 180) return;
+  try {
+    window.sessionStorage.setItem(lastSessionKey(accountId), id);
+  } catch {
+    // Current route state remains authoritative when session storage is unavailable.
+  }
 }
 
 function newId(): string {

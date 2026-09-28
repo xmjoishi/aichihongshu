@@ -1,12 +1,14 @@
+import { useMenuDestination } from "../lib/pageRetention";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutGrid, FileText, User, BarChart2, ChartNoAxesCombined, Settings, Sparkles,
-  ShieldCheck, Search, Plus, MessageSquare, Pin, BriefcaseBusiness,
+  ShieldCheck, Search, Plus, MessageSquare, Pin, BriefcaseBusiness, Brain,
 } from "lucide-react";
 import { openGlobalSearch } from "./GlobalSearchHost";
+import ActiveAccountSwitcher from "./ActiveAccountSwitcher";
 import { useAccountContext } from "../lib/accountContext";
-import { createAgentSession, readAgentSessions, subscribeAgentSessions, type AgentSessionMetadata } from "../lib/aiWorkspace";
+import { createAgentSession, readAgentSessions, readLastAgentSession, rememberLastAgentSession, subscribeAgentSessions, type AgentSessionMetadata } from "../lib/aiWorkspace";
 
 // 顶部：当前运营账号上下文（跟着激活账号切换）
 const accountNav = [
@@ -16,6 +18,7 @@ const accountNav = [
   { to: "/inspire", icon: Sparkles, label: "灵感" },
   { to: "/profile", icon: User, label: "账号" },
   { to: "/data", icon: ChartNoAxesCombined, label: "数据与复盘" },
+  { to: "/memory", icon: Brain, label: "记忆" },
 ];
 
 // 底部：全局（与运营账号无关）
@@ -29,6 +32,13 @@ const SIDEBAR_WIDTH_KEY = "aichihongshu.sidebar.width.v1";
 const SIDEBAR_MIN_WIDTH = 160;
 const SIDEBAR_MAX_WIDTH = 288;
 const SIDEBAR_DEFAULT_WIDTH = 176;
+// Compact dividers align to painted edges, not the 40px hit targets.
+const COMPACT_DIVIDER_GAP = 12;
+const COMPACT_ACCOUNT_INSET = (40 - 32) / 2;
+// Lucide's 24px viewBox includes a 1-unit inset to the workspace icons' stroke.
+const COMPACT_WORKSPACE_ICON_INSET = (40 - 18) / 2 + 18 / 24;
+// Search's top painted edge is at y=2 (circle y=3 minus its stroke radius).
+const COMPACT_SEARCH_ICON_INSET = (40 - 20) / 2 + (20 / 24) * 2;
 export const SIDEBAR_TOGGLE_EVENT = "aichihongshu:toggle-sidebar";
 
 export function requestSidebarToggle() {
@@ -57,7 +67,7 @@ function readSidebarWidth() {
 }
 
 const itemClass = ({ isActive, collapsed }: { isActive: boolean; collapsed: boolean }) =>
-  `group flex w-full items-center text-left transition-colors ${collapsed ? "mx-auto h-10 w-10 justify-center rounded-xl p-0" : "rounded-xl py-2.5 gap-1.5 px-2"}
+  `group relative flex w-full items-center text-left transition-colors ${collapsed ? "mx-auto h-10 w-10 justify-center rounded-xl p-0" : "rounded-xl py-2.5 gap-1.5 px-2"}
    ${isActive
      ? "bg-[var(--color-selected)] text-[var(--color-brand)]"
      : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text-primary)]"}`;
@@ -156,9 +166,10 @@ function AgentSessions({ collapsed, accountId }: { collapsed: boolean; accountId
   );
 }
 
-export default function Sidebar() {
+export default function Sidebar({ onCompactChange }: { onCompactChange?: (compact: boolean) => void } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
+  const menuDestination = useMenuDestination();
   const { accountId } = useAccountContext();
   const [collapsed, setCollapsed] = useState(readCollapsedPreference);
   const [compactViewport, setCompactViewport] = useState(() => (
@@ -172,7 +183,12 @@ export default function Sidebar() {
   const widthRef = useRef(sidebarWidth);
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const compact = compactViewport ? !compactExpanded : collapsed;
+  const tightExpanded = !compact && sidebarWidth <= 176;
   const agentWorkspace = location.pathname === "/assistant";
+
+  useEffect(() => {
+    onCompactChange?.(compact);
+  }, [compact, onCompactChange]);
 
   useEffect(() => {
     try {
@@ -254,10 +270,11 @@ export default function Sidebar() {
   }
 
   function openAgentWorkspace() {
-    // Create the transient session before navigation so Assistant mounts with
-    // its stable identity and does not need a second URL update on entry.
-    const session = createAgentSession(accountId);
-    navigate(`/assistant?session=${encodeURIComponent(session.id)}`);
+    // Resume this account's current workspace session. Create a temporary one
+    // only on first entry; the explicit new-session controls handle new chats.
+    const sessionId = readLastAgentSession(accountId) ?? createAgentSession(accountId).id;
+    rememberLastAgentSession(accountId, sessionId);
+    navigate(`/assistant?session=${encodeURIComponent(sessionId)}`);
   }
 
   useEffect(() => {
@@ -295,58 +312,128 @@ export default function Sidebar() {
 
   return (
     <aside
-      className={`app-sidebar group/sidebar relative flex shrink-0 flex-col overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-4 ${resizing ? "transition-none" : "transition-[width] duration-200"} ${compact ? "w-16" : ""}`}
+      className={`app-sidebar group/sidebar relative flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-surface)] ${compact ? "px-2.5 pt-2 pb-4" : tightExpanded ? "px-1.5 py-4" : "px-3 py-4"} ${resizing ? "transition-none" : "transition-[width] duration-200"} ${compact ? "w-16" : ""}`}
       style={{ width: compact ? 64 : sidebarWidth }}
     >
-      <div className={`mb-3 flex items-center rounded-xl ${compact ? "flex-col gap-1 bg-[var(--color-surface-2)] p-0" : "gap-1 bg-[var(--color-surface-2)] p-1"}`} role="tablist" aria-label="工作区">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={!agentWorkspace}
-          onClick={() => navigate(lastOperationsPath)}
-          title="运营工作区"
-          className={`flex items-center justify-center gap-1.5 text-xs font-medium transition ${compact ? "h-10 w-10 flex-none rounded-xl p-0" : "flex-1 rounded-lg py-1.5"} ${!agentWorkspace ? `${compact ? "border border-[var(--color-brand)]" : ""} bg-white text-[var(--color-brand)] shadow-sm` : "border border-transparent bg-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"}`}
-        >
-          <BriefcaseBusiness size={16} />
-          {!compact && "运营"}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={agentWorkspace}
-          onClick={openAgentWorkspace}
-          title="AI 工作区"
-          className={`flex items-center justify-center gap-1.5 text-xs font-medium transition ${compact ? "h-10 w-10 flex-none rounded-xl p-0" : "flex-1 rounded-lg py-1.5"} ${agentWorkspace ? `${compact ? "border border-[var(--color-brand)]" : ""} bg-white text-[var(--color-brand)] shadow-sm` : "border border-transparent bg-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"}`}
-        >
-          <Sparkles size={16} />
-          {!compact && "AI"}
-        </button>
+      <div className={`shrink-0 ${compact ? "flex flex-col" : ""}`}>
+        {compact && (
+          <div className="flex w-full justify-center">
+            <ActiveAccountSwitcher compact />
+          </div>
+        )}
+        {compact && <div
+          className="h-px w-full shrink-0 bg-[var(--color-border)]"
+          style={{ marginTop: COMPACT_DIVIDER_GAP - COMPACT_ACCOUNT_INSET, marginBottom: COMPACT_DIVIDER_GAP - (agentWorkspace ? COMPACT_WORKSPACE_ICON_INSET : 0) }}
+          role="separator" aria-orientation="horizontal"
+        />}
+        <div className={`flex shrink-0 items-center ${compact ? "w-full flex-col gap-1" : "mb-1 gap-1"}`}>
+          <div className={`flex items-center ${compact ? "w-full flex-col gap-1" : "gap-1"}`} role="tablist" aria-label="工作区">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!agentWorkspace}
+              onClick={() => navigate(lastOperationsPath)}
+              title="运营工作区"
+              aria-label="运营工作区"
+              className={`flex h-10 flex-none items-center justify-center rounded-full border text-sm font-medium transition-[width,background-color,color,border-color,box-shadow] duration-200 ${compact ? "rounded-xl" : ""} ${!agentWorkspace ? "border-[var(--color-brand)] bg-[var(--color-surface)] text-[var(--color-brand)] shadow-sm" : "border-transparent bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text-primary)]"}`}
+              style={{ width: compact ? 40 : !agentWorkspace ? (tightExpanded ? 72 : 76) : (tightExpanded ? 36 : 40), height: 40, paddingInline: compact || agentWorkspace ? 0 : tightExpanded ? 8 : 10, gap: !compact && !agentWorkspace ? (tightExpanded ? 4 : 6) : 0 }}
+            >
+              <BriefcaseBusiness size={18} className={`flex-none ${!agentWorkspace ? "text-[var(--color-brand)]" : ""}`} />
+              {!compact && <span className={`overflow-hidden whitespace-nowrap transition-[max-width,opacity,transform] duration-200 ${!agentWorkspace ? "max-w-7 opacity-100 translate-x-0" : "max-w-0 opacity-0 -translate-x-1"}`}>运营</span>}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={agentWorkspace}
+              onClick={openAgentWorkspace}
+              title="AI 工作区"
+              aria-label="AI 工作区"
+              className={`flex h-10 flex-none items-center justify-center rounded-full border text-sm font-medium transition-[width,background-color,color,border-color,box-shadow] duration-200 ${compact ? "rounded-xl" : ""} ${agentWorkspace ? "border-[var(--color-brand)] bg-[var(--color-surface)] text-[var(--color-brand)] shadow-sm" : "border-transparent bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text-primary)]"}`}
+              style={{ width: compact ? 40 : agentWorkspace ? (tightExpanded ? 60 : 64) : (tightExpanded ? 36 : 40), height: 40, paddingInline: compact || !agentWorkspace ? 0 : tightExpanded ? 8 : 10, gap: !compact && agentWorkspace ? (tightExpanded ? 4 : 6) : 0 }}
+            >
+              <Sparkles size={18} className={`flex-none ${agentWorkspace ? "text-[var(--color-brand)]" : ""}`} />
+              {!compact && <span className={`overflow-hidden whitespace-nowrap transition-[max-width,opacity,transform] duration-200 ${agentWorkspace ? "max-w-5 opacity-100 translate-x-0" : "max-w-0 opacity-0 -translate-x-1"}`}>AI</span>}
+            </button>
+          </div>
+          {!compact && (
+            <button
+              type="button"
+              onClick={() => openGlobalSearch()}
+              title="全局搜索 (⌘K)"
+              aria-label="全局搜索"
+              className="ml-auto flex h-10 w-8 flex-none items-center justify-center rounded-xl text-[var(--color-text-secondary)] transition hover:bg-[var(--color-surface-2)] hover:text-[var(--color-brand)]"
+            >
+              <Search size={20} />
+            </button>
+          )}
+        </div>
+        {compact && <div
+          className="h-px w-full shrink-0 bg-[var(--color-border)]"
+          style={{ marginTop: COMPACT_DIVIDER_GAP - (agentWorkspace ? 0 : COMPACT_WORKSPACE_ICON_INSET) }}
+          role="separator" aria-orientation="horizontal"
+        />}
       </div>
 
-      {agentWorkspace ? (
-        <AgentSessions collapsed={compact} accountId={accountId} />
-      ) : (
-        <>
-          <button
-            type="button"
-            onClick={() => openGlobalSearch()}
-            title={compact ? "全局搜索 (⌘K)" : undefined}
-            aria-label="全局搜索"
-            className={itemClass({ isActive: false, collapsed: compact })}
-          >
-            <Search size={20} />
-            <span className={compact ? "sr-only" : "flex min-w-0 flex-1 items-center justify-between whitespace-nowrap text-sm font-medium"}>
-              <span>全局搜索</span>
-              {!compact && <kbd className="ml-2 rounded border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] font-normal text-[var(--color-text-secondary)]">⌘K</kbd>}
-            </span>
-          </button>
-
-          {/* 顶部：账号上下文区 */}
-          {accountNav.map(({ to, icon: Icon, label }) => (
+      <div
+        className={`flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto ${compact ? "scrollbar-none" : ""}`}
+        style={compact ? { paddingTop: COMPACT_DIVIDER_GAP - COMPACT_SEARCH_ICON_INSET } : undefined}
+      >
+        {compact ? (
+          <div className="flex flex-col gap-1">
+            <button
+              type="button"
+              onClick={() => openGlobalSearch()}
+              title="全局搜索 (⌘K)"
+              aria-label="全局搜索"
+              className={itemClass({ isActive: false, collapsed: true })}
+            >
+              <Search size={20} />
+              <span className="sr-only">全局搜索</span>
+            </button>
+            {agentWorkspace ? (
+              <AgentSessions collapsed accountId={accountId} />
+            ) : (
+              accountNav.map(({ to, icon: Icon, label }) => (
+                <NavLink
+                  key={to}
+                  to={menuDestination(to)}
+                  end={to === "/" || to === "/accounts"}
+                  title={label}
+                  className={({ isActive }) => itemClass({ isActive, collapsed: true })}
+                >
+                  <Icon size={20} />
+                  <span className="sr-only">{label}</span>
+                </NavLink>
+              ))
+            )}
+          </div>
+        ) : agentWorkspace ? (
+          <AgentSessions collapsed={false} accountId={accountId} />
+        ) : (
+          accountNav.map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}
-              to={to}
+              to={menuDestination(to)}
               end={to === "/" || to === "/accounts"}
+              className={({ isActive }) => itemClass({ isActive, collapsed: false })}
+            >
+              <Icon size={20} />
+              <span className="whitespace-nowrap text-sm font-medium">{label}</span>
+            </NavLink>
+          ))
+        )}
+        {!agentWorkspace && <div className="flex-1" />}
+      </div>
+
+      <div className="shrink-0">
+        <div className="my-3 h-px w-full bg-[var(--color-border)]" role="separator" aria-orientation="horizontal" />
+        {/* 底部：全局区 */}
+        <div className={compact ? "flex flex-col gap-1" : undefined}>
+          {globalNav.map(({ to, icon: Icon, label }) => (
+            <NavLink
+              key={to}
+              to={menuDestination(to)}
+              end={to === "/accounts/pool"}
               title={compact ? label : undefined}
               className={({ isActive }) => itemClass({ isActive, collapsed: compact })}
             >
@@ -354,26 +441,8 @@ export default function Sidebar() {
               <span className={compact ? "sr-only" : "whitespace-nowrap text-sm font-medium"}>{label}</span>
             </NavLink>
           ))}
-          <div className="flex-1" />
-        </>
-      )}
-
-      {/* 分隔线：上=账号上下文，下=全局 */}
-      <div className="my-3 h-px w-full bg-[var(--color-border)]" />
-
-      {/* 底部：全局区 */}
-      {globalNav.map(({ to, icon: Icon, label }) => (
-        <NavLink
-          key={to}
-          to={to}
-          end={to === "/accounts/pool"}
-          title={compact ? label : undefined}
-          className={({ isActive }) => itemClass({ isActive, collapsed: compact })}
-        >
-          <Icon size={20} />
-          <span className={compact ? "sr-only" : "whitespace-nowrap text-sm font-medium"}>{label}</span>
-        </NavLink>
-      ))}
+        </div>
+      </div>
 
       {!compact && (
         <div

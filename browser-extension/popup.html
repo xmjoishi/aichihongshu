@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>爱吃红薯数据抓取</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <strong id="popup-title">爱吃红薯数据抓取</strong>
+      <span id="connection-status" class="connection-status checking" role="status" aria-live="polite">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-status-label">正在检测</span>
+      </span>
+      <span id="extension-version" class="version">v-</span>
+    </header>
+    <div class="wrap">
+
+    <section id="preview" class="card">
+      <div class="row">
+        <label for="page-type">页面类型</label>
+        <select id="page-type">
+          <option value="note">笔记</option>
+          <option value="profile">主页 / 账号</option>
+          <option value="web">网页素材</option>
+        </select>
+      </div>
+      <p id="preview-meta" class="meta">解析当前页中…</p>
+      <div id="preview-fields" class="fields"></div>
+    </section>
+
+    <nav class="mode-tabs" role="tablist" aria-label="本次操作">
+      <button id="tab-collect" type="button" role="tab" aria-selected="true">收藏内容</button>
+      <button id="tab-data" type="button" role="tab" aria-selected="false">更新数据</button>
+    </nav>
+    <p id="context-hint" class="context-hint"></p>
+
+    <section id="collect-panel" class="card mode-panel" role="tabpanel">
+      <p class="group-title">收藏到素材库 · 网页收藏</p>
+      <label class="check"><input type="checkbox" id="m-titleBody" checked /> 标题 + 正文摘要</label>
+      <label class="check"><input type="checkbox" id="m-authorSource" checked /> 作者 / 来源链接</label>
+      <label class="check disabled"><input type="checkbox" disabled /> 图片清单（待支持）</label>
+      <label class="check disabled"><input type="checkbox" disabled /> 评论摘录（待支持）</label>
+    </section>
+
+    <section id="data-panel" class="card mode-panel" role="tabpanel" hidden>
+      <p class="group-title">记录一条表现数据快照</p>
+      <label class="check" id="wrap-metrics"><input type="checkbox" id="m-metrics" /> 赞 / 藏 / 评（或粉丝）</label>
+      <label class="check" id="wrap-published"><input type="checkbox" id="m-published" /> 发布时间（识别到才存）</label>
+    </section>
+
+    <p id="destination" class="dest"></p>
+    <button id="capture" type="button" disabled>收藏到素材库</button>
+    <p id="status" class="status"></p>
+    </div>
+  </body>
+  <script src="popup.js"></script>
+</html>

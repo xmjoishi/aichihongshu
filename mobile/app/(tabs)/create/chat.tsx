@@ -1,7 +1,8 @@
+import { Chip, GlassBackBar } from '../../../components/ui';
 import {
   View, Text, FlatList, TextInput, TouchableOpacity,
   KeyboardAvoidingView, Platform, StyleSheet,
-  ActivityIndicator, Alert, ScrollView,
+  ActivityIndicator, Alert, ScrollView, Modal, Pressable,
 } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -10,11 +11,20 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useStore } from '../../../store';
 import { chatStream, buildSystemPrompt, getApiKey, getAiConfig } from '../../../services/ai';
-import { AuroraBackground, InlineNav, PhImage } from '../../../components/ui';
+import { buildMobileMemoryPrompt } from '../../../services/memory';
+import { getImageAssetReference, readBase64FromUri } from '../../../services/media';
+import * as ImagePicker from 'expo-image-picker';
+import {
+  listChatSessions, saveChatSession, deleteChatSession, newChatSessionId,
+  type ChatSession,
+} from '../../../services/chatHistory';
+import { AuroraBackground, PhImage } from '../../../components/ui';
 import { Glass, Brand, Text as TText, Font, Radius } from '../../../utils/theme';
+import { extractTitleAndBody, stripMarkdownForXhs, stripMarkdownForXhsTitle } from '../../../utils/xhsText';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 type Message = { id: string; role: 'user' | 'assistant'; content: string; streaming?: boolean };
+type PendingImage = { uri: string; assetId?: string | null };
 
 // 快捷提示词
 const QUICK_PROMPTS = [
@@ -25,22 +35,87 @@ const QUICK_PROMPTS = [
 ];
 
 export default function ChatScreen() {
-  const { noteId } = useLocalSearchParams<{ noteId: string }>();
+  const { noteId, from } = useLocalSearchParams<{ noteId: string; from?: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const notes = useStore((s) => s.notes);
   const items = useStore((s) => s.items);
   const profile = useStore((s) => s.profile);
   const updateNote = useStore((s) => s.updateNote);
+  const recordAssetUse = useStore((s) => s.recordAssetUse);
+  const markItemsUsed = useStore((s) => s.markItemsUsed);
   const note = notes.find((n) => n.id === Number(noteId));
   const linkedItemIds: number[] = JSON.parse(note?.itemIds ?? '[]');
   const linkedItems = items.filter((i) => linkedItemIds.includes(i.id));
+
+  function handleBack() {
+    // 清掉创作 Tab 栈里的对话页，再回到目标 Tab
+    try {
+      if (typeof router.dismissAll === 'function') router.dismissAll();
+      else if (router.canGoBack()) router.back();
+    } catch {}
+    if (from === 'library') {
+      router.navigate('/(tabs)/library');
+      return;
+    }
+    router.navigate('/(tabs)/create');
+  }
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [keyMissing, setKeyMissing] = useState(false);
+  const [sessionId, setSessionId] = useState<string>(() => newChatSessionId());
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyList, setHistoryList] = useState<ChatSession[]>([]);
+  // 本轮要附带的图片（本地 uri）
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const flatRef = useRef<FlatList>(null);
+
+  async function pickImages() {
+    const res = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: true,
+      quality: 0.85,
+      base64: false,
+    });
+    if (res.canceled || !res.assets?.length) return;
+    const selected = res.assets.map((asset) => ({ uri: asset.uri, assetId: asset.assetId }));
+    setPendingImages((prev) => [...prev, ...selected].slice(0, 6));
+  }
+
+  // 会话写入本地（防抖）
+  useEffect(() => {
+    if (messages.length === 0) return;
+    const t = setTimeout(() => {
+      void saveChatSession({
+        id: sessionId,
+        title: messages.find((m) => m.role === 'user')?.content?.slice(0, 24) ?? '未命名会话',
+        noteId: note ? note.id : null,
+        messages,
+      });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [messages, sessionId]);
+
+  async function openHistory() {
+    const list = await listChatSessions();
+    setHistoryList(list);
+    setHistoryOpen(true);
+  }
+
+  function loadSession(s: ChatSession) {
+    setSessionId(s.id);
+    setMessages(s.messages.map((m) => ({ ...m, streaming: false })));
+    setHistoryOpen(false);
+    setTimeout(() => flatRef.current?.scrollToEnd({ animated: false }), 80);
+  }
+
+  function startNewChat() {
+    setSessionId(newChatSessionId());
+    setMessages([]);
+    setHistoryOpen(false);
+  }
 
   // 检查 API Key
   useFocusEffect(
@@ -57,7 +132,7 @@ export default function ChatScreen() {
 
   async function handleSend(text?: string) {
     const content = (text ?? input).trim();
-    if (!content || loading) return;
+    if ((!content && pendingImages.length === 0) || loading) return;
     if (keyMissing) {
       Alert.alert(
         '未配置 AI Key',
@@ -69,7 +144,11 @@ export default function ChatScreen() {
       );
       return;
     }
-    const userMsg: Message = { id: `user-${Date.now()}`, role: 'user', content };
+    const userMsg: Message = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: content || '（图片）',
+    };
     const assistantId = `assistant-${Date.now()}`;
     const assistantMsg: Message = {
       id: assistantId,
@@ -80,22 +159,62 @@ export default function ChatScreen() {
     const next: Message[] = [...messages, userMsg, assistantMsg];
     setMessages(next);
     setInput('');
+    const sentImages = pendingImages;
+    setPendingImages([]);
     setLoading(true);
     setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 50);
     try {
       const analyses = linkedItems.map((i) => i.analysis ?? '').filter(Boolean);
-      const sys = buildSystemPrompt(
-        {
-          personaName: profile?.personaName,
-          niche: profile?.niche,
-          personaTone: profile?.personaTone,
-          taboos: profile?.taboos,
-        },
-        analyses,
-      );
-      const conversation: Array<{ role: 'user' | 'assistant'; content: string }> = next
+      const memoryBlock = await buildMobileMemoryPrompt('chat').catch(() => '');
+      const sys = [
+        buildSystemPrompt(
+          {
+            personaName: profile?.personaName,
+            niche: profile?.niche,
+            personaTone: profile?.personaTone,
+            taboos: profile?.taboos,
+          },
+          analyses,
+        ),
+        memoryBlock,
+      ].filter(Boolean).join('\n\n');
+      // 关联素材 + 本轮添加的图片 → base64
+      const imageBase64List: string[] = [];
+      for (const item of linkedItems) {
+        if (!item.imagePath) continue;
+        try {
+          const raw = await readBase64FromUri(item.imagePath);
+          if (raw) imageBase64List.push(raw.replace(/^data:image\/[\w.+-]+;base64,/, ''));
+        } catch {}
+      }
+      const usedImageRefs: Array<Promise<{ uri: string; sourceAssetId: string | null }>> = [];
+      for (const image of sentImages) {
+        try {
+          const raw = await readBase64FromUri(image.uri);
+          if (raw) {
+            imageBase64List.push(raw.replace(/^data:image\/[\w.+-]+;base64,/, ''));
+            usedImageRefs.push(getImageAssetReference(image.assetId, image.uri));
+          }
+        } catch {}
+      }
+      if (usedImageRefs.length > 0) {
+        void Promise.all(usedImageRefs)
+          .then((references) => recordAssetUse(references.map((reference) => ({ ...reference, title: '新图片' })), 'ai_creation'))
+          .catch((error) => console.warn('record chat image use failed', error));
+      }
+      if (linkedItemIds.length > 0) {
+        void markItemsUsed(linkedItemIds, 'ai_creation')
+          .catch((error) => console.warn('mark linked chat images used failed', error));
+      }
+      const conversation = next
         .filter((message) => message.id !== assistantId)
-        .map((message) => ({ role: message.role, content: message.content }));
+        .map((message) => ({
+          role: message.role,
+          content: message.content,
+          ...(message.id === userMsg.id && imageBase64List.length > 0
+            ? { images: imageBase64List }
+            : {}),
+        }));
       const reply = await chatStream(conversation, sys, (_delta, fullText) => {
         setMessages((prev) =>
           prev.map((message) =>
@@ -134,9 +253,7 @@ export default function ChatScreen() {
 
   async function handleSave(content: string) {
     if (!note) return;
-    const lines = content.split('\n').filter((l) => l.trim());
-    const title = lines[0]?.replace(/^[#标题：\s]+/, '').trim() ?? '';
-    const body = lines.slice(1).join('\n').trim();
+    const { title, body } = extractTitleAndBody(content);
     await updateNote(note.id, { title, body });
     Alert.alert('已保存到草稿', '', [
       { text: '去编辑', onPress: () => router.push(`/(tabs)/create/edit/${note?.id}`) },
@@ -197,20 +314,25 @@ export default function ChatScreen() {
 
   return (
     <AuroraBackground style={{ flex: 1 }}>
+      <GlassBackBar
+        title="AI 创作"
+        backLabel="返回"
+        onBack={handleBack}
+        right={
+          <TouchableOpacity
+            style={styles.historyBtn}
+            onPress={() => void openHistory()}
+            hitSlop={8}
+            accessibilityLabel="历史会话"
+          >
+            <Ionicons name="time-outline" size={18} color={TText.primary} />
+          </TouchableOpacity>
+        }
+      />
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        <InlineNav
-          title="AI 创作"
-          onBack={() => router.back()}
-          right={
-            <TouchableOpacity onPress={() => router.push(`/(tabs)/create/edit/${noteId}`)}>
-              <Text style={{ color: Brand.red, fontSize: Font.body }}>编辑</Text>
-            </TouchableOpacity>
-          }
-        />
-
         {/* API Key 未配置警告 */}
         {keyMissing && (
           <TouchableOpacity
@@ -234,13 +356,13 @@ export default function ChatScreen() {
           <View style={[styles.contextChip, hasImages && styles.contextChipOn]}>
             <Ionicons name="images-outline" size={11} color={hasImages ? Brand.red : TText.tertiary} />
             <Text style={[styles.contextChipText, hasImages && styles.contextChipTextOn]}>
-              {hasImages ? `${linkedItems.length} 张图` : '无图片'}
+              {hasImages ? `${linkedItems.length} 张图·将随消息发送` : '无图片'}
             </Text>
           </View>
           <View style={[styles.contextChip, hasAnalysis && styles.contextChipOn]}>
             <Ionicons name="analytics-outline" size={11} color={hasAnalysis ? Brand.red : TText.tertiary} />
             <Text style={[styles.contextChipText, hasAnalysis && styles.contextChipTextOn]}>
-              {hasAnalysis ? 'AI 分析已注入' : '图片未分析'}
+              {hasAnalysis ? 'AI 分析已注入' : '图将随消息发送'}
             </Text>
           </View>
         </View>
@@ -264,6 +386,9 @@ export default function ChatScreen() {
           data={messages}
           keyExtractor={(item) => item.id}
           renderItem={renderMessage}
+          style={{ flex: 1 }}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           contentContainerStyle={[styles.msgList, { paddingBottom: 96 + Math.max(insets.bottom, 12) }]}
           ListEmptyComponent={
             <View style={styles.emptyWrap}>
@@ -288,17 +413,40 @@ export default function ChatScreen() {
           }
         />
 
+        {/* 本轮附加图片 */}
+        {pendingImages.length > 0 && (
+          <View style={styles.pendingStrip}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {pendingImages.map((image, i) => (
+                <View key={`${image.uri}-${i}`} style={styles.pendingItem}>
+                  <PhImage uri={image.uri} style={styles.pendingImg} />
+                  <TouchableOpacity
+                    style={styles.pendingDel}
+                    hitSlop={6}
+                    onPress={() => setPendingImages((prev) => prev.filter((_, j) => j !== i))}
+                  >
+                    <Ionicons name="close" size={12} color="#fff" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
         {/* 输入区 */}
         <BlurView intensity={65} tint="light" style={styles.inputBar}>
           <View style={styles.inputBarBg} />
           <View style={[styles.inputRow, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+            <TouchableOpacity style={styles.pickBtn} onPress={() => void pickImages()} accessibilityLabel="添加图片">
+              <Ionicons name="image-outline" size={22} color={Brand.red} />
+            </TouchableOpacity>
             <BlurView intensity={20} tint="light" style={styles.inputWrap}>
               <View style={styles.inputBg} />
               <TextInput
                 style={styles.input}
                 value={input}
                 onChangeText={setInput}
-                placeholder="告诉 AI 你想创作什么…"
+                placeholder={pendingImages.length ? '描述这组图，或直接发送…' : '告诉 AI 你想创作什么…'}
                 placeholderTextColor={TText.tertiary}
                 multiline
                 returnKeyType="send"
@@ -306,9 +454,9 @@ export default function ChatScreen() {
               />
             </BlurView>
             <TouchableOpacity
-              style={[styles.sendBtn, (!input.trim() || loading) && styles.sendBtnOff]}
+              style={[styles.sendBtn, (!input.trim() && pendingImages.length === 0 || loading) && styles.sendBtnOff]}
               onPress={() => handleSend()}
-              disabled={!input.trim() || loading}
+              disabled={(!input.trim() && pendingImages.length === 0) || loading}
             >
               {loading
                 ? <ActivityIndicator size="small" color="#fff" />
@@ -318,6 +466,64 @@ export default function ChatScreen() {
           </View>
         </BlurView>
       </KeyboardAvoidingView>
+
+      {/* 历史会话 */}
+      <Modal
+        visible={historyOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setHistoryOpen(false)}
+      >
+        <View style={styles.histOverlay}>
+          <Pressable style={{ flex: 1 }} onPress={() => setHistoryOpen(false)} />
+          <View style={styles.histSheet}>
+            <View style={styles.histHandle} />
+            <View style={styles.histHeader}>
+              <Text style={styles.histTitle}>历史会话</Text>
+              <TouchableOpacity onPress={startNewChat} style={styles.histNewBtn}>
+                <Ionicons name="add" size={14} color="#fff" />
+                <Text style={styles.histNewText}>新对话</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={{ maxHeight: 480 }} nestedScrollEnabled>
+              {historyList.length === 0 ? (
+                <Text style={styles.histEmpty}>暂无历史，发一条消息就会自动保存</Text>
+              ) : (
+                historyList.map((s) => (
+                  <View key={s.id} style={styles.histRow}>
+                    <TouchableOpacity
+                      style={{ flex: 1 }}
+                      onPress={() => loadSession(s)}
+                    >
+                      <Text style={styles.histRowTitle} numberOfLines={1}>{s.title}</Text>
+                      <Text style={styles.histRowMeta}>
+                        {(s.updatedAt ?? '').slice(0, 16).replace('T', ' ')} · {s.messages.length} 条
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      hitSlop={8}
+                      onPress={() => {
+                        Alert.alert('删除会话', '确认删除该历史会话？', [
+                          { text: '取消', style: 'cancel' },
+                          {
+                            text: '删除', style: 'destructive',
+                            onPress: async () => {
+                              await deleteChatSession(s.id);
+                              setHistoryList((prev) => prev.filter((x) => x.id !== s.id));
+                            },
+                          },
+                        ]);
+                      }}
+                    >
+                      <Ionicons name="trash-outline" size={16} color={TText.tertiary} />
+                    </TouchableOpacity>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </AuroraBackground>
   );
 }
@@ -411,7 +617,7 @@ const styles = StyleSheet.create({
   thumb: { width: 50, height: 50, borderRadius: Radius.md },
 
   msgList: { padding: 16, gap: 14, flexGrow: 1 },
-  msgRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
+  msgRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   msgRowUser: { justifyContent: 'flex-end' },
   msgRowAI: { justifyContent: 'flex-start' },
   aiAvatar: {
@@ -419,6 +625,7 @@ const styles = StyleSheet.create({
     backgroundColor: Brand.redSoft,
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 0.5, borderColor: Brand.redMid,
+    marginTop: 2,
   },
   aiAvatarText: { fontSize: Font.caption, fontWeight: Font.bold, color: Brand.red },
   bubble: { maxWidth: '78%', borderRadius: Radius.lg, overflow: 'hidden', padding: 12 },
@@ -450,6 +657,66 @@ const styles = StyleSheet.create({
     borderColor: Glass.border, backgroundColor: Glass.bg,
   },
   quickChipText: { fontSize: Font.footnote, color: TText.secondary, lineHeight: 18 },
+
+  historyBtn: {
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.04)',
+  },
+  pendingStrip: {
+    paddingHorizontal: 12, paddingTop: 8, paddingBottom: 2,
+  },
+  pendingItem: {
+    marginRight: 8,
+  },
+  pendingImg: {
+    width: 56, height: 56, borderRadius: 8,
+  } as any,
+  pendingDel: {
+    position: 'absolute', top: -4, right: -4,
+    width: 18, height: 18, borderRadius: 9,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  pickBtn: {
+    width: 38, height: 38,
+    alignItems: 'center', justifyContent: 'center',
+  },
+
+  // 历史会话抽屉
+  histOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
+  histSheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    paddingHorizontal: 16, paddingTop: 8, paddingBottom: 28,
+  },
+  histHandle: {
+    width: 36, height: 4, borderRadius: 2,
+    backgroundColor: '#E4E4E7', alignSelf: 'center', marginBottom: 12,
+  },
+  histHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  histTitle: { fontSize: Font.title3, fontWeight: Font.bold, color: TText.primary },
+  histNewBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: Brand.red, borderRadius: Radius.pill,
+    paddingHorizontal: 12, paddingVertical: 7,
+  },
+  histNewText: { color: '#fff', fontSize: Font.caption, fontWeight: '600' },
+  histEmpty: {
+    padding: 24, textAlign: 'center',
+    color: TText.tertiary, fontSize: Font.footnote,
+  },
+  histRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#F0F0F0',
+    gap: 12,
+  },
+  histRowTitle: { fontSize: Font.body, color: TText.primary, fontWeight: '500' },
+  histRowMeta: { fontSize: Font.caption, color: TText.tertiary, marginTop: 2 },
 
   inputBar: { overflow: 'hidden', borderTopWidth: 0.5, borderTopColor: 'rgba(0,0,0,0.08)' },
   inputBarBg: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(255,248,248,0.75)' },

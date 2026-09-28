@@ -1,6 +1,7 @@
+import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, openInBrowser } from "../lib/api";
 import type { Note, Item, Profile, ReferenceAccount } from "../lib/types";
 import { Dialog, Spinner, primaryButtonClass, secondaryButtonClass, StatusBadge } from "../components/ui";
@@ -61,8 +62,8 @@ export default function Dashboard() {
 
   // Tauri 桌面端只读取 Rust 本地快照，浏览器预览继续使用原 HTTP 数据源。
   const localWorkspaceQuery = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-workspace", scopeKey],
-    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    queryKey: ["local-workspace", scopeKey, "workspace"],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined, "workspace"),
     enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
 
@@ -186,7 +187,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="overflow-y-auto h-full w-full">
+    <div data-page-scroll="dashboard" className="overflow-y-auto h-full w-full">
     <div className="p-6 max-w-4xl mx-auto w-full">
       <h1 className="text-xl font-semibold text-zinc-900 mb-6">运营看板</h1>
 
@@ -388,9 +389,9 @@ function LocalDashboardView({ snapshot, accountId, scopeKey }: { snapshot: Local
   }
 
   return (
-    <div className="h-full w-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-6xl p-6 lg:p-8">
-        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+    <div data-page-scroll="dashboard" className="h-full w-full overflow-y-auto">
+      <div className="mx-auto w-full max-w-[1440px] px-5 py-5 sm:px-6 xl:px-8 xl:py-6">
+        <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="mb-1 text-xs font-medium uppercase tracking-[0.16em] text-[var(--color-brand)]">今日工作台</p>
             <h1 className="text-2xl font-bold tracking-tight text-[var(--color-text-primary)]">运营看板</h1>
@@ -404,7 +405,7 @@ function LocalDashboardView({ snapshot, accountId, scopeKey }: { snapshot: Local
         </div>
 
         {profile ? (
-          <div className="mb-6 flex flex-wrap items-center justify-between gap-5 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 shadow-sm">
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-5 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 xl:p-5 shadow-sm">
             <div className="min-w-0">
               <p className="mb-1 text-xs font-medium text-[var(--color-text-secondary)]">当前账号资料</p>
               <p className="truncate text-lg font-semibold text-[var(--color-text-primary)]">
@@ -412,13 +413,13 @@ function LocalDashboardView({ snapshot, accountId, scopeKey }: { snapshot: Local
               </p>
               {profile.niche && <p className="mt-0.5 truncate text-sm text-[var(--color-text-secondary)]">{profile.niche}</p>}
             </div>
-            <div className="flex gap-6 text-sm text-[var(--color-text-secondary)]">
+            <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-[var(--color-text-secondary)]">
               <span><strong className="text-[var(--color-text-primary)]">{profile.followers.toLocaleString()}</strong> 粉丝</span>
               <span><strong className="text-[var(--color-text-primary)]">{profile.totalNotes}</strong> 资料笔记</span>
             </div>
           </div>
         ) : (
-          <div className="mb-6 rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] p-5">
+          <div className="mb-5 rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] p-4">
             <p className="text-sm font-medium text-[var(--color-text-primary)]">还没有账号资料</p>
             <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
               当前账号已建立，但人设编辑功能仍在完善中。
@@ -426,7 +427,7 @@ function LocalDashboardView({ snapshot, accountId, scopeKey }: { snapshot: Local
           </div>
         )}
 
-        <div className="mb-6 grid grid-cols-2 gap-4 xl:grid-cols-4">
+        <div className="mb-5 grid grid-cols-2 gap-4 xl:grid-cols-4">
           <LocalStat label="图库素材" value={snapshot.itemCount} action={() => navigate("/library")} />
           <LocalStat label="全部笔记" value={snapshot.noteCount} sub={`${draftCount} 篇草稿`} action={() => navigate("/notes")} />
           <LocalStat label="待处理草稿" value={draftCount} action={() => navigate("/notes?status=draft")} />
@@ -434,7 +435,7 @@ function LocalDashboardView({ snapshot, accountId, scopeKey }: { snapshot: Local
         </div>
 
         {!hasContent ? (
-          <div className="mb-6 rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] p-8 text-center">
+          <div className="mb-5 rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface)] p-6 text-center">
             <p className="text-sm font-medium text-[var(--color-text-primary)]">工作区已经准备好</p>
             <p className="mt-2 text-sm leading-5 text-[var(--color-text-secondary)]">
               当前账号还没有图库或笔记。导入和编辑功能仍在完善中。
@@ -442,12 +443,12 @@ function LocalDashboardView({ snapshot, accountId, scopeKey }: { snapshot: Local
             <button type="button" className={`${secondaryButtonClass} mt-4`} onClick={() => setDraftDialogOpen(true)}>先写一篇草稿</button>
           </div>
         ) : (
-          <div className="mb-6 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5 shadow-sm">
+          <div className="mb-5 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 xl:p-5 shadow-sm">
             <div className="mb-3 flex items-center justify-between gap-3">
               <h2 className="text-base font-semibold text-[var(--color-text-primary)]">接下来可以做什么</h2>
               <span className="text-xs text-[var(--color-text-secondary)]">本地数据可用</span>
             </div>
-            <div className="space-y-2 text-sm text-[var(--color-text-secondary)]">
+            <div className="space-y-1.5 text-sm text-[var(--color-text-secondary)]">
               <button type="button" className="flex w-full items-center justify-between border-t border-[var(--color-border)] pt-2 text-left hover:text-[var(--color-brand)]" onClick={() => navigate("/library")}>
                 <span>未关联笔记的图库素材</span><strong>{itemsWithoutNotes}</strong>
               </button>
@@ -461,9 +462,9 @@ function LocalDashboardView({ snapshot, accountId, scopeKey }: { snapshot: Local
           </div>
         )}
 
-        <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 xl:px-5">
           <h2 className="text-base font-semibold text-[var(--color-text-primary)]">平台互动与趋势</h2>
-          <p className="mt-2 text-sm leading-5 text-[var(--color-text-secondary)]">
+          <p className="text-sm leading-5 text-[var(--color-text-secondary)]">
             平台互动数据尚未接入本地看板。接入前不展示推测趋势，避免把未迁移字段当成本地统计。
           </p>
         </div>

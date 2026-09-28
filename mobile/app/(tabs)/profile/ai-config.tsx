@@ -1,3 +1,4 @@
+import { Stack } from 'expo-router';
 import {
   View, Text, ScrollView, TextInput, Pressable,
   StyleSheet, Alert, KeyboardAvoidingView, Platform,
@@ -88,7 +89,9 @@ export default function AiConfigScreen() {
   }
 
   return (
-    <AuroraBackground style={{ flex: 1 }}>
+    <>
+      <Stack.Screen options={{ title: "AI 模型" }} />
+          <AuroraBackground style={{ flex: 1 }}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -100,7 +103,7 @@ export default function AiConfigScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <Text style={styles.hint}>
-            选择用于文本创作的 AI 模型。图片分析固定使用 MiniMax VL-01。
+            选择用于文本创作的 AI 模型。图片分析也走所选模型（需支持识图，如 MiniMax-M3）。
           </Text>
 
           {/* Provider 选择 */}
@@ -251,6 +254,7 @@ export default function AiConfigScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
     </AuroraBackground>
+    </>
   );
 }
 

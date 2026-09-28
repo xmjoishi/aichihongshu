@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";import { Link, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { listen } from "@tauri-apps/api/event";
+import { useWorkspaceEffect } from "../lib/workspaceActivity";
+import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   Lightbulb,
   Sparkles,
@@ -26,11 +27,6 @@ import {
   localNoteToNote,
   localReferenceAccountToReferenceAccount,
   readLocalWorkspaceSnapshot,
-  readLocalInspirations,
-  saveLocalInspiration,
-  convertLocalInspiration,
-  type LocalInspirationCreate,
-  type LocalInspirationSummary,
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
 import {
@@ -42,17 +38,8 @@ import {
 } from "../lib/localAi";
 import { useAccountChange, useAccountContext } from "../lib/accountContext";
 import { publishPageAIContext } from "../lib/pageAIContext";
+import { useSavedScrollPosition } from "../hooks/useSavedScrollPosition";
 import Accounts from "./Accounts";
-import { listInspirations, type Inspiration } from "../lib/inspirationCapture";
-import {
-  enqueueBrowserCapture,
-  markBrowserCaptureFailed,
-  markBrowserCaptureSaved,
-  markBrowserCaptureSaving,
-  readBrowserCaptureQueue,
-  validateBrowserCapture,
-  type BrowserCaptureEnvelope,
-} from "../lib/browserCapture";
 
 type TopicItem = { word: string; count: number };
 type RefPost = { title: string; likes: number; url?: string };
@@ -63,49 +50,6 @@ type DraftParts = {
   cta: string;
   tags: string[];
 };
-
-function localInspirationToInspiration(item: LocalInspirationSummary): Inspiration {
-  return {
-    id: item.id,
-    accountId: item.accountPoolId,
-    title: item.title,
-    sourceUrl: item.sourceUrl,
-    body: item.body,
-    observedAt: item.observedAt,
-    reason: item.reason,
-    status: item.status,
-    ...(item.noteId != null ? { noteId: item.noteId } : {}),
-    ...(item.dedupeKey ? { dedupeKey: item.dedupeKey } : {}),
-  };
-}
-
-function inspirationToLocalCreate(item: Inspiration): LocalInspirationCreate {
-  return {
-    id: item.id,
-    accountPoolId: item.accountId,
-    title: item.title,
-    sourceUrl: item.sourceUrl,
-    body: item.body,
-    observedAt: item.observedAt,
-    reason: item.reason,
-    dedupeKey: item.dedupeKey,
-  };
-}
-
-function captureEnvelopeToInspiration(envelope: BrowserCaptureEnvelope): Inspiration {
-  const capture = envelope.capture;
-  return {
-    id: envelope.envelopeId,
-    accountId: envelope.targetAccountId,
-    title: capture.title,
-    sourceUrl: capture.sourceUrl,
-    body: capture.body,
-    observedAt: capture.observedAt,
-    reason: capture.reason,
-    status: "saved",
-    ...(capture.dedupeKey ? { dedupeKey: capture.dedupeKey } : {}),
-  };
-}
 
 function parseDraft(raw: string): DraftParts {
   const getSection = (name: string, next: string[]) => {
@@ -246,7 +190,7 @@ function buildLocalInspirePrompt(input: {
 
 export default function Inspire() {
   const { toast } = useToast();
-  const { accountId, databaseIdentity, scopeKey } = useAccountContext();
+  const { accountId, scopeKey } = useAccountContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const inspireView = searchParams.get("tab") === "references" ? "references" : "topics";
 
@@ -258,12 +202,6 @@ export default function Inspire() {
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
   // 抽屉里标签的选中状态（生成后默认全选，可手动取消）
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [captureTitle, setCaptureTitle] = useState("");
-  const [captureUrl, setCaptureUrl] = useState("");
-  const [captureBody, setCaptureBody] = useState("");
-  const [captureReason, setCaptureReason] = useState("");
-  const [inspirations, setInspirations] = useState<Inspiration[]>([]);
-  const [captureQueue, setCaptureQueue] = useState<BrowserCaptureEnvelope[]>([]);
 
   const [topicPool, setTopicPool] = useState<TopicItem[]>([]);
   const [itemPool, setItemPool] = useState<Item[]>([]);
@@ -282,9 +220,10 @@ export default function Inspire() {
   const generationRef = useRef(0);
   const bannerRef = useRef<HTMLDivElement>(null);
   const [bannerHeight, setBannerHeight] = useState(48);
+  const inspireScrollRef = useRef<HTMLDivElement>(null);
 
   // 让全局 Copilot 知道当前是在选题工作区、榜样参考工作区，及用户已经选中的对象。
-  useEffect(() => {
+  useWorkspaceEffect(() => {
     publishPageAIContext({
       route: "/inspire",
       page: inspireView === "references" ? "灵感 · 榜样与参考" : "灵感 · 选题",
@@ -308,10 +247,9 @@ export default function Inspire() {
         : [
             { id: "find-topics", label: "找选题" },
             { id: "generate-draft", label: "生成草稿" },
-            { id: "save-inspiration", label: "保存灵感" },
           ],
       source: "page",
-      permissionScope: ["inspiration.read", "inspiration.write", "note.write"],
+      permissionScope: ["inspiration.read", "note.write"],
     });
   }, [accountId, body, inspireView, rawResult, savedNote, selectedAccountIds, selectedItemIds, tags, titleText, topic]);
 
@@ -334,92 +272,7 @@ export default function Inspire() {
     setSavedNote(null);
     setGenerating(false);
     setDrawerState("peek");
-    setInspirations([]);
-    setCaptureQueue([]);
   });
-
-  useEffect(() => {
-    if (!IS_TAURI_RUNTIME || accountId === null) {
-      setInspirations([]);
-      setCaptureQueue([]);
-      return;
-    }
-    setCaptureQueue(readBrowserCaptureQueue(databaseIdentity, accountId));
-    let active = true;
-    void readLocalInspirations(accountId)
-      .then(async (items) => {
-        // 首次升级时把旧版 localStorage 中的手工灵感迁入 SQLite；
-        // 仅在数据库为空时执行，避免每次打开页面重复改写记录。
-        if (items.length === 0) {
-          const legacy = listInspirations(databaseIdentity, accountId);
-          for (const item of legacy) {
-            try {
-              await saveLocalInspiration(inspirationToLocalCreate(item));
-            } catch {
-              // 单条旧数据损坏时跳过，其他灵感仍可继续迁移。
-            }
-          }
-          if (legacy.length > 0) items = await readLocalInspirations(accountId);
-        }
-        if (active) setInspirations(items.map(localInspirationToInspiration));
-      })
-      .catch((error) => {
-        if (active) toast(`读取本地灵感失败：${(error as Error).message}`, "error");
-      });
-    return () => { active = false; };
-  }, [accountId, databaseIdentity, toast]);
-
-  // 受限浏览器宿主可通过 postMessage 或自定义事件发送当前页剪藏。
-  // 宿主消息只进入当前账号的待确认队列，不直接写入数据库。
-  // Tauri 运行时还接收 Rust 回传模块（扩展→原生宿主→Unix socket）的事件。
-  useEffect(() => {
-    if (!IS_TAURI_RUNTIME || accountId === null) return;
-    const acceptCapture = async (raw: unknown) => {
-      const validated = validateBrowserCapture(raw, accountId);
-      if (!validated.ok) {
-        toast(validated.message, "error");
-        return;
-      }
-      try {
-        const result = enqueueBrowserCapture(databaseIdentity, validated.value);
-        setCaptureQueue(readBrowserCaptureQueue(databaseIdentity, accountId));
-        toast(result.duplicate ? "浏览器剪藏已在队列中，未重复入库" : "收到浏览器剪藏，请确认后保存", result.duplicate ? "info" : "success");
-      } catch (error) {
-        toast((error as Error).message, "error");
-      }
-    };
-    const onMessage = (event: MessageEvent) => {
-      if (event.source !== window) return;
-      const data = event.data;
-      if (!data || data.type !== "AICHIHONGSHU_BROWSER_CAPTURE") return;
-      void acceptCapture(data.message ?? data.payload ?? data);
-    };
-    const onCaptureEvent = (event: Event) => {
-      void acceptCapture((event as CustomEvent).detail);
-    };
-    window.addEventListener("message", onMessage);
-    window.addEventListener("aichihongshu-browser-capture", onCaptureEvent);
-    // Rust 侧浏览器链路事件：与窗口消息共用 acceptCapture，
-    // 账号字段由 Rust 以当前激活账号盖章，此处再次校验账号一致性。
-    let unlistenTauri: (() => void) | undefined;
-    let disposed = false;
-    void listen("browser-capture://message", (event) => {
-      void acceptCapture(event.payload);
-    })
-      .then((unlisten) => {
-        if (disposed) unlisten();
-        else unlistenTauri = unlisten;
-      })
-      .catch(() => {
-        // Tauri 事件桥不可用时保留窗口消息通道，不视为错误。
-      });
-    return () => {
-      disposed = true;
-      window.removeEventListener("message", onMessage);
-      window.removeEventListener("aichihongshu-browser-capture", onCaptureEvent);
-      unlistenTauri?.();
-    };
-  }, [accountId, databaseIdentity, toast]);
 
   useEffect(() => {
     const el = bannerRef.current;
@@ -449,8 +302,8 @@ export default function Inspire() {
     enabled: !IS_TAURI_RUNTIME,
   });
   const { data: localWorkspace, isLoading: localWorkspaceLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-inspire", scopeKey],
-    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    queryKey: ["local-workspace", scopeKey, "workspace"],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined, "workspace"),
     enabled: IS_TAURI_RUNTIME && accountId !== null,
   });
   // 这些转换必须缓存。否则每次 render 都会生成新数组，下面的随机池 effect
@@ -471,6 +324,12 @@ export default function Inspire() {
   const allNotes = IS_TAURI_RUNTIME ? localNotes : remoteNotes;
   const allAccounts = IS_TAURI_RUNTIME ? localAccounts : remoteAccounts;
   const itemsLoading = IS_TAURI_RUNTIME ? localWorkspaceLoading : remoteItemsLoading;
+
+  useSavedScrollPosition(
+    inspireScrollRef,
+    `aichihongshu.inspire-scroll.v1:${encodeURIComponent(scopeKey)}:topics`,
+    inspireView === "topics" && !itemsLoading,
+  );
 
   // 本地计算 topics（替代 fetchTopics → GET /api/analytics/topics）
   const topicsData = useMemo(() => buildTopicsVM(allNotes), [allNotes]);
@@ -569,67 +428,6 @@ export default function Inspire() {
     setSelectedTags([]);
     setSavedNote(null);
     setDrawerState("peek");
-  }
-
-  async function confirmCapturedInspiration(envelope: BrowserCaptureEnvelope) {
-    if (!IS_TAURI_RUNTIME || accountId === null) return;
-    if (envelope.targetAccountId !== accountId) {
-      toast("当前账号已变化，请重新接收这条剪藏", "error");
-      return;
-    }
-    if (envelope.status === "saved") {
-      toast("这条剪藏已经保存过，未重复写入", "info");
-      return;
-    }
-    const saving = markBrowserCaptureSaving(databaseIdentity, accountId, envelope.envelopeId);
-    if (!saving) {
-      toast("剪藏队列已变化，请刷新后重试", "error");
-      return;
-    }
-    setCaptureQueue(readBrowserCaptureQueue(databaseIdentity, accountId));
-    try {
-      await saveLocalInspiration(inspirationToLocalCreate(captureEnvelopeToInspiration(saving)));
-      markBrowserCaptureSaved(databaseIdentity, accountId, envelope.envelopeId);
-      const saved = await readLocalInspirations(accountId);
-      setInspirations(saved.map(localInspirationToInspiration));
-      setCaptureQueue(readBrowserCaptureQueue(databaseIdentity, accountId));
-      toast(saving.capture.transport === "extension" ? "浏览器剪藏已确认并保存" : "灵感已保存", "success");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      markBrowserCaptureFailed(databaseIdentity, accountId, envelope.envelopeId, message);
-      setCaptureQueue(readBrowserCaptureQueue(databaseIdentity, accountId));
-      toast(`${message}；可点击重试`, "error");
-    }
-  }
-
-  async function saveCapturedInspiration() {
-    if (!IS_TAURI_RUNTIME || accountId === null) return;
-    try {
-      const validated = validateBrowserCapture({
-        title: captureTitle,
-        sourceUrl: captureUrl,
-        body: captureBody,
-        reason: captureReason,
-        targetAccountId: accountId,
-        transport: "manual",
-      }, accountId);
-      if (!validated.ok) { toast(validated.message, "error"); return; }
-      const result = enqueueBrowserCapture(databaseIdentity, validated.value);
-      setCaptureQueue(readBrowserCaptureQueue(databaseIdentity, accountId));
-      setCaptureTitle(""); setCaptureUrl(""); setCaptureBody(""); setCaptureReason("");
-      await confirmCapturedInspiration(result.envelope);
-    } catch (error) { toast((error as Error).message, "error"); }
-  }
-
-  async function convertCapturedInspiration(item: Inspiration) {
-    if (!IS_TAURI_RUNTIME || accountId === null || item.status === "converted") return;
-    try {
-      const draft = await createLocalDraft(item.title, accountId);
-      await convertLocalInspiration(item.id, accountId, draft.id);
-      const converted = await readLocalInspirations(accountId);
-      setInspirations(converted.map(localInspirationToInspiration));
-      toast("已转为笔记草稿", "success");
-    } catch (error) { toast((error as Error).message, "error"); }
   }
 
   function startGenerate() {
@@ -823,7 +621,7 @@ export default function Inspire() {
           <button type="button" role="tab" aria-selected onClick={() => setSearchParams({})} className={`${pageTabClass} ${pageTabActiveClass}`}>灵感与选题</button>
           <button type="button" role="tab" aria-selected={false} onClick={() => setSearchParams({ tab: "references" })} className={`${pageTabClass} ${pageTabInactiveClass}`}>榜样与参考</button>
         </div>
-        <span className="ml-2 text-xs text-zinc-400">选题、灵感、榜样和生成草稿的统一工作区</span>
+        <span className="ml-2 text-xs text-zinc-400">选题、榜样参考与生成草稿的统一工作区</span>
       </div>
       {/* ── 顶部通栏 Banner（单行紧凑） ── */}
       <div
@@ -857,64 +655,9 @@ export default function Inspire() {
         </div>
       </div>
 
-      {IS_TAURI_RUNTIME && (
-        <div className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface-2)] px-6 py-3">
-          <div className="mx-auto max-w-5xl rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <div className="text-sm font-medium text-[var(--color-text-primary)]">保存灵感 / 书签</div>
-              <span className="text-[11px] text-[var(--color-text-secondary)]">仅保存到当前账号</span>
-            </div>
-            <div className="grid gap-2 md:grid-cols-2">
-              <input value={captureTitle} onChange={(event) => setCaptureTitle(event.target.value)} placeholder="标题" className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm" />
-              <input value={captureUrl} onChange={(event) => setCaptureUrl(event.target.value)} placeholder="来源链接（可选，需 http(s)）" className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm" />
-            </div>
-            <textarea value={captureBody} onChange={(event) => setCaptureBody(event.target.value)} placeholder="你的观察或摘录（可留空，留空会标记为未获取正文）" className="mt-2 h-16 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm" />
-            <div className="mt-2 flex gap-2">
-              <input value={captureReason} onChange={(event) => setCaptureReason(event.target.value)} placeholder="为什么值得参考" className="min-w-0 flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm" />
-              <button type="button" onClick={() => void saveCapturedInspiration()} disabled={accountId === null || !captureTitle.trim()} className="shrink-0 rounded-lg bg-[#ff2442] px-3 py-2 text-sm text-white disabled:opacity-50">保存</button>
-            </div>
-            {captureQueue.filter((entry) => entry.status !== "saved").length > 0 && (
-              <div className="mt-3 rounded-xl border border-[#ffe0a3] bg-[#fffaf0] p-3">
-                <div className="mb-2 flex items-center justify-between text-xs font-medium text-amber-800">
-                  <span>浏览器剪藏队列</span>
-                  <span>先确认，再写入当前账号</span>
-                </div>
-                <div className="space-y-2">
-                  {captureQueue.filter((entry) => entry.status !== "saved").map((entry) => {
-                    const statusText = entry.status === "pending_confirmation" ? "待确认" : entry.status === "saving" ? "保存中" : "保存失败";
-                    const disabled = entry.status === "saving";
-                    return (
-                      <div key={entry.envelopeId} className="flex items-center gap-2 rounded-lg border border-amber-100 bg-white px-3 py-2 text-xs">
-                        <span className="min-w-0 flex-1 truncate text-[var(--color-text-primary)]">{entry.capture.title}</span>
-                        <span className={entry.status === "failed" ? "text-red-600" : "text-amber-700"}>{statusText}</span>
-                        {entry.error && <span className="max-w-[180px] truncate text-red-500" title={entry.error}>{entry.error}</span>}
-                        <button type="button" disabled={disabled} onClick={() => void confirmCapturedInspiration(entry)} className="shrink-0 rounded-md border border-[#ff2442] px-2 py-1 text-[#ff2442] disabled:opacity-40">
-                          {entry.status === "failed" ? "重试" : "确认保存"}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            {inspirations.length > 0 && (
-              <div className="mt-3 space-y-1.5">
-                {inspirations.slice(0, 5).map((item) => (
-                  <div key={item.id} className="flex items-center gap-2 rounded-lg bg-[var(--color-surface-2)] px-3 py-2 text-xs">
-                    <span className="min-w-0 flex-1 truncate text-[var(--color-text-primary)]">{item.title}</span>
-                    <span className="text-[var(--color-text-secondary)]">{item.body ? "有正文" : "待补正文"}</span>
-                    {item.status === "converted" ? <span className="text-emerald-600">已转草稿</span> : <button type="button" onClick={() => void convertCapturedInspiration(item)} className="text-[#ff2442] hover:underline">转为草稿</button>}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* ── 主内容区（可滚动，不受抽屉影响） ── */}
       <div className="relative flex-1 overflow-hidden">
-        <div className="h-full overflow-y-auto p-6">
+        <div ref={inspireScrollRef} className="h-full overflow-y-auto p-6">
           <div className="mx-auto max-w-5xl space-y-4 pb-8">
             {/* 第一行：话题 + 数据反馈 */}
             <div className="grid gap-4 md:grid-cols-2">

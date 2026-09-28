@@ -1,25 +1,34 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Plus } from "lucide-react";
 import AIHost from "../components/AIHost";
 import { useAccountContext } from "../lib/accountContext";
-import { createAgentSession, readAgentSessions, subscribeAgentSessions, type AgentSessionMetadata } from "../lib/aiWorkspace";
+import { createAgentSession, readAgentSessions, rememberLastAgentSession, subscribeAgentSessions, type AgentSessionMetadata } from "../lib/aiWorkspace";
 
 /** Independent AI workspace. The conversation remains scoped to the active account. */
 export default function Assistant() {
   const { accountId } = useAccountContext();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
-  const sessionId = searchParams.get("session");
-  const requestedMode = searchParams.get("mode") === "agent" ? "agent" : undefined;
+  const assistantRouteActive = location.pathname === "/assistant";
+  const routeSessionId = assistantRouteActive ? searchParams.get("session") : null;
+  const [lastSessionId, setLastSessionId] = useState<string | null>(routeSessionId);
+  const sessionId = routeSessionId ?? lastSessionId;
+  const requestedMode = assistantRouteActive && searchParams.get("mode") === "agent" ? "agent" : undefined;
   const [session, setSession] = useState<AgentSessionMetadata | null>(null);
   const compatSessionRef = useRef<AgentSessionMetadata | null>(null);
   const [compatSession, setCompatSession] = useState<AgentSessionMetadata | null>(null);
+
+  useEffect(() => {
+    if (routeSessionId) setLastSessionId(routeSessionId);
+  }, [routeSessionId]);
 
   // Keep direct /assistant links working without rewriting the URL during the
   // first render. Normal navigation comes from Sidebar with a session query;
   // this fallback is intentionally transient until the first message promotes
   // it into the persisted session list.
   useEffect(() => {
+    if (!assistantRouteActive) return;
     if (sessionId) {
       compatSessionRef.current = null;
       setCompatSession(null);
@@ -29,9 +38,15 @@ export default function Assistant() {
       compatSessionRef.current = createAgentSession(accountId);
     }
     setCompatSession(compatSessionRef.current);
-  }, [accountId, sessionId]);
+  }, [accountId, assistantRouteActive, sessionId]);
 
   const effectiveSessionId = sessionId ?? (compatSession?.accountId === accountId ? compatSession.id : null);
+
+  useEffect(() => {
+    if (assistantRouteActive && effectiveSessionId) {
+      rememberLastAgentSession(accountId, effectiveSessionId);
+    }
+  }, [accountId, assistantRouteActive, effectiveSessionId]);
 
   useEffect(() => {
     if (!effectiveSessionId) {

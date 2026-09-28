@@ -1,16 +1,20 @@
+import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
 import { useState, useEffect } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  Save, KeyRound, RefreshCw, Monitor, ChevronRight, User,
-  Trash2, RotateCcw, X, Plus, Pencil, Check, GripVertical, Bot, PanelRight,
+  Save, KeyRound, RefreshCw, Monitor,
+  Trash2, RotateCcw, X, Plus, Pencil, Check, GripVertical, PanelRight,
 } from "lucide-react";
 import { api, API_BASE } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { Spinner, pageTabActiveClass, pageTabClass, pageTabInactiveClass } from "../components/ui";
+import { PC_HARNESS_STATUS_QUERY_KEY, usePcHarnessStatus } from "../components/PcHarnessQuickControl";
+import PcHarnessPairingQr from "../components/PcHarnessPairingQr";
+import AiSettingsSection from "../components/aiSettings/AiSettingsSection";
 import LocalImage from "../components/LocalImage";
 import { useHDRSetting } from "../hooks/useHDRSetting";
 import { useThemeSetting, type ThemePreference } from "../hooks/useThemeSetting";
-import { useNavigate } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { Item } from "../lib/types";
 import {
   IS_TAURI_RUNTIME,
@@ -25,15 +29,20 @@ import {
   restoreLocalItem,
   type LocalRuntimeStatus,
   type LocalWorkspaceSnapshot,
-  readPcHarnessStatus,
   startPcHarness,
   stopPcHarness,
   rotatePcHarnessToken,
   type LocalPcHarnessStatus,
+  installBrowserCaptureHost,
+  copyBrowserExtensionDir,
+  copyBrowserExtensionPath,
+  openBrowserExtensionDir,
+  testBrowserCaptureLink,
+  browserCaptureStatus,
+  type BrowserCaptureStatus,
 } from "../lib/local";
-import { invalidateLocalAIProviderProbeCache, probeLocalAIProviders, type LocalAIProviderStatus } from "../lib/localAi";
 import { useAccountContext } from "../lib/accountContext";
-import { defaultAISettings, readAISettings, saveAISettings, type AIConnectionKind, type AIHostMode, type AISettings } from "../lib/aiHost";
+import { readAISettings, saveAISettings, type AIHostMode } from "../lib/aiHost";
 
 // ── 通用 Section 容器 ──────────────────────────────────────────────
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -63,15 +72,30 @@ const inputCls = "w-full rounded-lg border border-[var(--color-border)] bg-[var(
 // ── 页签定义 ──────────────────────────────────────────────────────
 const TABS = [
   { key: "general", label: "通用" },
+  { key: "capture", label: "浏览器插件" },
   { key: "ai", label: "AI 与 Agent" },
   { key: "prompts", label: "提示词" },
-  { key: "trash",   label: "回收站" },
+  { key: "companion", label: "手机 Companion" },
+  { key: "data", label: "数据与维护" },
 ] as const;
 type TabKey = typeof TABS[number]["key"];
 
+function parseTabKey(value: string | null): TabKey {
+  return (TABS.some((t) => t.key === value) ? value : "general") as TabKey;
+}
+
 // ══════════════════════════════════════════════════════════════════
 export default function Settings() {
-  const [activeTab, setActiveTab] = useState<TabKey>("general");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = parseTabKey(searchParams.get("tab"));
+
+  function selectTab(key: TabKey) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("tab", key);
+      return next;
+    }, { replace: true });
+  }
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -82,7 +106,7 @@ export default function Settings() {
           <button
             key={t.key}
             type="button"
-            onClick={() => setActiveTab(t.key)}
+            onClick={() => selectTab(t.key)}
             className={`${pageTabClass} ${activeTab === t.key ? pageTabActiveClass : pageTabInactiveClass}`}
           >
             {t.label}
@@ -90,14 +114,218 @@ export default function Settings() {
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-2xl space-y-6">
+      <div data-page-scroll="settings-main" className="flex-1 overflow-y-auto p-6">
+        <div className="mx-auto w-full max-w-[760px] space-y-6">
           {activeTab === "general" && <GeneralTab />}
+          {activeTab === "capture" && <BrowserCaptureSection standalone />}
           {activeTab === "ai" && <AIAndAgentTab />}
           {activeTab === "prompts" && <PromptsTab />}
-          {activeTab === "trash"   && (IS_TAURI_RUNTIME ? <LocalTrashSection /> : <TrashSection />)}
+          {activeTab === "companion" && <CompanionTab />}
+          {activeTab === "data" && <DataAndMaintenanceTab />}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── 浏览器插件（独立页签）────────────────────────────────────────
+function BrowserCaptureSection({ standalone = false }: { standalone?: boolean }) {
+  void standalone;
+  const { toast } = useToast();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [installResult, setInstallResult] = useState<string | null>(null);
+  const [status, setStatus] = useState<BrowserCaptureStatus | null>(null);
+  const [linkHops, setLinkHops] = useState<Array<[string, boolean, string]> | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  const refreshStatus = async () => {
+    if (!IS_TAURI_RUNTIME) return;
+    try {
+      setStatus(await browserCaptureStatus());
+    } catch {
+      setStatus(null);
+    }
+  };
+
+  useEffect(() => {
+    void refreshStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function install(browser: "chrome" | "edge") {
+    setBusy(browser);
+    try {
+      const message = await installBrowserCaptureHost(browser);
+      setInstallResult(message);
+      await refreshStatus();
+      toast(`已安装到 ${browser === "chrome" ? "Chrome" : "Edge"}，请在扩展页加载已解压`, "success");
+    } catch (error) {
+      toast((error as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function copyPath() {
+    setBusy("copy");
+    try {
+      await copyBrowserExtensionPath();
+      toast("路径已复制", "success");
+    } catch (error) {
+      toast((error as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function copyDir() {
+    setBusy("copyDir");
+    try {
+      const message = await copyBrowserExtensionDir();
+      setInstallResult(message);
+      toast("扩展副本已导出并打开", "success");
+    } catch (error) {
+      toast((error as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runLinkTest() {
+    setTesting(true);
+    try {
+      const hops = await testBrowserCaptureLink();
+      setLinkHops(hops);
+      const failed = hops.filter(([, ok]) => !ok);
+      toast(failed.length ? `自检发现 ${failed.length} 处未就绪` : "链路自检通过", failed.length ? "warning" : "success");
+    } catch (error) {
+      toast((error as Error).message, "error");
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <Section title="浏览器插件">
+        <Field label="扩展信息" hint="在浏览器扩展页搜索此名称；版本需与弹窗右上角一致">
+          <div className="space-y-1 text-xs">
+            <p className="text-sm font-medium text-zinc-800">
+              爱吃红薯数据抓取
+              <span className="ml-2 text-zinc-500">
+                v{status?.extensionVersion ?? "?"} · 协议 v{status?.protocolVersion ?? 2}
+              </span>
+            </p>
+            <p className="text-[10px] text-zinc-400 break-all">
+              ID：{status?.extensionId ?? "—"} · 加载目录：{status?.extensionDir ?? "—"}
+            </p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 pt-1">
+              <span>
+                Chrome 宿主：
+                <strong className={status?.hostInstalled ? "text-emerald-600" : "text-amber-600"}>
+                  {status?.hostInstalled ? "已安装 ✓" : "未安装"}
+                </strong>
+              </span>
+              <span>
+                Edge 宿主：
+                <strong className={status?.hostInstalledEdge ? "text-emerald-600" : "text-amber-600"}>
+                  {status?.hostInstalledEdge ? "已安装 ✓" : "未安装"}
+                </strong>
+              </span>
+            </div>
+          </div>
+        </Field>
+      </Section>
+
+      <Section title="安装">
+        <Field label="一键安装" hint="写宿主 + 打开扩展页 + 打开扩展目录；你只需「加载已解压」">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void install("chrome")}
+              disabled={!IS_TAURI_RUNTIME || busy !== null}
+              className="rounded-lg bg-[#ff2442] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#e01f3a] disabled:opacity-50"
+            >
+              {busy === "chrome" ? "安装中…" : "安装到 Chrome"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void install("edge")}
+              disabled={!IS_TAURI_RUNTIME || busy !== null}
+              className="rounded-lg bg-[#ff2442] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#e01f3a] disabled:opacity-50"
+            >
+              {busy === "edge" ? "安装中…" : "安装到 Edge"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void copyPath()}
+              disabled={!IS_TAURI_RUNTIME || busy !== null}
+              className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+            >
+              {busy === "copy" ? "复制中…" : "复制路径"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void openBrowserExtensionDir()
+                  .then((m) => toast(m, "success"))
+                  .catch((e) => toast((e as Error).message, "error"));
+              }}
+              disabled={!IS_TAURI_RUNTIME}
+              className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+            >
+              打开文件夹
+            </button>
+            <button
+              type="button"
+              onClick={() => void copyDir()}
+              disabled={!IS_TAURI_RUNTIME || busy !== null}
+              className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+            >
+              {busy === "copyDir" ? "复制中…" : "导出副本"}
+            </button>
+          </div>
+          {installResult && (
+            <pre className="mt-2 whitespace-pre-wrap rounded-lg bg-zinc-50 p-2 text-[10px] text-zinc-600 border border-zinc-100">
+              {installResult}
+            </pre>
+          )}
+        </Field>
+        <Field label="加载步骤" hint="安装后只需这一步">
+          <ol className="text-xs text-zinc-500 space-y-1 list-decimal list-inside">
+            <li>点「安装到 Chrome」或「安装到 Edge」（会自动打开扩展页和文件夹）</li>
+            <li>扩展页开启「开发者模式」→「加载已解压的扩展程序」→ 选刚打开的文件夹</li>
+            <li>列表出现「爱吃红薯数据抓取」且版本与上方一致即成功</li>
+            <li>点「链路自检」确认全绿</li>
+          </ol>
+        </Field>
+      </Section>
+
+      <Section title="链路自检">
+        <Field label="连接测试" hint="扩展文件 → 宿主脚本 → 宿主清单 → 应用 socket">
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => void runLinkTest()}
+              disabled={!IS_TAURI_RUNTIME || testing}
+              className="rounded-lg border border-[#ff2442] px-3 py-1.5 text-xs text-[#ff2442] hover:bg-[#ff2442]/5 disabled:opacity-50"
+            >
+              {testing ? "检测中…" : "链路自检"}
+            </button>
+            {linkHops && (
+              <div className="space-y-1">
+                {linkHops.map(([label, ok, detail]) => (
+                  <div key={label} className="flex items-start gap-2 text-xs">
+                    <span className={ok ? "text-emerald-600" : "text-amber-600"}>{ok ? "✓" : "✗"}</span>
+                    <span className="font-medium text-zinc-700 w-24 shrink-0">{label}</span>
+                    <span className="text-zinc-500 break-all">{detail}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Field>
+      </Section>
     </div>
   );
 }
@@ -107,8 +335,8 @@ function LocalTrashSection() {
   const qc = useQueryClient();
   const { accountId, scopeKey } = useAccountContext();
   const { data: workspace, isLoading } = useQuery<LocalWorkspaceSnapshot>({
-    queryKey: ["local-settings-trash", scopeKey],
-    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined),
+    queryKey: ["local-workspace", scopeKey, "library"],
+    queryFn: () => readLocalWorkspaceSnapshot(accountId ?? undefined, "library"),
     enabled: accountId !== null,
   });
   const items = (workspace?.trashItems ?? []).map(localItemToItem);
@@ -117,8 +345,7 @@ function LocalTrashSection() {
     if (accountId === null) return;
     try {
       await restoreLocalItem(id, accountId);
-      await qc.invalidateQueries({ queryKey: ["local-settings-trash", scopeKey] });
-      await qc.invalidateQueries({ queryKey: ["local-library", scopeKey] });
+      await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       toast("已恢复到当前账号图库", "success");
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), "error");
@@ -129,8 +356,7 @@ function LocalTrashSection() {
     if (accountId === null) return;
     try {
       const result = await purgeLocalItems([id], accountId);
-      await qc.invalidateQueries({ queryKey: ["local-settings-trash", scopeKey] });
-      await qc.invalidateQueries({ queryKey: ["local-library", scopeKey] });
+      await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
       toast(result.cleanupWarnings.length ? "记录已清理，部分文件需人工处理" : "已永久清理", result.cleanupWarnings.length ? "info" : "success");
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), "error");
@@ -165,28 +391,16 @@ function LocalTrashSection() {
 // ══════════════════════════════════════════════════════════════════
 function PcHarnessSection() {
   const { toast } = useToast();
-  const [status, setStatus] = useState<LocalPcHarnessStatus | null>(null);
+  const qc = useQueryClient();
+  const { data: status, isFetching, refetch } = usePcHarnessStatus();
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
-
-  async function refresh() {
-    try {
-      setStatus(await readPcHarnessStatus());
-    } catch (error) {
-      toast(error instanceof Error ? error.message : String(error), "error");
-    }
-  }
-
-  useEffect(() => {
-    void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   async function run(action: () => Promise<LocalPcHarnessStatus>, success: string) {
     setBusy(true);
     try {
-      const next = await action();
-      setStatus(next);
+      await action();
+      await qc.invalidateQueries({ queryKey: PC_HARNESS_STATUS_QUERY_KEY });
       toast(success, "success");
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), "error");
@@ -215,6 +429,7 @@ function PcHarnessSection() {
     <Section title="手机 Companion（PC Harness）">
       <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
         仅在你显式开启后监听本机局域网端口，使用配对令牌鉴权。手机负责拍照、输入与发布回填；账号、素材与稿件仍以 PC 为准。默认不自动启动。
+        顶栏右上角可一键开/关并复制地址与令牌。
       </p>
       <div className="rounded-xl border border-[var(--color-border)] p-3 text-sm space-y-2">
         <div className="flex items-center justify-between gap-3">
@@ -267,6 +482,26 @@ function PcHarnessSection() {
           <p className="text-xs text-amber-700">未检测到局域网 IP，手机可能只能使用 127.0.0.1 自检。</p>
         )}
       </div>
+      {status?.running && status.pairingToken && status.lanAddresses[0] ? (
+        <div className="flex flex-wrap items-center gap-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+          <PcHarnessPairingQr
+            baseUrl={baseUrl}
+            pairingToken={status.pairingToken}
+            protocolVersion={status.protocolVersion}
+          />
+          <div className="max-w-sm space-y-1">
+            <p className="text-sm font-medium text-[var(--color-text-primary)]">手机扫码快速配对</p>
+            <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
+              在手机「我的 → PC Harness」点“扫码配对”。二维码仅在此电脑本地生成，包含当前配对令牌；请只在可信的手机上扫描。轮换令牌后旧二维码立即失效。
+            </p>
+            <p className="break-all font-mono text-xs text-[var(--color-text-secondary)]">{baseUrl}</p>
+          </div>
+        </div>
+      ) : status?.running ? (
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          未检测到局域网地址，暂时无法生成手机配对二维码。请确认 PC 与手机已连接网络后刷新状态。
+        </p>
+      ) : null}
       <div className="flex flex-wrap gap-2">
         {status?.running ? (
           <button
@@ -281,7 +516,7 @@ function PcHarnessSection() {
           <button
             type="button"
             disabled={busy}
-            onClick={() => void run(startPcHarness, "已开启手机 Companion，请把地址与令牌录入手机")}
+            onClick={() => void run(startPcHarness, "已开启手机 Companion，可用手机扫描下方二维码配对")}
             className="rounded-lg bg-[var(--color-brand)] px-3 py-2 text-sm text-white"
           >
             开启手机连接
@@ -290,12 +525,17 @@ function PcHarnessSection() {
         <button
           type="button"
           disabled={busy}
-          onClick={() => void run(rotatePcHarnessToken, "已轮换配对令牌，请更新手机端")}
+          onClick={() => void run(rotatePcHarnessToken, "已轮换配对令牌，旧二维码失效，请用手机重新扫码")}
           className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
         >
           轮换令牌
         </button>
-        <button type="button" disabled={busy} onClick={() => void refresh()} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm">
+        <button
+          type="button"
+          disabled={busy || isFetching}
+          onClick={() => void refetch()}
+          className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
+        >
           刷新状态
         </button>
       </div>
@@ -303,19 +543,28 @@ function PcHarnessSection() {
   );
 }
 
-function GeneralTab() {
+function CompanionTab() {
+  return (
+    <>
+      <PcHarnessSection />
+    </>
+  );
+}
+
+function DataAndMaintenanceTab() {
+  return (
+    <>
+      {IS_TAURI_RUNTIME && <LocalDataMigrationSection />}
+      {IS_TAURI_RUNTIME ? <LocalTrashSection /> : <TrashSection />}
+      <LegacyApiSection />
+    </>
+  );
+}
+
+function LegacyApiSection() {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const navigate = useNavigate();
-  const { hdr, toggle: toggleHDR, imgStyle } = useHDRSetting();
-  const { preference, setPreference } = useThemeSetting();
-  const { data: localProviders, isFetching: localProvidersFetching, refetch: refetchLocalProviders } = useQuery<LocalAIProviderStatus[]>({
-    queryKey: ["local-ai-providers"],
-    queryFn: probeLocalAIProviders,
-    enabled: IS_TAURI_RUNTIME,
-    staleTime: 30_000,
-  });
-
+  const [expanded, setExpanded] = useState(false);
   const { data: envData, isLoading: envLoading } = useQuery<Record<string, string>>({
     queryKey: ["settings-env"],
     queryFn: () => api.get("/api/settings/env"),
@@ -349,47 +598,86 @@ function GeneralTab() {
     onError: (e: Error) => toast(e.message, "error"),
   });
 
-  if (envLoading) return <Spinner />;
+  return (
+    <Section title={IS_TAURI_RUNTIME ? "API 配置（旧服务）" : "API 配置"}>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center justify-between gap-3 text-left"
+        aria-expanded={expanded}
+      >
+        <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
+          {IS_TAURI_RUNTIME
+            ? "桌面端文本 AI 通过「AI 与 Agent」的本地 CLI 检测与运行；此处 MiniMax 字段仅供浏览器预览，桌面端不会读取或保存。"
+            : "浏览器预览模式下的 API 配置。"}
+        </p>
+        <span className="shrink-0 text-xs text-[var(--color-text-secondary)]">{expanded ? "收起" : "展开"}</span>
+      </button>
+      {expanded && (
+        <div className="mt-3 space-y-3">
+          {envLoading && !IS_TAURI_RUNTIME ? <Spinner /> : null}
+          <Field label="MiniMax API Key" hint="Token Plan 密钥，sk-cp- 开头">
+            <div className="relative">
+              <KeyRound size={14} className="absolute left-3 top-2.5 text-zinc-400" />
+              <input
+                type="text"
+                value={envForm.MINIMAX_API_KEY}
+                onChange={(e) => setEnvForm((f) => ({ ...f, MINIMAX_API_KEY: e.target.value }))}
+                disabled={IS_TAURI_RUNTIME}
+                placeholder="sk-cp-****（留空则不更新）"
+                className={`${inputCls} pl-8`}
+              />
+            </div>
+          </Field>
+          <Field label="Base URL" hint="Anthropic 兼容接口">
+            <input type="text" value={envForm.MINIMAX_BASE_URL}
+              onChange={(e) => setEnvForm((f) => ({ ...f, MINIMAX_BASE_URL: e.target.value }))}
+              disabled={IS_TAURI_RUNTIME}
+              className={inputCls} />
+          </Field>
+          <Field label="文本模型">
+            <input type="text" value={envForm.MINIMAX_TEXT_MODEL}
+              onChange={(e) => setEnvForm((f) => ({ ...f, MINIMAX_TEXT_MODEL: e.target.value }))}
+              disabled={IS_TAURI_RUNTIME}
+              className={inputCls} />
+          </Field>
+          <Field label="视觉模型" hint="图片分析">
+            <input type="text" value={envForm.MINIMAX_VISION_MODEL}
+              onChange={(e) => setEnvForm((f) => ({ ...f, MINIMAX_VISION_MODEL: e.target.value }))}
+              disabled={IS_TAURI_RUNTIME}
+              className={inputCls} />
+          </Field>
+          <div className="flex justify-end pt-1">
+            <button
+              onClick={() => saveEnv.mutate()}
+              disabled={saveEnv.isPending || IS_TAURI_RUNTIME}
+              className="flex items-center gap-1.5 bg-[#ff2442] hover:bg-[#e01f3a] disabled:opacity-50
+                         text-white text-sm font-medium px-4 py-1.5 rounded-lg transition-colors"
+            >
+              {saveEnv.isPending ? <RefreshCw size={13} className="animate-spin" /> : <Save size={13} />}
+              保存 API 配置
+            </button>
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function GeneralTab() {
+  const { hdr, toggle: toggleHDR, imgStyle } = useHDRSetting();
+  const { preference, setPreference } = useThemeSetting();
+  const { scopeKey } = useAccountContext();
+  const [hostMode, setHostModeState] = useState<AIHostMode>(() => readAISettings(scopeKey).defaultHostMode);
+
+  function setHostMode(value: AIHostMode) {
+    setHostModeState(value);
+    const next = readAISettings(scopeKey);
+    saveAISettings(scopeKey, { ...next, defaultHostMode: value });
+  }
 
   return (
     <>
-      {IS_TAURI_RUNTIME && <LocalDataMigrationSection />}
-      {IS_TAURI_RUNTIME && (
-        <Section title="本地 AI CLI">
-          <div className="flex items-start justify-between gap-3">
-            <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
-              仅检测当前桌面进程 PATH 中的 CLI，不读取或写入 API Key、全局配置和登录凭据。安装成功不等于已登录，文本调用仍以实际运行结果为准。
-            </p>
-            <button
-              type="button"
-              onClick={() => {
-                invalidateLocalAIProviderProbeCache();
-                void refetchLocalProviders();
-              }}
-              disabled={localProvidersFetching}
-              aria-label="重新检测本地 AI CLI"
-              className="shrink-0 rounded-lg border border-[var(--color-border)] p-2 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] disabled:opacity-50"
-            >
-              <RefreshCw size={14} className={localProvidersFetching ? "animate-spin" : ""} />
-            </button>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {(localProviders ?? []).map((provider) => (
-              <div key={provider.id} className="rounded-xl border border-[var(--color-border)] p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-medium text-[var(--color-text-primary)]">{provider.label}</p>
-                  <span className={`rounded-full px-2 py-0.5 text-[11px] ${provider.state === "present" ? "bg-emerald-50 text-emerald-700" : provider.state === "missing" ? "bg-zinc-100 text-zinc-500" : "bg-amber-50 text-amber-700"}`}>
-                    {provider.state === "present" ? "已发现" : provider.state === "missing" ? "未安装" : "检测失败"}
-                  </span>
-                </div>
-                <p className="mt-1 text-xs text-[var(--color-text-secondary)]">{provider.version ?? provider.reason}</p>
-              </div>
-            ))}
-          </div>
-          {!localProviders && <p className="text-xs text-[var(--color-text-secondary)]">正在检测当前 PATH…</p>}
-        </Section>
-      )}
-
       <Section title="外观主题">
         <Field label="应用主题" hint="跟随系统会在系统外观变化时自动切换">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3" role="radiogroup" aria-label="应用主题">
@@ -414,57 +702,9 @@ function GeneralTab() {
         </Field>
       </Section>
 
-      {/* ── API 配置 */}
-      <Section title={IS_TAURI_RUNTIME ? "API 配置（旧服务）" : "API 配置"}>
-        {IS_TAURI_RUNTIME && <p className="rounded-lg bg-[var(--color-selected)] px-3 py-2 text-xs text-[var(--color-text-secondary)]">桌面端文本 AI 通过上方本地 CLI 检测与运行；这里的 MiniMax 字段仅供浏览器预览使用，桌面端不会读取或保存。</p>}
-        <Field label="MiniMax API Key" hint="Token Plan 密钥，sk-cp- 开头">
-          <div className="relative">
-            <KeyRound size={14} className="absolute left-3 top-2.5 text-zinc-400" />
-            <input
-              type="text"
-              value={envForm.MINIMAX_API_KEY}
-              onChange={(e) => setEnvForm((f) => ({ ...f, MINIMAX_API_KEY: e.target.value }))}
-              disabled={IS_TAURI_RUNTIME}
-              placeholder="sk-cp-****（留空则不更新）"
-              className={`${inputCls} pl-8`}
-            />
-          </div>
-        </Field>
-        <Field label="Base URL" hint="Anthropic 兼容接口">
-          <input type="text" value={envForm.MINIMAX_BASE_URL}
-            onChange={(e) => setEnvForm((f) => ({ ...f, MINIMAX_BASE_URL: e.target.value }))}
-            disabled={IS_TAURI_RUNTIME}
-            className={inputCls} />
-        </Field>
-        <Field label="文本模型">
-          <input type="text" value={envForm.MINIMAX_TEXT_MODEL}
-            onChange={(e) => setEnvForm((f) => ({ ...f, MINIMAX_TEXT_MODEL: e.target.value }))}
-            disabled={IS_TAURI_RUNTIME}
-            className={inputCls} />
-        </Field>
-        <Field label="视觉模型" hint="图片分析">
-          <input type="text" value={envForm.MINIMAX_VISION_MODEL}
-            onChange={(e) => setEnvForm((f) => ({ ...f, MINIMAX_VISION_MODEL: e.target.value }))}
-            disabled={IS_TAURI_RUNTIME}
-            className={inputCls} />
-        </Field>
-        <div className="flex justify-end pt-1">
-          <button
-            onClick={() => saveEnv.mutate()}
-            disabled={saveEnv.isPending || IS_TAURI_RUNTIME}
-            className="flex items-center gap-1.5 bg-[#ff2442] hover:bg-[#e01f3a] disabled:opacity-50
-                       text-white text-sm font-medium px-4 py-1.5 rounded-lg transition-colors"
-          >
-            {saveEnv.isPending ? <RefreshCw size={13} className="animate-spin" /> : <Save size={13} />}
-            保存 API 配置
-          </button>
-        </div>
-      </Section>
-
-      <PcHarnessSection />
       {/* ── 显示设置 */}
       <Section title="显示设置">
-        <Field label="HDR 图片显示" hint="开启后图片以 HDR 原色渲染；在不支持 HDR 的显示器上建议关闭，避免颜色过曝">
+        <Field label="HDR 图片显示" hint="开启后允许 HDR 设备扩展显示；关闭后将 HDR 媒体限制在标准动态范围，避免过曝">
           <div className="flex items-center gap-3">
             <button
               onClick={() => toggleHDR(!hdr)}
@@ -484,27 +724,20 @@ function GeneralTab() {
             </div>
           </div>
         </Field>
-      </Section>
-
-      {/* ── 账号人设跳转 */}
-      <Section title="账号人设">
-        <p className="text-xs text-zinc-400 -mt-1">
-          账号定位、人设简介、语气风格、禁忌词、内容策略等设置已移至「我的账号」页面统一管理。
-        </p>
-        <button
-          onClick={() => navigate("/profile")}
-          className="w-full flex items-center gap-3 p-3 rounded-xl border border-zinc-100
-                     hover:border-zinc-200 hover:bg-zinc-50 transition-colors text-left group"
-        >
-          <div className="w-9 h-9 rounded-full bg-[#fff0f2] flex items-center justify-center shrink-0">
-            <User size={16} className="text-[#ff2442]" />
+        <Field label="AI 默认显示方式" hint="侧栏 / 浮窗 / 独立页使用同一份会话状态">
+          <div className="flex flex-wrap gap-2">
+            {([ ["sidebar", "侧栏"], ["floating", "浮窗"], ["page", "独立页"] ] as [AIHostMode, string][]).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setHostMode(value)}
+                className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs ${hostMode === value ? "border-[var(--color-brand)] bg-[var(--color-selected)] text-[var(--color-brand)]" : "border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"}`}
+              >
+                <PanelRight size={12} />{label}
+              </button>
+            ))}
           </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-zinc-800">前往「我的账号」</p>
-            <p className="text-xs text-zinc-400 mt-0.5">编辑人设名、语气、禁忌词、内容策略…</p>
-          </div>
-          <ChevronRight size={16} className="text-zinc-300 group-hover:text-zinc-500 shrink-0" />
-        </button>
+        </Field>
       </Section>
     </>
   );
@@ -513,118 +746,10 @@ function GeneralTab() {
 // ══════════════════════════════════════════════════════════════════
 // 统一 AI 与 Agent 接入
 // ══════════════════════════════════════════════════════════════════
+// 统一 AI 与 Agent 接入（参考 Noomd：默认目标置顶 + CLI/API 分层）
+// ══════════════════════════════════════════════════════════════════
 function AIAndAgentTab() {
-  const { toast } = useToast();
-  const { scopeKey } = useAccountContext();
-  const { data: providers = [], isFetching, refetch } = useQuery<LocalAIProviderStatus[]>({
-    queryKey: ["ai-settings-cli-providers"],
-    queryFn: probeLocalAIProviders,
-    enabled: IS_TAURI_RUNTIME,
-    staleTime: 30_000,
-  });
-  const [settings, setSettings] = useState<AISettings>(() => readAISettings(scopeKey));
-
-  function updateModelApi<K extends keyof AISettings["modelApi"]>(key: K, value: AISettings["modelApi"][K]) {
-    setSettings((current) => ({ ...current, modelApi: { ...current.modelApi, [key]: value } }));
-  }
-
-  function updateAgent<K extends keyof AISettings["agentCli"]>(key: K, value: AISettings["agentCli"][K]) {
-    setSettings((current) => ({ ...current, agentCli: { ...current.agentCli, [key]: value } }));
-  }
-
-  function save() {
-    saveAISettings(scopeKey, settings);
-    toast("AI 与 Agent 配置已保存", "success");
-  }
-
-  function reset() {
-    setSettings(defaultAISettings());
-    saveAISettings(scopeKey, defaultAISettings());
-    toast("已恢复默认 AI 配置", "success");
-  }
-
-  return (
-    <div className="space-y-4">
-      <Section title="默认 AI 接入">
-        <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
-          Model API 与 Agent CLI 是两种接入方式，共用同一套 Copilot 会话。浮窗、侧栏和独立页切换时会保留会话、任务和当前账号上下文。
-        </p>
-        <Field label="默认接入" hint="仅影响新建会话；进行中的任务不会被切换">
-          <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="默认 AI 接入">
-            {([["model-api", "Model API", "兼容 OpenAI/Anthropic 的模型接口"], ["agent-cli", "Agent CLI", "使用本机已安装的 Claude、Codex 或 OpenCode"]] as [AIConnectionKind, string, string][]).map(([value, label, hint]) => (
-              <button
-                key={value}
-                type="button"
-                role="radio"
-                aria-checked={settings.defaultConnection === value}
-                onClick={() => setSettings((current) => ({ ...current, defaultConnection: value }))}
-                className={`rounded-xl border p-3 text-left transition ${settings.defaultConnection === value ? "border-[var(--color-brand)] bg-[var(--color-selected)]" : "border-[var(--color-border)] hover:bg-[var(--color-surface-2)]"}`}
-              >
-                <span className="flex items-center gap-2 text-sm font-medium text-[var(--color-text-primary)]">
-                  {value === "model-api" ? <KeyRound size={14} /> : <Bot size={14} />}{label}
-                </span>
-                <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">{hint}</span>
-              </button>
-            ))}
-          </div>
-        </Field>
-        <Field label="默认显示方式" hint="三种形态使用同一份会话状态">
-          <div className="flex flex-wrap gap-2">
-            {([ ["sidebar", "侧栏"], ["floating", "浮窗"], ["page", "独立页"] ] as [AIHostMode, string][]).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setSettings((current) => ({ ...current, defaultHostMode: value }))}
-                className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs ${settings.defaultHostMode === value ? "border-[var(--color-brand)] bg-[var(--color-selected)] text-[var(--color-brand)]" : "border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"}`}
-              >
-                <PanelRight size={12} />{label}
-              </button>
-            ))}
-          </div>
-        </Field>
-      </Section>
-
-      <Section title="Model API">
-        <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">用于接入兼容协议的模型服务。当前前端会保存配置到当前 WebView 的 AI 设置空间，不会写入笔记、素材或运行日志。</p>
-        <Field label="启用 Model API">
-          <button type="button" role="switch" aria-checked={settings.modelApi.enabled} onClick={() => updateModelApi("enabled", !settings.modelApi.enabled)} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${settings.modelApi.enabled ? "bg-[var(--color-brand)]" : "bg-zinc-200"}`}>
-            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${settings.modelApi.enabled ? "translate-x-6" : "translate-x-1"}`} />
-          </button>
-        </Field>
-        <Field label="Base URL" hint="例如 https://api.example.com/v1">
-          <input value={settings.modelApi.baseUrl} onChange={(event) => updateModelApi("baseUrl", event.target.value)} placeholder="https://…" className={inputCls} />
-        </Field>
-        <Field label="文本模型"><input value={settings.modelApi.model} onChange={(event) => updateModelApi("model", event.target.value)} placeholder="模型名称" className={inputCls} /></Field>
-        <Field label="视觉模型" hint="图片输入能力；未配置时不会假装支持图片"><input value={settings.modelApi.visionModel} onChange={(event) => updateModelApi("visionModel", event.target.value)} placeholder="可选" className={inputCls} /></Field>
-        <Field label="API Key" hint="仅本地设置空间；调用错误与日志不会回显密钥">
-          <input type="password" value={settings.modelApi.apiKey} onChange={(event) => updateModelApi("apiKey", event.target.value)} placeholder="留空则使用既有服务端配置" className={inputCls} autoComplete="off" />
-        </Field>
-      </Section>
-
-      <Section title="Agent CLI">
-        <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">沿用现有能力检测。安装状态不代表已登录或已具备图片、工具、取消能力；只有真实调用验证后才开放对应能力。</p>
-        <Field label="启用 Agent CLI"><button type="button" role="switch" aria-checked={settings.agentCli.enabled} onClick={() => updateAgent("enabled", !settings.agentCli.enabled)} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${settings.agentCli.enabled ? "bg-[var(--color-brand)]" : "bg-zinc-200"}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${settings.agentCli.enabled ? "translate-x-6" : "translate-x-1"}`} /></button></Field>
-        <Field label="默认 CLI" hint="留空时使用第一个已发现的可用 CLI">
-          <select value={settings.agentCli.provider} onChange={(event) => updateAgent("provider", event.target.value as AISettings["agentCli"]["provider"])} className={inputCls}>
-            <option value="">自动选择</option>
-            {providers.map((provider) => <option key={provider.id} value={provider.id} disabled={provider.state !== "present"}>{provider.label}{provider.state === "present" ? "" : "（不可用）"}</option>)}
-          </select>
-        </Field>
-        <Field label="工作目录" hint="仅作为后续 Agent 工具范围预留；当前聊天不会执行命令"><input value={settings.agentCli.workingDirectory} onChange={(event) => updateAgent("workingDirectory", event.target.value)} placeholder="可选，本地绝对路径" className={inputCls} /></Field>
-        <div className="flex items-center justify-between rounded-xl border border-[var(--color-border)] p-3">
-          <div className="flex flex-wrap gap-2">
-            {providers.length === 0 ? <span className="text-xs text-[var(--color-text-secondary)]">尚未检测</span> : providers.map((provider) => <span key={provider.id} className={`rounded-full px-2 py-1 text-[11px] ${provider.state === "present" ? "bg-emerald-50 text-emerald-700" : provider.state === "missing" ? "bg-zinc-100 text-zinc-500" : "bg-amber-50 text-amber-700"}`}>{provider.label} · {provider.state === "present" ? "已发现" : provider.state === "missing" ? "未安装" : "检测失败"}</span>)}
-          </div>
-          <button type="button" onClick={() => { invalidateLocalAIProviderProbeCache(); void refetch(); }} disabled={!IS_TAURI_RUNTIME || isFetching} className="shrink-0 rounded-lg border border-[var(--color-border)] p-2 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] disabled:opacity-50" title="重新检测"><RefreshCw size={14} className={isFetching ? "animate-spin" : ""} /></button>
-        </div>
-      </Section>
-
-      <div className="flex justify-end gap-2">
-        <button type="button" onClick={reset} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]">恢复默认</button>
-        <button type="button" onClick={save} className="flex items-center gap-1.5 rounded-lg bg-[var(--color-brand)] px-4 py-2 text-xs font-medium text-white hover:opacity-90"><Save size={13} />保存 AI 配置</button>
-      </div>
-    </div>
-  );
+  return <AiSettingsSection />;
 }
 
 function shellQuote(value: string): string {

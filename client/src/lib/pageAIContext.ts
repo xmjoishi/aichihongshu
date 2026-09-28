@@ -5,6 +5,10 @@ export interface AIAction {
   label: string;
   description?: string;
   requiresConfirmation?: boolean;
+  /** UI handler declared by the page; an LLM may request the id but never supply this handler. */
+  handler?: "apply-note-title" | "apply-note-body-replace" | "apply-note-body-append" | "apply-note-tags" | "save-note-draft" | "save-memory-entry" | "save-experience-prompt" | "navigate";
+  /** Optional in-app destination used only by a page-declared navigate handler. */
+  href?: string;
 }
 
 export interface AIDraftContext {
@@ -15,14 +19,23 @@ export interface AIDraftContext {
   dirty?: boolean;
 }
 
+export interface AISelectionDetail {
+  id: string | number;
+  kind?: string;
+  label?: string;
+}
+
 export interface PageAIContext {
   route: string;
   page: string;
   accountId: number | null;
   objectType?: string;
   objectId?: string | number | null;
+  objectLabel?: string;
   objectVersion?: string | number | null;
   selectedIds: Array<string | number>;
+  /** Human-readable detail for selected objects shown in the AI context UI. */
+  selectedItems?: AISelectionDetail[];
   referenceIds?: Array<string | number>;
   draft?: AIDraftContext;
   availableActions: AIAction[];
@@ -35,6 +48,7 @@ export interface PageAIContext {
 }
 
 export const PAGE_AI_CONTEXT_EVENT = "aichihongshu:page-ai-context";
+export const PAGE_AI_ACTION_EVENT = "aichihongshu:execute-ai-action";
 
 const DEFAULT_PAGE_CONTEXT: PageAIContext = {
   route: "/",
@@ -70,10 +84,21 @@ const ROUTE_CONTEXT_DEFAULTS: Array<{
   { match: (route) => route === "/profile", page: "我的账号", availableActions: [
     { id: "refine-persona", label: "优化人设", description: "结合账号定位和历史内容优化人设信息" },
     { id: "review-account", label: "查看账号资料", description: "整理当前账号的资料和同步状态" },
+    { id: "open-persona", label: "打开人设信息", description: "切换到当前账号的人设信息页", handler: "navigate", href: "/profile?view=persona" },
   ] },
   { match: (route) => route === "/data", page: "数据与复盘", availableActions: [
     { id: "review-data", label: "复盘数据", description: "总结笔记表现并提炼可复用规律" },
     { id: "find-content-patterns", label: "找内容规律", description: "从发布历史中找出选题和互动规律" },
+    { id: "open-note-ranking", label: "打开笔记排行", handler: "navigate", href: "/data?view=ranking" },
+    { id: "open-content-insights", label: "打开内容规律", handler: "navigate", href: "/data?view=insights" },
+    { id: "open-experience-library", label: "打开经验库", handler: "navigate", href: "/data?view=knowledge" },
+  ] },
+  { match: (route) => route === "/memory", page: "记忆", availableActions: [
+    { id: "save-memory-entry", label: "存为记忆", description: "把事实/事件/偏好存入记忆（默认停用）", requiresConfirmation: true, handler: "save-memory-entry" },
+    { id: "save-experience-prompt", label: "存为经验提示词", description: "把写法/口吻偏好存为可注入的经验条目", requiresConfirmation: true, handler: "save-experience-prompt" },
+    { id: "open-memory-prompts", label: "打开经验提示词", handler: "navigate", href: "/memory?view=prompts" },
+    { id: "open-memory-entries", label: "打开事实与事件", handler: "navigate", href: "/memory?view=entries" },
+    { id: "open-memory-rules", label: "打开系统规则", handler: "navigate", href: "/memory?view=rules" },
   ] },
   { match: (route) => route === "/accounts/pool", page: "账号池", availableActions: [
     { id: "switch-account", label: "切换账号", description: "查看并切换当前运营账号", requiresConfirmation: true },
@@ -116,6 +141,7 @@ function normalizeContext(value: Partial<PageAIContext>): PageAIContext {
     page: value.page || fallback.page,
     accountId: typeof value.accountId === "number" ? value.accountId : null,
     selectedIds: Array.isArray(value.selectedIds) ? value.selectedIds.slice(0, 100) : [],
+    selectedItems: Array.isArray(value.selectedItems) ? value.selectedItems.slice(0, 100) : undefined,
     availableActions: Array.isArray(value.availableActions) ? value.availableActions.slice(0, 50) : fallback.availableActions,
     permissionScope: Array.isArray(value.permissionScope) ? value.permissionScope.slice(0, 30) : undefined,
   };
@@ -184,16 +210,27 @@ export function pageAIContextPrompt(context: PageAIContext): string {
     const description = action.description ? `：${action.description}` : "";
     return `/${action.id}=${action.label}${description}${confirmation}`;
   }).join("；") || "无";
-  const selected = context.selectedIds.length ? context.selectedIds.join(", ") : "无";
+  const selected = context.selectedItems?.length
+    ? context.selectedItems.map((item) => `${item.kind ? `${item.kind} ` : ""}${item.label || `#${item.id}`}`).join("、")
+    : context.selectedIds.length ? context.selectedIds.join(", ") : "无";
+  const objectDescription = context.objectType === "note"
+    ? `笔记「${context.draft?.title?.trim() || "未命名笔记"}」（ID ${context.objectId ?? "未知"}）`
+    : `${context.objectType ? `${context.objectType} ` : ""}${context.objectLabel ? `「${context.objectLabel}」` : context.objectId ?? "无"}`;
+  const buttons = context.availableActions.filter((action) => action.handler).map((action) => {
+    const confirmation = action.requiresConfirmation ? "（执行前需要确认）" : "";
+    return `${action.id}=${action.label}${confirmation}`;
+  }).join("；") || "无";
   const draft = context.draft ? `草稿标题：${context.draft.title || "未填写"}；状态：${context.draft.status || "未标记"}` : "当前无草稿摘要";
   return [
     `当前页面：${context.page}（${context.route}）`,
     `上下文来源：${context.source || "page"}${context.requestId ? `；关联请求：${context.requestId}` : ""}`,
     `当前账号：${context.accountId ?? "待确认"}`,
-    `当前对象：${context.objectType ? `${context.objectType} ` : ""}${context.objectId ?? "无"}${context.objectVersion != null ? `（版本 ${context.objectVersion}）` : ""}；已选对象：${selected}`,
+    `当前对象：${objectDescription}${context.objectVersion != null ? `（版本 ${context.objectVersion}）` : ""}；已选对象：${selected}`,
     context.referenceIds?.length ? `引用对象：${context.referenceIds.join(", ")}` : "",
     draft,
     `当前页面可用命令：${actions}`,
+    `当前页面已声明的可执行按钮（只能从这里选择 action id；不能创建新 id 或标签）：${buttons}`,
+    "回复协议：优先只输出 JSON 对象，不要加代码围栏，字段为 intent、confidence、blocks、references、suggestions、actions。intent 可选 edit-note/create-note/conversation/data-analysis/persona-query/persona-update/other；confidence 为 0 到 1 的意图置信度，低于 0.45 时改用普通 Markdown。blocks 可包含 {type:markdown,content}、{type:note-draft,title,body,tags}、{type:metrics,items:[{label,value,detail}]}、{type:table,columns,rows}、{type:persona-fields,fields:[{label,value}]}、{type:diff,items:[{label,before,after}]}、{type:checklist,items:[{label,done}]}。编辑笔记用 note-draft 分开标题、正文和标签；新增笔记用 note-draft 并只提供页面声明过的保存草稿按钮；普通会话使用 markdown，不展示填标题等操作；数据分析优先用 metrics/table；人设查询用 persona-fields，人设补充用 diff。references 只列出上下文中真实提供的来源 ID、标题和类型；suggestions 是本轮动态生成的 0-4 条自然语言后续问题/回复，点击后会作为新消息发送，不要把页面操作放进 suggestions。actions 只能填写上方页面声明过的按钮 id，可带 params；没有合适按钮就返回空数组。不得臆造来源、按钮、标签或处理器；普通会话没有必要时返回空 suggestions/actions。JSON 无法保证时直接用普通 Markdown。",
     context.permissionScope?.length ? `当前权限范围：${context.permissionScope.join("、")}` : "",
   ].filter(Boolean).join("\n");
 }

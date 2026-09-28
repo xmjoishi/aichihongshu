@@ -12,131 +12,28 @@ import { useStore } from '../../../store';
 import { getPublishProgress, getPublishProgressStage } from '../../../services/publishProgress';
 import {
   AuroraBackground, LiquidCard, LiquidButton,
-  Badge, Divider, PhImage,
+  Badge, Divider, PhImage, PageTitleBlock,
 } from '../../../components/ui';
-import { Glass, Brand, Text as TText, Font, Radius, Sys } from '../../../utils/theme';
+import { Glass, Brand, Text as TText, Font, Radius, Sys, Border } from '../../../utils/theme';
 import type { Note, Item } from '../../../drizzle/schema';
 
-type ViewMode = 'list' | 'waterfall';
-
 const SCREEN_W = Dimensions.get('window').width;
-// 小红书双列间距 6px，左右 padding 各 6px
+// 双列封面流：6px 间距，16px 圆角白卡
 const XHS_H_PAD = 6;
 const XHS_COL_GAP = 6;
 const XHS_COL_W = (SCREEN_W - XHS_H_PAD * 2 - XHS_COL_GAP) / 2;
 
-// 列表视图
-const LIST_H_PAD = 14;
-const LIST_GAP = 10;
-
-// ─── 视图切换按钮 ────────────────────────────────────────────────
-function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode) => void }) {
-  return (
-    <View style={tog.wrap}>
-      {([
-        { m: 'list' as ViewMode, icon: 'list-outline' },
-        { m: 'waterfall' as ViewMode, icon: 'grid-outline' },
-      ]).map(({ m, icon }) => (
-        <Pressable
-          key={m}
-          onPress={() => onChange(m)}
-          style={[tog.btn, mode === m && tog.btnActive]}
-        >
-          <Ionicons
-            name={icon as any}
-            size={16}
-            style={[tog.icon, mode === m && tog.iconActive]}
-          />
-        </Pressable>
-      ))}
-    </View>
-  );
-}
-
-const tog = StyleSheet.create({
-  wrap: {
-    flexDirection: 'row',
-    borderRadius: Radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Glass.border,
-    overflow: 'hidden',
-    backgroundColor: '#fff',
-  },
-  btn: { paddingHorizontal: 10, paddingVertical: 6 },
-  btnActive: { backgroundColor: Brand.red },
-  icon: { fontSize: 15, color: TText.secondary },
-  iconActive: { color: '#fff' },
-});
-
-// ─── 列表卡片（带封面横幅）───────────────────────────────────────
-function ListCard({
-  note, onPress, onLongPress, onPublish, publishStage,
-}: {
-  note: Note; onPress: () => void; onLongPress: () => void; onPublish: () => void; publishStage?: 'none' | 'copied' | 'exported';
-}) {
-  const isReady = note.status === 'ready';
-  const itemIds: number[] = JSON.parse(note.itemIds ?? '[]');
-  return (
-    <LiquidCard onPress={onPress} onLongPress={onLongPress} style={lc.card}>
-      <View style={lc.top}>
-        <Text style={lc.title} numberOfLines={1}>{note.title || '无标题'}</Text>
-        <Badge label={isReady ? '待发布' : '草稿'} color={isReady ? Sys.success : Sys.warning} />
-      </View>
-      <Text style={lc.excerpt} numberOfLines={2}>
-        {note.body || '暂无内容，点击继续编辑…'}
-      </Text>
-      <Divider />
-      <View style={lc.meta}>
-        <Text style={lc.metaText}>{itemIds.length > 0 ? `${itemIds.length} 张图` : '无图片'}</Text>
-        <View style={lc.metaRight}>
-          <Text style={lc.metaText}>{note.updatedAt?.slice(0, 10)}</Text>
-          {isReady && (
-            <TouchableOpacity style={lc.publishBtn} onPress={onPublish}>
-              <Text style={lc.publishBtnText}>
-                {publishStage === 'exported' ? '继续发布' : publishStage === 'copied' ? '继续导图' : '去发布'}
-              </Text>
-              <Ionicons name="arrow-forward" size={11} color={Brand.red} />
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-    </LiquidCard>
-  );
-}
-
-const lc = StyleSheet.create({
-  card: { gap: 0, padding: 0, overflow: 'hidden' },
-  cover: { width: '100%', height: 160 } as any,
-  body: { padding: 14, gap: 8 },
-  top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { fontSize: Font.headline, fontWeight: Font.semibold, color: TText.primary, flex: 1, marginRight: 8 },
-  excerpt: { fontSize: Font.subheadline, color: TText.secondary, lineHeight: 20 },
-  meta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  metaText: { fontSize: Font.caption, color: TText.tertiary },
-  metaRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  publishBtn: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 8, paddingVertical: 3, borderRadius: Radius.pill, backgroundColor: Brand.redSoft, borderWidth: 0.5, borderColor: Brand.redMid },
-  publishBtnText: { fontSize: Font.caption, color: Brand.red, fontWeight: Font.semibold as any },
-});
-
-// ─── 小红书风格瀑布流卡片 ─────────────────────────────────────────
-//
-// 结构（严格还原）：
-//   ┌─────────────────┐
-//   │   封面图（可变高）  │  ← 圆角只在顶部
-//   ├─────────────────┤
-//   │ 标题（2行）       │  ← 13px 黑色半粗
-//   │ ──────────────  │
-//   │ 头像 昵称 点赞数据 │  ← 12px 灰色
-//   └─────────────────┘
-//
+// ─── 封面流卡片（C：大图 + 标题 + meta + 状态胶囊）────────────────
 function XhsCard({
   note, coverItem, onPress, onLongPress,
 }: {
   note: Note; coverItem?: Item; onPress: () => void; onLongPress: () => void;
 }) {
   const isReady = note.status === 'ready';
-  // 封面图高度：模拟小红书约 3:4 比例（宽 COL_W，高 * 1.26）
+  const isPublished = note.status === 'published' || note.status === 'archived';
   const coverH = Math.round(XHS_COL_W * 1.26);
+  const itemIds: number[] = JSON.parse(note.itemIds ?? '[]');
+  const statusLabel = isPublished ? '已发布' : isReady ? '待发布' : '草稿';
 
   return (
     <TouchableOpacity
@@ -145,37 +42,32 @@ function XhsCard({
       activeOpacity={0.85}
       style={xc.card}
     >
-      {/* ① 封面图 */}
       {coverItem ? (
         <PhImage uri={coverItem.imagePath} style={[xc.cover, { height: coverH }]} />
       ) : (
-        // 无封面：纯色占位，高度稍矮（内容卡）
-        <View style={[xc.coverEmpty, { height: Math.round(XHS_COL_W * 0.72) }]}> 
+        <View style={[xc.coverEmpty, { height: Math.round(XHS_COL_W * 0.72) }]}>
           <MaterialCommunityIcons name="image-off-outline" size={24} color="#c9c9c9" />
         </View>
       )}
 
-      {/* 状态角标（悬浮在封面右上角） */}
-      <View style={[xc.statusDot, isReady ? xc.statusDotReady : xc.statusDotDraft]} />
-
-      {/* ② 标题 */}
       <View style={xc.textArea}>
         <Text style={xc.title} numberOfLines={2}>
           {note.title || '暂无标题'}
         </Text>
-
-        {/* ③ 底部作者行（用草稿状态 + 日期模拟） */}
-        <View style={xc.authorRow}>
-          {/* 头像占位圆 */}
-          <View style={xc.avatar}>
-            <Text style={xc.avatarText}>我</Text>
-          </View>
-          <Text style={xc.authorName} numberOfLines={1}>草稿</Text>
-          {/* 点赞数（用字数模拟互动） */}
-          <View style={xc.likeRow}>
-            <Ionicons name="heart-outline" size={11} style={xc.likeIcon} />
-            <Text style={xc.likeCount}>
-              {isReady ? '待发' : note.updatedAt?.slice(5, 10) ?? '--'}
+        <View style={xc.metaRow}>
+          <Text style={xc.metaText} numberOfLines={1}>
+            {itemIds.length > 0 ? `${itemIds.length} 张图` : '无图'}
+            {note.updatedAt ? ` · ${note.updatedAt.slice(5, 10)}` : ''}
+          </Text>
+          <View style={[
+            xc.statusChip,
+            isPublished ? xc.statusChipPublished : isReady ? xc.statusChipReady : xc.statusChipDraft,
+          ]}>
+            <Text style={[
+              xc.statusChipText,
+              isPublished ? xc.statusChipTextPublished : isReady ? xc.statusChipTextReady : xc.statusChipTextDraft,
+            ]}>
+              {statusLabel}
             </Text>
           </View>
         </View>
@@ -188,11 +80,9 @@ const xc = StyleSheet.create({
   card: {
     width: XHS_COL_W,
     backgroundColor: '#fff',
-    borderRadius: 10,
+    borderRadius: 16,
     overflow: 'hidden',
-    // 小红书卡片无显式阴影，靠白底与灰页面背景区分
   },
-  // 封面图
   cover: {
     width: '100%',
     resizeMode: 'cover',
@@ -203,51 +93,43 @@ const xc = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // 状态角标（右上角小圆点）
-  statusDot: {
-    position: 'absolute', top: 8, right: 8,
-    width: 8, height: 8, borderRadius: 4,
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.8)',
-  },
-  statusDotReady: { backgroundColor: Sys.success },
-  statusDotDraft: { backgroundColor: '#f5a623' },
-
-  // 文字区
-  textArea: { paddingHorizontal: 8, paddingTop: 6, paddingBottom: 8, gap: 6 },
+  textArea: { paddingHorizontal: 10, paddingTop: 8, paddingBottom: 10, gap: 6 },
   title: {
     fontSize: 13,
     fontWeight: '500',
     color: '#1a1a1a',
     lineHeight: 18,
   },
-
-  // 底部作者行
-  authorRow: {
+  metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    marginTop: 2,
+    justifyContent: 'space-between',
+    gap: 6,
   },
-  avatar: {
-    width: 16, height: 16, borderRadius: 8,
-    backgroundColor: Brand.red,
-    alignItems: 'center', justifyContent: 'center',
+  metaText: { fontSize: 10, color: '#A1A1AA', flex: 1 },
+  statusChip: {
+    paddingHorizontal: 7, paddingVertical: 2,
+    borderRadius: 8,
   },
-  avatarText: { fontSize: 8, color: '#fff', fontWeight: '700' },
-  authorName: { fontSize: 11, color: '#999', flex: 1 },
-  likeRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  likeIcon: { fontSize: 11, color: '#999' },
-  likeCount: { fontSize: 11, color: '#999' },
+  statusChipDraft: { backgroundColor: '#F4F4F5' },
+  statusChipReady: { backgroundColor: '#DCFCE7' },
+  statusChipPublished: { backgroundColor: '#E0E7FF' },
+  statusChipText: { fontSize: 10, fontWeight: '500' },
+  statusChipTextDraft: { color: '#71717A' },
+  statusChipTextReady: { color: '#16A34A' },
+  statusChipTextPublished: { color: '#4338CA' },
 });
 
 // ─── 瀑布流容器（双列，贪心分列）────────────────────────────────
 function XhsWaterfall({
-  notes, itemsMap, onPress, onLongPress,
+  notes, itemsMap, onPress, onLongPress, onScroll, onEndReached,
 }: {
   notes: Note[];
   itemsMap: Map<number, Item>;
   onPress: (n: Note) => void;
   onLongPress: (n: Note) => void;
+  onScroll?: (y: number) => void;
+  onEndReached?: () => void;
 }) {
   const [leftCol, rightCol] = useMemo(() => {
     const left: Note[] = [];
@@ -271,6 +153,14 @@ function XhsWaterfall({
     <ScrollView
       showsVerticalScrollIndicator={false}
       contentContainerStyle={xf.container}
+      scrollEventThrottle={32}
+      onScroll={(e) => {
+        const y = e.nativeEvent.contentOffset.y;
+        const h = e.nativeEvent.layoutMeasurement.height;
+        const c = e.nativeEvent.contentSize.height;
+        if (y + h > c - 240) onEndReached?.();
+        onScroll?.(y);
+      }}
     >
       {/* 小红书背景是 #f1f1f1 的浅灰 */}
       <View style={xf.cols}>
@@ -304,7 +194,7 @@ function XhsWaterfall({
 const xf = StyleSheet.create({
   container: {
     paddingHorizontal: XHS_H_PAD,
-    paddingTop: 6,
+    paddingTop: 8,
     paddingBottom: 110,
   },
   cols: {
@@ -315,7 +205,7 @@ const xf = StyleSheet.create({
   col: { flex: 1, gap: XHS_COL_GAP },
 });
 
-type StatusFilter = 'all' | 'draft' | 'ready';
+type StatusFilter = 'all' | 'draft' | 'ready' | 'published' | 'withImage' | 'withoutImage';
 type SortOrder = 'newest' | 'oldest' | 'created_desc' | 'created_asc';
 
 // ─── 下拉选择器（从按钮正下方展开） ──────────────────────────────
@@ -378,23 +268,26 @@ const dd = StyleSheet.create({
   rowTextActive: { color: Brand.red, fontWeight: Font.semibold as any },
 });
 
-// ─── 筛选行：两个胶囊按钮 ─────────────────────────────────────────
+// ─── 筛选行：左下拉排序 + 右文字 tab（等距，可横滑）──────────────
 function FilterBar({
   status, onStatusChange,
   sort, onSortChange,
+  counts,
 }: {
   status: StatusFilter; onStatusChange: (v: StatusFilter) => void;
   sort: SortOrder; onSortChange: (v: SortOrder) => void;
+  counts: Record<StatusFilter, number>;
 }) {
-  const [showFilter, setShowFilter] = useState(false);
   const [showSort, setShowSort] = useState(false);
-  const filterRef = useRefReact<View>(null);
   const sortRef = useRefReact<View>(null);
 
   const statusOptions: { value: StatusFilter; label: string }[] = [
     { value: 'all', label: '全部' },
     { value: 'draft', label: '草稿' },
     { value: 'ready', label: '待发布' },
+    { value: 'published', label: '已发布' },
+    { value: 'withImage', label: '有图' },
+    { value: 'withoutImage', label: '无图' },
   ];
   const sortOptions: { value: SortOrder; label: string }[] = [
     { value: 'newest', label: '修改最新' },
@@ -402,39 +295,47 @@ function FilterBar({
     { value: 'created_desc', label: '创建最新' },
     { value: 'created_asc', label: '创建最早' },
   ];
-  const statusLabel = statusOptions.find((o) => o.value === status)?.label ?? '筛选';
-  const sortLabel = sortOptions.find((o) => o.value === sort)?.label ?? '排序';
-  const filterActive = status !== 'all';
+  const sortLabel = sortOptions.find((o) => o.value === sort)?.label ?? '修改时间';
 
   return (
-    <View style={fb.row}>
-      <TouchableOpacity
-        ref={filterRef}
-        style={[fb.pill, filterActive && fb.pillActive]}
-        onPress={() => { setShowSort(false); setShowFilter((v) => !v); }}
-      >
-        <Ionicons name="options-outline" size={13} color={filterActive ? Brand.red : TText.secondary} />
-        <Text style={[fb.pillText, filterActive && fb.pillTextActive]}>{statusLabel}</Text>
-        <Ionicons name={showFilter ? 'chevron-up' : 'chevron-down'} size={11} color={filterActive ? Brand.red : TText.secondary} />
-      </TouchableOpacity>
+    <View style={fb.wrap}>
+      <View style={fb.leftRow}>
+        {/* 左：排序下拉（固定） */}
+        <TouchableOpacity
+          ref={sortRef}
+          style={fb.sortToggle}
+          onPress={() => setShowSort((v) => !v)}
+        >
+          <Text style={fb.sortToggleText}>{sortLabel}</Text>
+          <Ionicons name="chevron-down" size={12} color={TText.primary} />
+        </TouchableOpacity>
 
-      <TouchableOpacity
-        ref={sortRef}
-        style={fb.pill}
-        onPress={() => { setShowFilter(false); setShowSort((v) => !v); }}
-      >
-        <Ionicons name="swap-vertical-outline" size={13} color={TText.secondary} />
-        <Text style={fb.pillText}>{sortLabel}</Text>
-        <Ionicons name={showSort ? 'chevron-up' : 'chevron-down'} size={11} color={TText.secondary} />
-      </TouchableOpacity>
+        {/* 右：文字 tab，可横滑，不带动排序 */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={fb.tabsScroll}
+        >
+          {statusOptions.map((o) => {
+            const active = status === o.value;
+            return (
+              <Pressable
+                key={o.value}
+                onPress={() => onStatusChange(o.value)}
+                style={fb.tab}
+              >
+                <Text style={[fb.tabText, active && fb.tabTextActive]}>
+                  {o.label}{counts[o.value] > 0 ? ` ${counts[o.value]}` : ''}
+                </Text>
+                <View style={[fb.tabLine, active && fb.tabLineActive]} />
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
 
       <Dropdown
-        options={statusOptions} value={status} onChange={onStatusChange}
-        active={filterActive} triggerRef={filterRef}
-        visible={showFilter} onClose={() => setShowFilter(false)}
-      />
-      <Dropdown
-        options={sortOptions} value={sort} onChange={onSortChange}
+        options={sortOptions} value={sort} onChange={(v) => { setShowSort(false); onSortChange(v); }}
         active={false} triggerRef={sortRef}
         visible={showSort} onClose={() => setShowSort(false)}
       />
@@ -443,17 +344,41 @@ function FilterBar({
 }
 
 const fb = StyleSheet.create({
-  row: { flexDirection: 'row', gap: 8, paddingHorizontal: 14, paddingBottom: 8 },
-  pill: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 12, paddingVertical: 6,
-    borderRadius: Radius.pill,
-    borderWidth: 0.5, borderColor: Glass.border,
-    backgroundColor: Glass.bg,
+  wrap: { paddingBottom: 0 },
+  leftRow: {
+    flexDirection: 'row', alignItems: 'center',
+    height: 42,
+    paddingLeft: 0, paddingRight: 8,
   },
-  pillActive: { borderColor: Brand.redMid, backgroundColor: Brand.redSoft },
-  pillText: { fontSize: Font.footnote, color: TText.secondary },
-  pillTextActive: { color: Brand.red, fontWeight: Font.semibold as any },
+  sortToggle: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    height: 42,
+    paddingRight: 14,
+  },
+  sortToggleText: {
+    fontSize: 13, color: TText.primary, fontWeight: '600', lineHeight: 18,
+  },
+  tabsScroll: {
+    flexDirection: 'row', alignItems: 'center',
+    height: 42,
+    gap: 18, paddingRight: 16,
+  },
+  tab: {
+    height: 42,
+    justifyContent: 'center', alignItems: 'center',
+    gap: 4,
+    flexShrink: 0,
+  },
+  tabText: {
+    fontSize: 13, color: TText.secondary, fontWeight: '500',
+    flexShrink: 0, lineHeight: 18,
+  },
+  tabTextActive: { color: Brand.red, fontWeight: '600' },
+  tabLine: {
+    height: 2, alignSelf: 'stretch', borderRadius: 1,
+    backgroundColor: 'transparent',
+  },
+  tabLineActive: { backgroundColor: Brand.red },
 });
 
 // ─── 主页面 ──────────────────────────────────────────────────────
@@ -461,16 +386,35 @@ export default function CreateScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const notes = useStore((s) => s.notes);
+  const notesHasMore = useStore((s) => s.notesHasMore);
+  const loadMoreNotes = useStore((s) => s.loadMoreNotes);
   const items = useStore((s) => s.items);
   const addNote = useStore((s) => s.addNote);
   const deleteNote = useStore((s) => s.deleteNote);
 
-  const [viewMode, setViewMode] = useState<ViewMode>('waterfall');
   const [searchExpanded, setSearchExpanded] = useState(false);
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [sortOrder, setSortOrder] = useState<SortOrder>('newest');
   const [publishProgressMap, setPublishProgressMap] = useState<Record<number, 'none' | 'copied' | 'exported'>>({});
+  // 上滑收起排序/筛选行
+  const [chromeVisible, setChromeVisible] = useState(true);
+  const lastScrollY = useRefReact(0);
+
+  const statusCounts = useMemo(() => {
+    const c: Record<StatusFilter, number> = {
+      all: notes.length, draft: 0, ready: 0, published: 0, withImage: 0, withoutImage: 0,
+    };
+    for (const n of notes) {
+      const hasImg = (JSON.parse(n.itemIds ?? '[]') as number[]).length > 0;
+      if (hasImg) c.withImage += 1;
+      else c.withoutImage += 1;
+      if (n.status === 'ready') c.ready += 1;
+      else if (n.status === 'published' || n.status === 'archived') c.published += 1;
+      else c.draft += 1;
+    }
+    return c;
+  }, [notes]);
 
   // 搜索框展开动画（宽度 0→1）
   const searchAnim = useRefReact(new Animated.Value(0)).current;
@@ -545,8 +489,11 @@ export default function CreateScreen() {
           (n.body ?? '').toLowerCase().includes(q),
       );
     }
-    if (statusFilter === 'draft') list = list.filter((n) => n.status !== 'ready');
+    if (statusFilter === 'draft') list = list.filter((n) => n.status === 'draft');
     else if (statusFilter === 'ready') list = list.filter((n) => n.status === 'ready');
+    else if (statusFilter === 'published') list = list.filter((n) => n.status === 'published' || n.status === 'archived');
+    else if (statusFilter === 'withImage') list = list.filter((n) => (JSON.parse(n.itemIds ?? '[]') as number[]).length > 0);
+    else if (statusFilter === 'withoutImage') list = list.filter((n) => (JSON.parse(n.itemIds ?? '[]') as number[]).length === 0);
     list.sort((a, b) => {
       if (sortOrder === 'created_desc' || sortOrder === 'created_asc') {
         const ta = new Date(a.createdAt ?? 0).getTime();
@@ -561,8 +508,9 @@ export default function CreateScreen() {
   }, [notes, query, statusFilter, sortOrder]);
 
   async function handleNew() {
+    // 直接进编辑页，手动上传图片
     const note = await addNote();
-    router.push(`/(tabs)/create/chat?noteId=${note.id}`);
+    router.push(`/(tabs)/create/edit/${note.id}`);
   }
 
   function handleLongPress(note: Note) {
@@ -574,18 +522,6 @@ export default function CreateScreen() {
 
   function handlePress(note: Note) {
     router.push(`/(tabs)/create/edit/${note.id}`);
-  }
-
-  function renderListItem({ item }: { item: Note }) {
-    return (
-      <ListCard
-        note={item}
-        onPress={() => handlePress(item)}
-        onLongPress={() => handleLongPress(item)}
-        onPublish={() => router.push(`/(tabs)/create/publish?id=${item.id}`)}
-        publishStage={publishProgressMap[item.id]}
-      />
-    );
   }
 
   const isFiltering = query.trim() !== '' || statusFilter !== 'all';
@@ -600,75 +536,68 @@ export default function CreateScreen() {
   });
 
   return (
-    <View style={[styles.root, viewMode === 'waterfall' && styles.rootGray]}>
-      <AuroraBackground style={{ flex: 1, backgroundColor: 'transparent' }}>
-        {/* 标题栏 */}
-        <View style={[
-          styles.pageHeader,
-          { paddingTop: insets.top + 8 },
-          viewMode === 'waterfall' && styles.pageHeaderGray,
-        ]}>
-          {/* 标题行：固定高度，搜索框 absolute 叠在上面，不影响布局 */}
-          <View style={styles.headerRow}>
-            {/* 左：标题 + 数量（同行） */}
-            <Animated.View style={[styles.titleGroup, { opacity: otherOpacity }]} pointerEvents={searchExpanded ? 'none' : 'auto'}>
-              <Text style={styles.pageTitle}>创作</Text>
-              {notes.length > 0 && (
-                <Text style={styles.pageCount}>
-                  {isFiltering ? `${filteredNotes.length}/${notes.length}` : notes.length}
-                </Text>
-              )}
-            </Animated.View>
-
-            {/* 右：按钮组 */}
-            <Animated.View style={[styles.headerRight, { opacity: otherOpacity }]} pointerEvents={searchExpanded ? 'none' : 'auto'}>
-              <Pressable onPress={() => setSearchExpanded(true)} style={styles.iconBtn}>
-                <Ionicons name="search" size={16} color={TText.primary} />
-              </Pressable>
-              <ViewToggle mode={viewMode} onChange={setViewMode} />
-              <Pressable style={styles.addBtn} onPress={handleNew}>
-                <Ionicons name="add" size={22} color="#fff" />
-              </Pressable>
-            </Animated.View>
-
-            {/* 搜索框：absolute 覆盖整行，展开时淡入 */}
-            <Animated.View
-              style={[styles.searchOverlay, { opacity: searchOpacity }]}
-              pointerEvents={searchExpanded ? 'auto' : 'none'}
-            >
-              <Ionicons name="search" size={14} color={TText.tertiary} style={{ marginRight: 6 }} />
-              <TextInput
-                ref={inputRef}
-                style={styles.searchInput}
-                placeholder="搜索标题或正文..."
-                placeholderTextColor={TText.quaternary}
-                value={query}
-                onChangeText={setQuery}
-                returnKeyType="search"
-                clearButtonMode="while-editing"
+    <AuroraBackground style={{ flex: 1, backgroundColor: 'transparent' }}>
+        {/* 标题栏 — 与相册/设置同一套 PageTitleBlock */}
+        <View style={{ position: 'relative' }}>
+          <PageTitleBlock
+            title="创作"
+            count={isFiltering ? `${filteredNotes.length}/${notes.length}` : notes.length}
+            right={
+              <Animated.View
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 8, opacity: otherOpacity }}
+                pointerEvents={searchExpanded ? 'none' : 'auto'}
+              >
+                <Pressable onPress={() => setSearchExpanded(true)} style={styles.iconBtn} accessibilityLabel="搜索">
+                  <Ionicons name="search" size={16} color={TText.primary} />
+                </Pressable>
+                <Pressable style={styles.addBtn} onPress={handleNew} accessibilityLabel="新建草稿">
+                  <Ionicons name="add" size={22} color="#fff" />
+                </Pressable>
+              </Animated.View>
+            }
+          >
+            {notes.length > 0 && chromeVisible && (
+              <FilterBar
+                status={statusFilter}
+                onStatusChange={setStatusFilter}
+                sort={sortOrder}
+                onSortChange={setSortOrder}
+                counts={statusCounts}
               />
-              <Pressable onPress={() => setSearchExpanded(false)} style={styles.cancelBtn}>
-                <Text style={styles.cancelText}>取消</Text>
-              </Pressable>
-            </Animated.View>
-          </View>
+            )}
+          </PageTitleBlock>
 
-          {/* 筛选/排序 */}
-          {notes.length > 0 && (
-            <FilterBar
-              status={statusFilter}
-              onStatusChange={setStatusFilter}
-              sort={sortOrder}
-              onSortChange={setSortOrder}
+          {/* 搜索框：叠在标题行上，展开时淡入 */}
+          <Animated.View
+            style={[
+              styles.searchOverlay,
+              { opacity: searchOpacity },
+              { top: insets.top + 2, left: 18, right: 18, height: 40 },
+            ]}
+            pointerEvents={searchExpanded ? 'auto' : 'none'}
+          >
+            <Ionicons name="search" size={14} color={TText.tertiary} style={{ marginRight: 6 }} />
+            <TextInput
+              ref={inputRef}
+              style={styles.searchInput}
+              placeholder="搜索标题或正文..."
+              placeholderTextColor={TText.quaternary}
+              value={query}
+              onChangeText={setQuery}
+              returnKeyType="search"
+              clearButtonMode="while-editing"
             />
-          )}
+            <Pressable onPress={() => setSearchExpanded(false)} style={styles.cancelBtn}>
+              <Text style={styles.cancelText}>取消</Text>
+            </Pressable>
+          </Animated.View>
         </View>
 
         {notes.length === 0 ? (
           <View style={styles.empty}>
             <LiquidCard style={styles.emptyCard}>
               <Text style={styles.emptyTitle}>还没有草稿</Text>
-              <Text style={styles.emptyDesc}>从图库选图，让 AI 帮你出稿</Text>
+              <Text style={styles.emptyDesc}>从相册选图，让 AI 帮你出稿</Text>
               <LiquidButton
                 label="新建草稿"
                 onPress={handleNew}
@@ -683,56 +612,57 @@ export default function CreateScreen() {
               试试修改搜索词或筛选条件
             </Text>
           </View>
-        ) : viewMode === 'list' ? (
-          <FlatList
-            data={filteredNotes}
-            keyExtractor={(n) => String(n.id)}
-            renderItem={renderListItem}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-          />
         ) : (
           <XhsWaterfall
             notes={filteredNotes}
             itemsMap={itemsMap}
             onPress={handlePress}
             onLongPress={handleLongPress}
+            onEndReached={() => { if (notesHasMore && statusFilter === 'all' && !query.trim()) void loadMoreNotes(); }}
+            onScroll={(y) => {
+              const dy = y - lastScrollY.current;
+              if (dy > 8 && y > 24) {
+                if (chromeVisible) setChromeVisible(false);
+              } else if (dy < -8 || y < 8) {
+                if (!chromeVisible) setChromeVisible(true);
+              }
+              lastScrollY.current = y;
+            }}
           />
         )}
       </AuroraBackground>
-    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#fafafa' },
-  rootGray: { backgroundColor: '#f1f1f1' },
-  pageHeader: { paddingHorizontal: 14, paddingBottom: 2, backgroundColor: 'transparent' },
-  pageHeaderGray: { backgroundColor: '#f1f1f1' },
+  root: { flex: 1, backgroundColor: '#F0F0F1' },
+  pageHeader: { paddingHorizontal: 18, paddingBottom: 8, backgroundColor: 'transparent' },
+  pageHeaderGray: { backgroundColor: '#F0F0F1' },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    height: 44,
-    marginBottom: 4,
+    height: 40,
+    marginBottom: 0,
   },
-  // 标题 + 数量同行
+  // 标题 + 数量（与其它 Tab 一致）
   titleGroup: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
-  pageTitle: { fontSize: Font.title2, fontWeight: Font.bold, color: TText.primary },
+  pageTitle: { fontSize: Font.title2, fontWeight: Font.bold, color: TText.primary, lineHeight: 30 },
   pageCount: {
-    fontSize: Font.footnote, color: TText.tertiary,
+    fontSize: Font.caption, color: TText.tertiary,
     fontWeight: '400',
   },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  // 搜索框：absolute 覆盖整行
+  // 搜索框：absolute 覆盖标题行
   searchOverlay: {
     position: 'absolute',
-    left: 0, right: 0, top: 0, bottom: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#f0f0f0',
+    backgroundColor: '#fff',
     borderRadius: 10,
     paddingHorizontal: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Border.base,
   },
   searchInput: { flex: 1, fontSize: Font.subheadline, color: TText.primary, padding: 0 },
   cancelBtn: { paddingLeft: 8 },
@@ -742,7 +672,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#fff',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Glass.border,
+    borderColor: Border.base,
   },
   addBtn: {
     width: 34, height: 34, borderRadius: 17,
@@ -753,7 +683,6 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
   },
-  listContent: { padding: LIST_H_PAD, gap: LIST_GAP, paddingBottom: 110 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
   emptyCard: { width: '100%', gap: 6, alignItems: 'center' },
   emptyTitle: { fontSize: Font.title3, fontWeight: Font.semibold, color: TText.primary },

@@ -1,16 +1,22 @@
+import { useWorkspaceEffect } from "../lib/workspaceActivity";
+import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Sparkles, X, RotateCcw, StopCircle, Send, Copy, Check, Plus, Maximize2, AtSign, Paperclip, Search, ChevronDown } from "lucide-react";
+import { Sparkles, X, RotateCcw, StopCircle, Send, Copy, Check, Plus, Maximize2, AtSign, Paperclip, Search, ChevronDown, PanelRight, PictureInPicture2, History, MessageSquare } from "lucide-react";
 import { useAIStream } from "../hooks/useAIStream";
 import { MdContent } from "./MdContent";
-import { useQuery } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import type { Item } from "../lib/types";
 import {
   IS_TAURI_RUNTIME,
+  localItemToItem,
   localNoteToNote,
   localProfileToProfile,
   localReferenceAccountToReferenceAccount,
   listPromptConfigs,
+  listMemoryEntries,
+  listExperiencePrompts,
   readLocalInspirations,
   readLocalKnowledgePreferences,
   readLocalWorkspaceSnapshot,
@@ -26,9 +32,16 @@ import {
 import { usePanelResize } from "../hooks/usePanelResize";
 import { useAccountContext } from "../lib/accountContext";
 import { buildLocalKnowledgeContext } from "../lib/localKnowledge";
-import { AI_HOST_MODES, makeAISessionKey, type AIHostMode } from "../lib/aiHost";
-import { pageAIContextPrompt, usePageAIContext, type PageAIContext } from "../lib/pageAIContext";
-import { touchAgentSession } from "../lib/aiWorkspace";
+import { buildMemoryContext } from "../lib/memoryContext";
+import { MemorySaveDialog, type MemorySaveDraft } from "./MemorySaveDialog";
+import { AI_HOST_MODES, GLOBAL_AI_EVENT, makeAISessionKey, type AIHostMode } from "../lib/aiHost";
+import { PAGE_AI_ACTION_EVENT, pageAIContextPrompt, usePageAIContext, type AIAction, type AISelectionDetail, type PageAIContext } from "../lib/pageAIContext";
+import { readAgentSessions, subscribeAgentSessions, touchAgentSession, type AgentSessionMetadata } from "../lib/aiWorkspace";
+import { parseAIResponse, type AIResponseBlock, type AIResponseEnvelope } from "../lib/aiResponse";
+import { readModelApiSettings, type ModelApiSettingsView } from "../lib/modelApi";
+import { readAiRuntimeSettings, type AiRuntimeSettings } from "../lib/aiRuntime";
+import DefaultModelPicker, { type DefaultPickerGroup } from "./aiSettings/DefaultModelPicker";
+import { cliDefaultModelValues, cliModelLabel } from "./aiSettings/cliModels";
 
 interface AIPanelProps {
   noteId?: number;
@@ -40,18 +53,21 @@ interface AIPanelProps {
   unavailableReason?: string;
   unavailableNextStep?: string;
   onApply?: (text: string) => void;
-  onApplyTitle?: (title: string) => void;
-  onApplyTags?: (tags: string) => void;
-  onApplyBody?: (text: string, mode: "replace" | "append") => void;
+  onApplyTitle?: (title: string, proposalBaseVersion?: number) => boolean | void;
+  onApplyTags?: (tags: string, proposalBaseVersion?: number) => boolean | void;
+  onApplyBody?: (text: string, mode: "replace" | "append", proposalBaseVersion?: number) => boolean | void;
   onClose?: () => void;
   sourceNotice?: string;
   /** Presentation mode; all modes use the same conversation/run session. */
   hostMode?: AIHostMode;
   onHostModeChange?: (mode: AIHostMode) => void;
+  fillHost?: boolean;
   sessionKey?: string;
-  historyKey?: string;
+  historyKey?: string | null;
   assistantMode?: "ask" | "agent";
   pageContext?: PageAIContext;
+  onAIRequestStart?: () => void;
+  onSelectSession?: (sessionId: string) => void;
 }
 
 interface QuickAction {
@@ -84,186 +100,163 @@ interface ComposerToken {
   display: string;
 }
 
-// ── 检测 AI 输出类型 ─────────────────────────────────────────────
-type OutputType = "titles" | "tags" | "body" | "generic";
+type NoteDraftFieldActions = {
+  title?: AIAction;
+  bodyReplace?: AIAction;
+  bodyAppend?: AIAction;
+  tags?: AIAction;
+};
 
-function detectOutputType(content: string): OutputType {
-  // 标题列表：编号 / 情绪型 / 场景型 / 问题型 开头的多行
-  const titlePatterns = [
-    /^\d+[.、]\s+.{4,}/m,
-    /^(情绪型|问题型|场景型)[：:]/m,
-  ];
-  if (titlePatterns.some((p) => p.test(content))) return "titles";
+const EMPTY_SELECTED_ASSETS: Item[] = [];
 
-  // 标签：3 个以上 #标签
-  if ((content.match(/#[\u4e00-\u9fa5\w]+/g) || []).length >= 3) return "tags";
-
-  // 正文：字数足够多（> 50 字）且没有被识别为标题/标签
-  const plain = content.replace(/<[^>]+>/g, "").replace(/\s/g, "");
-  if (plain.length > 50) return "body";
-
-  return "generic";
-}
-
-/** 从 AI 回复中提取候选标题列表 */
-function extractTitles(content: string): string[] {
-  const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
-  const titles: string[] = [];
-  for (const line of lines) {
-    // 1. 标题  /  情绪型：标题  /  - 标题
-    const m =
-      line.match(/^\d+[.、]\s*(.+)/) ||
-      line.match(/^(?:情绪型|问题型|场景型)[：:]\s*(.+)/) ||
-      line.match(/^[-•]\s+(.+)/);
-    if (m) {
-      const t = m[1].replace(/[（(].*?[)）]/g, "").trim();
-      if (t.length >= 4 && t.length <= 30) titles.push(t);
-    }
-  }
-  return titles;
-}
-
-/** 从 AI 回复中提取标签列表 */
-function extractTags(content: string): string[] {
-  return (content.match(/#[\u4e00-\u9fa5\w]+/g) || []);
-}
-
-// ── 结构化输出卡片 ─────────────────────────────────────────────────
-function StructuredOutput({
-  content,
-  outputType,
-  onApplyTitle,
-  onApplyTags,
-  onApplyBody,
-  onRegenerate,
+function AIResponseBlocks({
+  blocks,
+  noteDraftActions,
+  onNoteDraftAction,
 }: {
-  content: string;
-  outputType: OutputType;
-  onApplyTitle?: (t: string) => void;
-  onApplyTags?: (t: string) => void;
-  onApplyBody?: (text: string, mode: "replace" | "append") => void;
-  onRegenerate?: () => void;
+  blocks: AIResponseBlock[];
+  noteDraftActions?: NoteDraftFieldActions;
+  onNoteDraftAction?: (action: AIAction, block: Extract<AIResponseBlock, { type: "note-draft" }>) => boolean;
 }) {
-  const [usedIdx, setUsedIdx] = useState<number | null>(null);
-  const [bodyApplied, setBodyApplied] = useState<"replace" | "append" | null>(null);
+  const [appliedActions, setAppliedActions] = useState<Record<string, string>>({});
 
-  if (outputType === "titles") {
-    const titles = extractTitles(content);
-    if (titles.length === 0) return null;
+  function fieldAction(action: AIAction | undefined, fieldLabel: string, buttonLabel: string, block: Extract<AIResponseBlock, { type: "note-draft" }>) {
+    if (!action || !onNoteDraftAction) return null;
+    const appliedLabel = appliedActions[action.id];
     return (
-      <div className="mt-2 space-y-1">
-        <p className="text-[10px] text-zinc-400 font-medium">点击直接使用：</p>
-        {titles.map((t, i) => (
-          <button
-            key={i}
-            onClick={() => { onApplyTitle?.(t); setUsedIdx(i); }}
-            className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg border transition-all flex items-center justify-between gap-2 ${
-              usedIdx === i
-                ? "border-[#ff2442] ring-1 ring-[#ff2442] text-zinc-800 bg-[#fff0f2]"
-                : "border-zinc-200 hover:border-[#ff2442] hover:bg-[#fff0f2] text-zinc-700"
-            }`}
-          >
-            <span>{t}</span>
-            {usedIdx === i && (
-              <span className="shrink-0 text-[10px] text-[#ff2442] font-medium">已使用</span>
-            )}
-          </button>
-        ))}
-      </div>
+      <button
+        type="button"
+        onClick={() => {
+          if (onNoteDraftAction(action, block)) {
+            setAppliedActions((current) => ({ ...current, [action.id]: buttonLabel === "追加" ? "已追加" : "已替换" }));
+          }
+        }}
+        title={appliedLabel ? "内容已立即写入笔记，自动保存已开始" : action.description ?? `${fieldLabel}${buttonLabel}到当前笔记`}
+        aria-label={appliedLabel ? `${fieldLabel}：${appliedLabel}` : `${fieldLabel}：${buttonLabel}`}
+        className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-medium transition-colors ${appliedLabel ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-zinc-200 bg-white text-zinc-500 hover:border-[#ff2442]/40 hover:bg-[#fff5f6] hover:text-[#c81d36]"}`}
+      >
+        {appliedLabel && <Check size={11} />}
+        {appliedLabel ?? buttonLabel}
+      </button>
     );
   }
 
-  if (outputType === "tags") {
-    const tags = extractTags(content);
-    if (tags.length === 0) return null;
-    const tagsStr = tags.join(" ");
-    return (
-      <div className="mt-2">
-        <p className="text-[10px] text-zinc-400 font-medium mb-1.5">点击一键填入话题栏：</p>
-        <div className="flex flex-wrap gap-1 mb-2">
-          {tags.map((tag, i) => (
-            <span key={i} className="text-[10px] px-1.5 py-0.5 bg-[#ff2442]/10 text-[#ff2442] rounded-full">{tag}</span>
-          ))}
-        </div>
-        <button
-          onClick={() => onApplyTags?.(tagsStr)}
-          className="text-xs text-[#ff2442] hover:underline flex items-center gap-1"
-        >
-          <Check size={10} /> 全部填入话题栏
-        </button>
-      </div>
-    );
+  return (
+    <div className="space-y-2.5">
+      {blocks.map((block, index) => {
+        if (block.type === "markdown") return <MdContent key={index} content={block.content} />;
+        if (block.type === "note-draft") return (
+          <section key={index} className="space-y-2 rounded-xl border border-zinc-200 bg-white p-3">
+            {block.title && <div><div className="mb-1 flex items-center justify-between gap-2"><div className="text-[10px] font-medium text-zinc-400">标题</div>{fieldAction(noteDraftActions?.title, "标题", "替换", block)}</div><div className="font-medium text-zinc-800">{block.title}</div></div>}
+            {block.body && <div><div className="mb-1 flex items-center justify-between gap-2"><div className="text-[10px] font-medium text-zinc-400">正文</div><div className="flex shrink-0 items-center gap-1.5">{fieldAction(noteDraftActions?.bodyReplace, "正文", "替换", block)}{fieldAction(noteDraftActions?.bodyAppend, "正文", "追加", block)}</div></div><div className="whitespace-pre-wrap leading-relaxed text-zinc-700">{block.body}</div></div>}
+            {block.tags.length > 0 && <div><div className="mb-1 flex items-center justify-between gap-2"><div className="text-[10px] font-medium text-zinc-400">标签</div>{fieldAction(noteDraftActions?.tags, "标签", "替换", block)}</div><div className="flex flex-wrap gap-1">{block.tags.map((tag, tagIndex) => <span key={`${tag}-${tagIndex}`} className="rounded-full bg-[#fff0f2] px-2 py-0.5 text-[10px] text-[#d21f3a]">#{tag}</span>)}</div></div>}
+          </section>
+        );
+        if (block.type === "metrics") return (
+          <div key={index} className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {block.items.map((item, itemIndex) => <div key={`${item.label}-${itemIndex}`} className="rounded-lg border border-zinc-200 bg-white px-2.5 py-2"><div className="text-[10px] text-zinc-400">{item.label}</div><div className="mt-0.5 font-semibold text-zinc-800">{item.value}</div>{item.detail && <div className="mt-0.5 text-[10px] text-zinc-500">{item.detail}</div>}</div>)}
+          </div>
+        );
+        if (block.type === "table") return (
+          <div key={index} className="overflow-x-auto rounded-lg border border-zinc-200 bg-white"><table className="min-w-full text-left text-[11px]"><thead className="bg-zinc-50 text-zinc-500"><tr>{block.columns.map((column, columnIndex) => <th key={`${column}-${columnIndex}`} className="px-2.5 py-2 font-medium">{column}</th>)}</tr></thead><tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex} className="border-t border-zinc-100">{block.columns.map((_, columnIndex) => <td key={columnIndex} className="px-2.5 py-2 text-zinc-700">{row[columnIndex] ?? "—"}</td>)}</tr>)}</tbody></table></div>
+        );
+        if (block.type === "persona-fields") return <dl key={index} className="divide-y divide-zinc-100 rounded-lg border border-zinc-200 bg-white px-3">{block.fields.map((field, fieldIndex) => <div key={`${field.label}-${fieldIndex}`} className="grid grid-cols-[minmax(5rem,0.35fr)_1fr] gap-3 py-2"><dt className="text-zinc-400">{field.label}</dt><dd className="whitespace-pre-wrap text-zinc-700">{field.value}</dd></div>)}</dl>;
+        if (block.type === "diff") return <div key={index} className="space-y-2">{block.items.map((item, itemIndex) => <div key={`${item.label}-${itemIndex}`} className="rounded-lg border border-zinc-200 bg-white p-2.5"><div className="mb-1 font-medium text-zinc-700">{item.label}</div>{item.before != null && <div className="whitespace-pre-wrap text-zinc-500"><span className="mr-1 text-[10px] text-zinc-400">原内容</span>{item.before}</div>}{item.after != null && <div className="mt-1 whitespace-pre-wrap text-zinc-800"><span className="mr-1 text-[10px] text-[#ff2442]">建议</span>{item.after}</div>}</div>)}</div>;
+        if (block.type === "checklist") return <ul key={index} className="space-y-1.5">{block.items.map((item, itemIndex) => <li key={`${item.label}-${itemIndex}`} className="flex gap-2"><span className={item.done ? "text-emerald-600" : "text-zinc-300"}>{item.done ? "✓" : "○"}</span><span className="whitespace-pre-wrap">{item.label}</span></li>)}</ul>;
+        return null;
+      })}
+    </div>
+  );
+}
+
+function findNoteDraft(response: AIResponseEnvelope): Extract<AIResponseBlock, { type: "note-draft" }> | undefined {
+  return response.blocks.find((block): block is Extract<AIResponseBlock, { type: "note-draft" }> => block.type === "note-draft");
+}
+
+function isFieldScopedAction(action: AIAction): boolean {
+  return action.handler?.startsWith("apply-note-") ?? false;
+}
+
+function hostModeIcon(mode: AIHostMode) {
+  if (mode === "floating") return <PictureInPicture2 size={14} />;
+  if (mode === "sidebar") return <PanelRight size={14} />;
+  return <Maximize2 size={14} />;
+}
+
+interface EmptySessionSuggestion {
+  title: string;
+  detail: string;
+  prompt: string;
+}
+
+function getEmptySessionSuggestions(context: PageAIContext): EmptySessionSuggestion[] {
+  const noteTitle = context.draft?.title?.trim();
+  if (context.objectType === "note") {
+    const currentNote = noteTitle ? `「${noteTitle}」` : "这篇笔记";
+    return [
+      { title: "检查笔记", detail: "看看标题、正文和标签是否一致", prompt: `请检查当前笔记${currentNote}的标题、正文和标签，指出最值得先改的一处。` },
+      { title: "提炼亮点", detail: "整理核心信息和读者能获得的价值", prompt: `请从当前笔记${currentNote}中提炼 3 个核心亮点，并说明读者最关心哪一个。` },
+      { title: "给出优化稿", detail: "保留原意，改善表达和可读性", prompt: `请基于当前笔记${currentNote}，给出标题、正文和标签的优化建议，先不要直接修改。` },
+    ];
   }
-
-  if (outputType === "body") {
-    // 从 AI 输出中提取正文部分（兼容多种格式）
-    const extractBodyText = (raw: string): string => {
-      // 去掉 markdown bold 标记，方便统一匹配
-      const text = raw.replace(/\*\*(.+?)\*\*/g, "$1").replace(/\*(.+?)\*/g, "$1");
-
-      // 尝试提取"优化后的正文："/"优化后正文："段落，到下一个分节标题为止
-      // 分节标题特征：行首出现"优化说明"/"说明"/"备注"/"---"，或行首是表格 "|"
-      const sectionMatch = text.match(
-        /优化后(?:的)?正文[：:]\s*\n([\s\S]+?)(?:\n{1,2}(?:优化说明|说明|备注)[：:\s]|\n{1,2}---|\n{1,2}\|.+\||\n{0,2}$)/
-      );
-      if (sectionMatch) return sectionMatch[1].trim();
-
-      // 没有结构标记，返回去掉首行（如果首行像标题）后的内容
-      const lines = text.trim().split("\n");
-      if (lines[0].endsWith("：") || lines[0].endsWith(":")) {
-        return lines.slice(1).join("\n").trim();
-      }
-      return text.trim();
-    };
-
-    const plainText = extractBodyText(content);
-
-    return (
-      <div className="mt-2.5 pt-2.5 border-t border-zinc-200 flex items-center gap-2 flex-wrap">
-        <span className="text-[10px] text-zinc-400">采纳到正文：</span>
-        <button
-          onClick={() => {
-            onApplyBody?.(plainText, "replace");
-            setBodyApplied("replace");
-          }}
-          className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border transition-all ${
-            bodyApplied === "replace"
-              ? "bg-[#ff2442] text-white border-[#ff2442]"
-              : "border-zinc-200 hover:border-[#ff2442] hover:bg-[#fff0f2] text-zinc-700"
-          }`}
-        >
-          {bodyApplied === "replace"
-            ? <><Check size={10} /> 已替换</>
-            : "替换正文"}
-        </button>
-        <button
-          onClick={() => {
-            onApplyBody?.(plainText, "append");
-            setBodyApplied("append");
-          }}
-          className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border transition-all ${
-            bodyApplied === "append"
-              ? "bg-zinc-700 text-white border-zinc-700"
-              : "border-zinc-200 hover:border-zinc-400 hover:bg-zinc-50 text-zinc-600"
-          }`}
-        >
-          {bodyApplied === "append"
-            ? <><Check size={10} /> 已追加</>
-            : "追加到末尾"}
-        </button>
-        {onRegenerate && (
-          <button
-            onClick={() => { setBodyApplied(null); onRegenerate(); }}
-            className="text-[10px] text-zinc-400 hover:text-zinc-600 ml-auto flex items-center gap-0.5 transition-colors"
-          >
-            <RotateCcw size={10} /> 重新生成
-          </button>
-        )}
-      </div>
-    );
+  if (context.page.includes("数据") || context.route === "/data") {
+    return [
+      { title: "总结近期表现", detail: "找出值得关注的变化", prompt: "请总结当前账号近期笔记表现，并指出最值得关注的变化。" },
+      { title: "找内容规律", detail: "比较高表现笔记的共同点", prompt: "请结合当前可用数据，分析高表现笔记有哪些共同点。" },
+      { title: "规划下一步", detail: "把复盘结论转成可执行建议", prompt: "根据当前数据复盘，给我 3 条下一步内容运营建议。" },
+    ];
   }
+  if (context.page.includes("素材") || context.route === "/library") {
+    return [
+      { title: "整理素材", detail: "按主题和场景梳理当前素材", prompt: "请帮我梳理当前素材的主题和使用场景，并建议如何分类。" },
+      { title: "寻找选题", detail: "从素材中找适合当前账号的方向", prompt: "请从当前素材中找出适合当前账号的 3 个笔记选题。" },
+      { title: "生成笔记思路", detail: "把素材转成内容结构", prompt: "请基于当前选中的素材，给我一份笔记标题和内容结构建议。" },
+    ];
+  }
+  if (context.page.includes("人设") || context.page.includes("账号")) {
+    return [
+      { title: "检查账号人设", detail: "找出定位表达中的空缺", prompt: "请检查当前账号人设信息是否清晰、完整，指出需要补充的部分。" },
+      { title: "梳理表达风格", detail: "总结适合账号的语气和表达", prompt: "请根据当前账号资料，整理一份简洁的表达风格建议。" },
+      { title: "规划内容方向", detail: "让选题更贴近目标受众", prompt: "请结合当前账号定位和目标受众，建议 3 个稳定的内容方向。" },
+    ];
+  }
+  if (context.page.includes("灵感")) {
+    return [
+      { title: "找 3 个选题", detail: "结合当前灵感和账号方向", prompt: "请结合当前灵感和账号方向，给我 3 个具体可做的选题。" },
+      { title: "分析参考账号", detail: "提炼可借鉴的内容方法", prompt: "请分析当前选中的参考账号，提炼值得借鉴的内容方法。" },
+      { title: "生成笔记草稿", detail: "先给结构，便于继续编辑", prompt: "请基于当前选题生成一份笔记草稿，分标题、正文和标签建议。" },
+    ];
+  }
+  if (context.page.includes("记忆") || context.route === "/memory") {
+    return [
+      { title: "帮我记一条", detail: "说一件想让 AI 长期记住的事实", prompt: "帮我记一条事实记忆：我搬到了新的出租屋，厨房是开放式的。存好后告诉我记了什么。" },
+      { title: "提炼经验提示词", detail: "从偏好里抽可注入的写法规则", prompt: "帮我把「先吐槽再给结论、短句换行、不提高品质」整理成一条经验提示词。" },
+      { title: "检查记忆", detail: "看哪些已启用、哪些可能过时", prompt: "请帮我梳理当前记忆里哪些条目可能已过时或和别的冲突，给出处理建议。" },
+    ];
+  }
+  return [
+    { title: "整理当前工作", detail: "总结重点和待办", prompt: "请根据当前页面和账号上下文，帮我整理目前最重要的事项。" },
+    { title: "优化一篇笔记", detail: "检查标题、正文和标签", prompt: "我想优化一篇笔记，请先告诉我需要提供或检查哪些内容。" },
+    { title: "规划下一步", detail: "给出几条可执行建议", prompt: "结合当前账号情况，给我 3 条下一步内容运营建议。" },
+  ];
+}
 
-  return null;
+function getReadableObjectLabel(context: PageAIContext, noteId?: number, itemId?: number): string | null {
+  if (context.objectType === "note" || noteId != null) {
+    return `笔记「${context.draft?.title?.trim() || "未命名笔记"}」`;
+  }
+  if (context.objectType === "item" || itemId != null) {
+    return `素材「${context.objectLabel?.trim() || `素材 ${itemId ?? context.objectId}`}」`;
+  }
+  if (context.objectId == null) return null;
+  const objectTypeLabels: Record<string, string> = {
+    topic: "选题",
+    account: "账号",
+    "reference-workspace": "榜样与参考",
+  };
+  const typeLabel = objectTypeLabels[context.objectType ?? ""] ?? context.objectType ?? "当前项目";
+  const objectLabel = context.objectLabel?.trim();
+  return objectLabel ? `${typeLabel}「${objectLabel}」` : `${typeLabel}「${context.objectId}」`;
 }
 
 // ── 主组件 ────────────────────────────────────────────────────────
@@ -271,8 +264,10 @@ export default function AIPanel({
   noteId, itemId, accountId, systemExtra,
   available = true, unavailableReason, unavailableNextStep,
   onApply, onApplyTitle, onApplyTags, onApplyBody, onClose, sourceNotice,
-  hostMode = "sidebar", onHostModeChange, sessionKey: providedSessionKey,
+  hostMode = "sidebar", onHostModeChange, fillHost = false, sessionKey: providedSessionKey,
   historyKey, assistantMode, pageContext: providedPageContext,
+  onAIRequestStart,
+  onSelectSession,
 }: AIPanelProps) {
   const navigate = useNavigate();
   const { accountId: contextAccountId, scopeKey } = useAccountContext();
@@ -285,25 +280,129 @@ export default function AIPanel({
   );
   const [localHostMode, setLocalHostMode] = useState<AIHostMode>(hostMode);
   const activeHostMode = onHostModeChange ? hostMode : localHostMode;
+  const [hostModeMenuOpen, setHostModeMenuOpen] = useState(false);
+  const hostModeMenuRef = useRef<HTMLDivElement>(null);
+  const [historyMenuOpen, setHistoryMenuOpen] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [agentSessions, setAgentSessions] = useState<AgentSessionMetadata[]>([]);
+  const historyMenuRef = useRef<HTMLDivElement>(null);
+  const [contextDetailsOpen, setContextDetailsOpen] = useState(false);
+  const [selectedContextOpen, setSelectedContextOpen] = useState(false);
   const [promptMode, setPromptMode] = useState<"ask" | "agent">(assistantMode ?? "ask");
   const [referenceMenuOpen, setReferenceMenuOpen] = useState(false);
   const [referenceSearch, setReferenceSearch] = useState("");
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [commandSearch, setCommandSearch] = useState("");
-  const [providerMenuOpen, setProviderMenuOpen] = useState(false);
-  const [providerSearch, setProviderSearch] = useState("");
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>(IS_TAURI_RUNTIME ? "" : "model-api");
+  const [input, setInput] = useState("");
+  const [composerTokens, setComposerTokens] = useState<ComposerToken[]>([]);
+  const previousSessionKeyRef = useRef(sessionKey);
   useEffect(() => setPromptMode(assistantMode ?? "ask"), [assistantMode]);
+  useEffect(() => {
+    if (previousSessionKeyRef.current === sessionKey) return;
+    previousSessionKeyRef.current = sessionKey;
+    setInput("");
+    setComposerTokens([]);
+    setReferenceMenuOpen(false);
+    setCommandMenuOpen(false);
+  }, [sessionKey]);
+  useEffect(() => {
+    const refresh = () => setAgentSessions(readAgentSessions(effectiveAccountId));
+    refresh();
+    return subscribeAgentSessions(refresh);
+  }, [effectiveAccountId]);
+  useWorkspaceEffect(() => {
+    if (!historyMenuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!historyMenuRef.current?.contains(event.target as Node)) setHistoryMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setHistoryMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [historyMenuOpen]);
+  useWorkspaceEffect(() => {
+    if (!hostModeMenuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!hostModeMenuRef.current?.contains(event.target as Node)) setHostModeMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setHostModeMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [hostModeMenuOpen]);
   const changeHostMode = (mode: AIHostMode) => {
-    if (onHostModeChange) onHostModeChange(mode);
-    else setLocalHostMode(mode);
+    setHostModeMenuOpen(false);
+    if (mode === "page") {
+      onHostModeChange?.(mode);
+      openAgentWorkspace();
+      return;
+    }
+    if (onHostModeChange) {
+      onHostModeChange(mode);
+      return;
+    }
+    if (mode === "floating") {
+      window.dispatchEvent(new CustomEvent(GLOBAL_AI_EVENT, { detail: { sessionKey, historyKey: historyKey ?? null } }));
+      onClose?.();
+      return;
+    }
+    setLocalHostMode(mode);
   };
   const { data: localWorkspace } = useQuery({
-    queryKey: ["local-ai-knowledge", scopeKey],
-    queryFn: () => readLocalWorkspaceSnapshot(effectiveAccountId ?? undefined),
+    queryKey: ["local-workspace", scopeKey, "workspace"],
+    queryFn: () => readLocalWorkspaceSnapshot(effectiveAccountId ?? undefined, "workspace"),
     enabled: IS_TAURI_RUNTIME && effectiveAccountId !== null,
-    staleTime: 3_000,
+    staleTime: 30_000,
   });
+  const unresolvedSelectedAssetIds = useMemo(() => (pageContext.selectedItems ?? [])
+    .filter((item) => item.kind === "素材" && !item.label)
+    .map((item) => Number(item.id))
+    .filter((id) => Number.isSafeInteger(id) && id > 0), [pageContext.selectedItems]);
+  const { data: remoteSelectedAssets = EMPTY_SELECTED_ASSETS } = useQuery<Item[]>({
+    queryKey: ["ai-selected-context-assets", scopeKey, unresolvedSelectedAssetIds],
+    queryFn: () => Promise.all(unresolvedSelectedAssetIds.map((id) => api.get(`/api/library/${id}`) as Promise<Item>)),
+    enabled: available && !IS_TAURI_RUNTIME && unresolvedSelectedAssetIds.length > 0,
+    staleTime: 30_000,
+  });
+  const selectedContextItems = useMemo(() => {
+    const selection: AISelectionDetail[] = pageContext.selectedItems?.length
+      ? pageContext.selectedItems
+      : pageContext.selectedIds.map((id) => ({ id, kind: "项目" }));
+    if (selection.length === 0) return [];
+    const selectedAssetIds = new Set(selection
+      .filter((item) => item.kind === "素材")
+      .map((item) => Number(item.id))
+      .filter((id) => Number.isSafeInteger(id) && id > 0));
+    const assetById = new Map<number, Item>();
+    if (selectedAssetIds.size > 0) {
+      for (const item of localWorkspace?.items ?? []) {
+        if (selectedAssetIds.has(item.id)) assetById.set(item.id, localItemToItem(item));
+      }
+      for (const item of remoteSelectedAssets) assetById.set(item.id, item);
+    }
+    return selection.map((item) => {
+      const asset = item.kind === "素材" ? assetById.get(Number(item.id)) : undefined;
+      return {
+        id: item.id,
+        kind: item.kind || "项目",
+        label: item.label?.trim() || asset?.title?.trim() || `${item.kind || "项目"} ${item.id}`,
+      };
+    });
+  }, [localWorkspace?.items, pageContext.selectedIds, pageContext.selectedItems, remoteSelectedAssets]);
+  const contextObjectLabel = getReadableObjectLabel(pageContext, noteId, itemId);
+  const contextTitle = contextObjectLabel ? `${pageContext.page} · ${contextObjectLabel}` : pageContext.page;
+  const welcomeSuggestions = useMemo(() => getEmptySessionSuggestions(pageContext), [pageContext]);
   const { data: localInspirations = [] } = useQuery({
     queryKey: ["local-ai-inspirations", scopeKey],
     queryFn: () => readLocalInspirations(effectiveAccountId ?? undefined),
@@ -329,12 +428,107 @@ export default function AIPanel({
     inspirations: localInspirations,
     preferences: localKnowledgePreferences,
   }), [localInspirations, localKnowledgePreferences, localWorkspace]);
+  // 记忆注入：默认只用 PC 池（不串手机池）；候选与失效条目在 buildMemoryContext 内过滤。
+  const { data: memoryEntries = [] } = useQuery({
+    queryKey: ["ai-memory-entries", scopeKey],
+    queryFn: () => listMemoryEntries({ accountPoolId: effectiveAccountId ?? undefined, origin: "pc", enabled: true }),
+    enabled: IS_TAURI_RUNTIME && effectiveAccountId !== null,
+    staleTime: 3_000,
+  });
+  const { data: memoryPrompts = [] } = useQuery({
+    queryKey: ["ai-memory-prompts", scopeKey],
+    queryFn: () => listExperiencePrompts(effectiveAccountId ?? undefined, "pc"),
+    enabled: IS_TAURI_RUNTIME && effectiveAccountId !== null,
+    staleTime: 3_000,
+  });
+  const memoryContext = useMemo(
+    () =>
+      buildMemoryContext({
+        entries: memoryEntries,
+        prompts: memoryPrompts,
+        origin: "pc",
+        target: noteId != null || pageContext.objectType === "note" ? "compose" : "chat",
+        includeMobilePool: false,
+      }),
+    [memoryEntries, memoryPrompts, noteId, pageContext.objectType],
+  );
+  const noteReferenceIndex = (localWorkspace?.notes ?? []).slice(0, 40).map((note) => `${note.id}=${note.title || `笔记 ${note.id}`}`).join("；");
+  const selectedReferenceContext = composerTokens
+    .filter((token) => token.kind === "reference")
+    .map((token) => token.raw)
+    .join("；");
   const effectiveSystemExtra = [
     systemExtra,
     pageAIContextPrompt({ ...pageContext, accountId: effectiveAccountId }),
+    noteReferenceIndex ? `可引用笔记目录（仅可引用其中 ID）：${noteReferenceIndex}` : "",
+    selectedReferenceContext ? `用户本轮显式引用：${selectedReferenceContext}` : "",
     localKnowledge.prompt,
+    memoryContext.prompt,
   ].filter(Boolean).join("\n\n");
   const [selectedLocalProviderId, setSelectedLocalProviderId] = useState<LocalAIProviderStatus["id"] | null>(null);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [localProviders, setLocalProviders] = useState<LocalAIProviderStatus[]>([]);
+  const { data: modelApiSettings } = useQuery<ModelApiSettingsView>({
+    queryKey: ["model-api-settings"],
+    queryFn: readModelApiSettings,
+    enabled: IS_TAURI_RUNTIME,
+    staleTime: 30_000,
+  });
+  const { data: aiRuntime } = useQuery<AiRuntimeSettings>({
+    queryKey: ["ai-runtime-settings"],
+    queryFn: readAiRuntimeSettings,
+    enabled: IS_TAURI_RUNTIME,
+    staleTime: 30_000,
+  });
+  const connectedModelProviders = (modelApiSettings?.providers ?? []).filter((provider) => provider.configured);
+  const modelApiProviderId = selectedConnectionId.startsWith("model-api:")
+    ? selectedConnectionId.slice("model-api:".length)
+    : selectedConnectionId === "model-api"
+      ? (modelApiSettings?.defaultProviderId || connectedModelProviders[0]?.id || "")
+      : "";
+  const pickerGroups = useMemo<DefaultPickerGroup[]>(() => {
+    const groups: DefaultPickerGroup[] = [];
+    for (const provider of connectedModelProviders) {
+      const models = provider.enabledModels.length > 0 ? provider.enabledModels : (provider.model ? [provider.model] : []);
+      if (models.length === 0) continue;
+      groups.push({
+        kind: "model-api",
+        provider: provider.id,
+        label: provider.label,
+        entries: models.map((model) => ({
+          key: `${provider.id}:${model}`,
+          kind: "model-api" as const,
+          provider: provider.id,
+          providerLabel: provider.label,
+          model,
+          modelLabel: model,
+        })),
+      });
+    }
+    for (const provider of localProviders.filter((item) => item.state === "present")) {
+      const enabled = aiRuntime?.agentCli.enabledModels[provider.id] ?? [];
+      const values = enabled.length > 0 ? enabled : cliDefaultModelValues(provider.id);
+      groups.push({
+        kind: "agent-cli",
+        provider: provider.id,
+        label: provider.label,
+        entries: values.map((model) => ({
+          key: `cli:${provider.id}:${model}`,
+          kind: "agent-cli" as const,
+          provider: provider.id,
+          providerLabel: provider.label,
+          model,
+          modelLabel: cliModelLabel(provider.id, model),
+        })),
+      });
+    }
+    return groups;
+  }, [connectedModelProviders, localProviders, aiRuntime?.agentCli.enabledModels]);
+  const pickerCurrent = useMemo(() => {
+    if (modelApiProviderId) return { kind: "model-api" as const, provider: modelApiProviderId, model: selectedModel };
+    if (selectedLocalProviderId) return { kind: "agent-cli" as const, provider: selectedLocalProviderId, model: selectedModel };
+    return null;
+  }, [modelApiProviderId, selectedLocalProviderId, selectedModel]);
   const { messages, streaming, loading, error, run, send, retry, clear, abort } = useAIStream({
     noteId,
     itemId,
@@ -342,21 +536,121 @@ export default function AIPanel({
     systemExtra: effectiveSystemExtra,
     localProviderId: selectedLocalProviderId ?? undefined,
     localProviderScope: scopeKey,
+    connection: modelApiProviderId ? "model-api" : "agent-cli",
+    modelApiProviderId: modelApiProviderId || undefined,
+    modelApiModel: selectedModel || undefined,
     sessionKey,
-    historyKey,
+    historyKey: historyKey ?? undefined,
     assistantMode: promptMode,
   });
-  const [input, setInput] = useState("");
-  const [composerTokens, setComposerTokens] = useState<ComposerToken[]>([]);
+  function sendPrompt(text: string) {
+    if (!text.trim() || loading) return;
+    onAIRequestStart?.();
+    const noteEditing = noteId != null && Boolean(onApplyTitle || onApplyBody || onApplyTags);
+    send(text, false, noteEditing ? {
+      ...(typeof pageContext.objectVersion === "number" ? { proposalBaseVersion: pageContext.objectVersion } : {}),
+      proposalNoteId: noteId,
+      proposalAccountId: effectiveAccountId ?? null,
+    } : undefined);
+  }
+  const responseEnvelopes = useMemo(
+    () => messages.map((message) => message.role === "assistant" ? parseAIResponse(message.content) : null),
+    [messages],
+  );
   const [copied, setCopied] = useState<number | null>(null);
-  const [localProviders, setLocalProviders] = useState<LocalAIProviderStatus[]>([]);
+  const [memorySaveDraft, setMemorySaveDraft] = useState<MemorySaveDraft | null>(null);
+  const qc = useQueryClient();
   const [localProbeError, setLocalProbeError] = useState<string | null>(null);
   const [localProbeVersion, setLocalProbeVersion] = useState(0);
   const [checkingLocalProvider, setCheckingLocalProvider] = useState(IS_TAURI_RUNTIME);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => {
+  function openNoteReference(reference: AIResponseEnvelope["references"][number]) {
+    if (reference.type !== "note") return;
+    const targetNoteId = Number(reference.id);
+    if (!Number.isSafeInteger(targetNoteId) || targetNoteId <= 0) return;
+    changeHostMode("sidebar");
+    const params = new URLSearchParams({ aiSession: sessionKey, aiHost: "sidebar" });
+    navigate(`/notes/${targetNoteId}?${params.toString()}`);
+    onClose?.();
+  }
+
+  function executeResponseAction(
+    actionId: string,
+    response: AIResponseEnvelope,
+    selectedDraft?: Extract<AIResponseBlock, { type: "note-draft" }>,
+    proposalBaseVersion?: number,
+  ): boolean {
+    const action = pageContext.availableActions.find((candidate) => candidate.id === actionId);
+    if (!action || (!action.handler && !action.href)) return false;
+    if (action.requiresConfirmation && !window.confirm(`确认执行“${action.label}”吗？`)) return false;
+    if (action.handler?.startsWith("apply-note-") && proposalBaseVersion == null && !window.confirm("这条历史提案没有记录生成时的笔记版本，仍要应用到当前笔记吗？")) return false;
+    const draft = selectedDraft ?? findNoteDraft(response);
+    if (action.handler === "apply-note-title") {
+      if (!draft?.title || !onApplyTitle) return false;
+      return onApplyTitle(draft.title, proposalBaseVersion) !== false;
+    }
+    if (action.handler === "apply-note-body-replace" || action.handler === "apply-note-body-append") {
+      if (!draft?.body || !onApplyBody) return false;
+      return onApplyBody(draft.body, action.handler === "apply-note-body-replace" ? "replace" : "append", proposalBaseVersion) !== false;
+    }
+    if (action.handler === "apply-note-tags") {
+      if (!draft?.tags.length || !onApplyTags) return false;
+      return onApplyTags(draft.tags.map((tag) => `#${tag}`).join(" "), proposalBaseVersion) !== false;
+    }
+    if (action.handler === "navigate" && action.href) {
+      navigate(action.href);
+      return true;
+    }
+    if (action.handler === "save-note-draft") {
+      window.dispatchEvent(new CustomEvent(PAGE_AI_ACTION_EVENT, {
+        detail: { actionId: action.id, response, sessionKey, accountId: effectiveAccountId, onComplete: () => onClose?.() },
+      }));
+      return true;
+    }
+    if (action.handler === "save-memory-entry" || action.handler === "save-experience-prompt") {
+      const requested = response.actions.find((item) => item.id === action.id);
+      const params = requested?.params ?? {};
+      const fromParams = typeof params.content === "string" ? params.content : "";
+      const fromBlocks = response.blocks.find((block) => block.type === "markdown")?.content ?? "";
+      const content = (fromParams || fromBlocks || response.blocks.map((b) => ("content" in b ? b.content : "")).join("\n")).trim();
+      setMemorySaveDraft({
+        mode: action.handler === "save-experience-prompt" ? "prompt" : "entry",
+        title: typeof params.title === "string" ? params.title : "",
+        content: content.slice(0, 1000),
+        kind: typeof params.kind === "string" ? params.kind as MemorySaveDraft["kind"] : undefined,
+        subject: typeof params.subject === "string" ? params.subject : "",
+        source: "AI 会话",
+      });
+      return true;
+    }
+    return false;
+  }
+
+  function canExecuteResponseAction(action: AIAction): boolean {
+    if (action.handler === "apply-note-title") return Boolean(onApplyTitle);
+    if (action.handler === "apply-note-body-replace" || action.handler === "apply-note-body-append") return Boolean(onApplyBody);
+    if (action.handler === "apply-note-tags") return Boolean(onApplyTags);
+    if (action.handler === "navigate") return Boolean(action.href);
+    if (action.handler === "save-note-draft") return true;
+    if (action.handler === "save-memory-entry" || action.handler === "save-experience-prompt") return IS_TAURI_RUNTIME;
+    return false;
+  }
+
+  /** 会话尾部一键沉淀：把本轮助手回复存为记忆/经验，默认停用。 */
+  function openSaveDraft(mode: "entry" | "prompt", messageContent: string) {
+    const seed = messageContent.replace(/\s+/g, " ").trim().slice(0, 500);
+    setMemorySaveDraft({
+      mode,
+      title: seed.slice(0, 20) || "会话经验",
+      content: seed || "（请补充内容）",
+      kind: mode === "entry" ? "expression" : undefined,
+      source: "AI 会话",
+    });
+  }
+
+  useWorkspaceEffect(() => {
     if (!IS_TAURI_RUNTIME) return;
     let active = true;
     const timer = window.setTimeout(() => {
@@ -457,6 +751,8 @@ export default function AIPanel({
     return parts.length ? `经验库已注入：${parts.join(" · ")}` : "";
   })();
   const knowledgeSummary = IS_TAURI_RUNTIME ? localKnowledge.summary : remoteKnowledgeSummary;
+  const memorySummary = IS_TAURI_RUNTIME ? memoryContext.summary : "";
+  const contextSummary = [knowledgeSummary, memorySummary].filter(Boolean).join(" · ");
 
   // ── 拖拽调整宽度
   const { width, dragging, onDragStart } = usePanelResize({
@@ -482,7 +778,7 @@ export default function AIPanel({
     const tokenText = composerTokens.map((token) => token.display).join(" ");
     const prompt = [tokenText, input.trim()].filter(Boolean).join("\n");
     if (!aiReady || !prompt.trim()) return;
-    send(prompt);
+    sendPrompt(prompt);
     setInput("");
     setComposerTokens([]);
   }
@@ -491,7 +787,6 @@ export default function AIPanel({
     if (e.key === "Escape") {
       setReferenceMenuOpen(false);
       setCommandMenuOpen(false);
-      setProviderMenuOpen(false);
       return;
     }
     if (e.key === "Backspace" && !input.trim() && composerTokens.length > 0) {
@@ -541,7 +836,8 @@ export default function AIPanel({
     ];
     if (pageContext.objectId != null || noteId != null || itemId != null) {
       const objectId = pageContext.objectId ?? noteId ?? itemId;
-      options.push({ id: "object", token: `@object:${objectId}`, displayToken: `@当前对象 · ${objectId}`, label: "当前对象", detail: String(objectId), group: "当前上下文" });
+      const objectLabel = contextObjectLabel ?? `项目 ${objectId}`;
+      options.push({ id: "object", token: `@object:${objectId}`, displayToken: `@${objectLabel}`, label: objectLabel, detail: objectLabel, group: "当前上下文" });
     }
     if (pageContext.selectedIds.length > 0) {
       options.push({ id: "selection", token: "@selection", displayToken: `@当前选中 · ${pageContext.selectedIds.length} 项`, label: "当前选中", detail: `${pageContext.selectedIds.length} 项`, group: "当前上下文" });
@@ -564,7 +860,7 @@ export default function AIPanel({
       options.push({ id: `reference-${refId}`, token: `@reference:${refId}`, displayToken: `@榜样 · ${label}`, label, group: "榜样" });
     }
     return options;
-  }, [effectiveAccountId, itemId, localInspirations, localWorkspace, noteId, pageContext]);
+  }, [contextObjectLabel, effectiveAccountId, itemId, localInspirations, localWorkspace, noteId, pageContext]);
 
   const commandOptions = useMemo<AICommandOption[]>(() => [
     ...pageContext.availableActions.map((action) => ({ id: action.id, label: action.label, detail: action.requiresConfirmation ? "执行前确认" : "当前页可用" })),
@@ -646,27 +942,35 @@ export default function AIPanel({
     else if (!atMatch) setCommandMenuOpen(false);
   }
 
-  function selectConnection(id: string) {
-    setSelectedConnectionId(id);
-    setProviderMenuOpen(false);
-    setProviderSearch("");
-    if (id !== "model-api") {
-      const providerId = id as LocalAIProviderStatus["id"];
-      setSelectedLocalProviderId(providerId);
-      savePreferredLocalAIProvider(scopeKey, providerId);
+  function applyPickerTarget(kind: "model-api" | "agent-cli", provider: string, model: string) {
+    setSelectedModel(model);
+    if (kind === "model-api") {
+      setSelectedConnectionId(`model-api:${provider}`);
+      setSelectedLocalProviderId(null);
+    } else {
+      setSelectedConnectionId(provider);
+      setSelectedLocalProviderId(provider as LocalAIProviderStatus["id"]);
+      savePreferredLocalAIProvider(scopeKey, provider as LocalAIProviderStatus["id"]);
     }
   }
+
+  const pageActions = pageContext.availableActions.filter((action) => !isFieldScopedAction(action));
+  const hasContextDetails = Boolean(sourceNotice || pageActions.length || localReady || contextSummary || localProbeError);
+  const normalizedHistoryQuery = historyQuery.trim().toLocaleLowerCase();
+  const filteredAgentSessions = agentSessions.filter((session) => (
+    !normalizedHistoryQuery || `${session.title} ${session.lastMessagePreview}`.toLocaleLowerCase().includes(normalizedHistoryQuery)
+  ));
 
   return (
     <div
       className={`ai-panel-drawer creator-note-aux-panel creator-note-ai-panel flex flex-col bg-white relative ${
         activeHostMode === "floating" ? "rounded-2xl border border-zinc-200 shadow-2xl h-[min(720px,calc(100vh-32px))]" :
-        activeHostMode === "page" ? "h-full w-full" : "h-full border-l border-zinc-100 shrink-0"
+        activeHostMode === "page" ? "ai-panel-page h-full w-full" : "h-full border-l border-zinc-100 shrink-0"
       }`}
-      style={{ width: activeHostMode === "page" ? "100%" : width, cursor: dragging ? "col-resize" : undefined }}
+      style={{ width: activeHostMode === "page" || fillHost ? "100%" : width, cursor: dragging ? "col-resize" : undefined }}
     >
       {/* 左侧拖拽条：视觉 4px，热区 12px（负 margin 扩展左侧） */}
-      <div
+      {!fillHost && activeHostMode === "sidebar" && <div
         onMouseDown={onDragStart}
         className={`absolute left-0 top-0 bottom-0 z-10 flex items-center justify-center
                     group cursor-col-resize`}
@@ -678,32 +982,116 @@ export default function AIPanel({
           className={`w-[3px] h-full rounded-full transition-colors duration-150
             ${dragging ? "bg-[#ff2442]" : "bg-transparent group-hover:bg-[#ff2442]/40"}`}
         />
-      </div>
+      </div>}
 
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 shrink-0">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-zinc-100 px-4">
         <div className="flex items-center gap-2">
           <Sparkles size={15} className="text-[#ff2442]" />
           <span className="text-sm font-semibold text-zinc-800">AI 助手</span>
-          {activeHostMode !== "floating" && activeHostMode !== "page" && (
-            <select
-              value={activeHostMode}
-              onChange={(event) => changeHostMode(event.target.value as AIHostMode)}
-              aria-label="切换 AI 助手尺寸"
-              className="ml-1 rounded-lg border border-zinc-200 bg-white px-1.5 py-1 text-[10px] text-zinc-500 outline-none focus:border-[#ff2442]"
-            >
-              {AI_HOST_MODES.map((mode) => <option key={mode.id} value={mode.id}>{mode.label}</option>)}
-            </select>
-          )}
         </div>
         <div className="flex items-center gap-1">
           <button type="button" onClick={startNewSession} title="新建会话" className="rounded-lg p-1.5 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-700">
             <Plus size={15} />
           </button>
           {activeHostMode !== "page" && (
-            <button type="button" onClick={openAgentWorkspace} title="在 AI 工作区打开" className="rounded-lg p-1.5 text-zinc-400 transition hover:bg-zinc-100 hover:text-[#ff2442]">
-              <Maximize2 size={14} />
-            </button>
+            <div className="relative" ref={hostModeMenuRef}>
+              <button
+                type="button"
+                onClick={() => setHostModeMenuOpen((current) => !current)}
+                aria-label="切换 AI 显示方式"
+                aria-haspopup="menu"
+                aria-expanded={hostModeMenuOpen}
+                title="切换显示方式"
+                className={`flex h-8 items-center gap-1 rounded-lg px-2 text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-800 ${hostModeMenuOpen ? "bg-zinc-100 text-zinc-800" : ""}`}
+              >
+                {hostModeIcon(activeHostMode)}
+                <ChevronDown size={12} />
+              </button>
+              {hostModeMenuOpen && (
+                <div role="menu" aria-label="AI 显示方式" className="absolute right-0 top-full z-40 mt-2 w-52 rounded-xl border border-zinc-200 bg-white p-1.5 shadow-xl">
+                  {(["sidebar", "floating", "page"] as AIHostMode[]).map((modeId) => {
+                    const modeInfo = AI_HOST_MODES.find((mode) => mode.id === modeId)!;
+                    return (
+                      <button
+                        key={modeId}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={activeHostMode === modeId}
+                        onClick={() => changeHostMode(modeId)}
+                        className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition ${activeHostMode === modeId ? "bg-zinc-100 text-zinc-900" : "text-zinc-600 hover:bg-zinc-50"}`}
+                      >
+                        <span className="text-zinc-500">{hostModeIcon(modeId)}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-xs font-medium">{modeInfo.label === "独立页" ? "在 AI 页面打开" : modeInfo.label}</span>
+                          <span className="mt-0.5 block truncate text-[10px] text-zinc-400">{modeInfo.description}</span>
+                        </span>
+                        {activeHostMode === modeId && <Check size={13} className="shrink-0 text-[#ff2442]" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+          {activeHostMode === "floating" && onSelectSession && (
+            <div className="relative" ref={historyMenuRef}>
+              <button
+                type="button"
+                onClick={() => setHistoryMenuOpen((current) => !current)}
+                aria-label="选择会话历史"
+                aria-haspopup="dialog"
+                aria-expanded={historyMenuOpen}
+                title="会话历史"
+                className={`rounded-lg p-1.5 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-700 ${historyMenuOpen ? "bg-zinc-100 text-zinc-800" : ""}`}
+              >
+                <History size={15} />
+              </button>
+              {historyMenuOpen && (
+                <div role="dialog" aria-label="会话历史" className="absolute right-0 top-full z-[70] mt-2 flex max-h-[min(420px,calc(100vh-96px))] w-[min(320px,calc(100vw-40px))] flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white p-2 shadow-2xl">
+                  <div className="flex shrink-0 items-center justify-between px-1 pb-2">
+                    <span className="text-xs font-semibold text-zinc-700">会话历史</span>
+                    <span className="text-[10px] text-zinc-400">{filteredAgentSessions.length} 条</span>
+                  </div>
+                  <label className="relative mb-2 block shrink-0">
+                    <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+                    <input
+                      value={historyQuery}
+                      onChange={(event) => setHistoryQuery(event.target.value)}
+                      placeholder="搜索会话标题或内容"
+                      aria-label="搜索会话标题或内容"
+                      className="h-8 w-full rounded-lg border border-zinc-200 bg-zinc-50 pl-8 pr-2 text-[11px] text-zinc-700 outline-none transition placeholder:text-zinc-400 focus:border-[#ff2442]/50 focus:bg-white"
+                    />
+                  </label>
+                  <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto">
+                    {filteredAgentSessions.length === 0 ? (
+                      <p className="px-2 py-4 text-center text-[11px] text-zinc-400">{normalizedHistoryQuery ? "没有匹配的会话" : "还没有可选的历史会话"}</p>
+                    ) : filteredAgentSessions.map((session) => {
+                      const active = session.id === sessionKey;
+                      return (
+                        <button
+                          key={session.id}
+                          type="button"
+                          onClick={() => {
+                            onSelectSession(session.id);
+                            setHistoryMenuOpen(false);
+                            setHistoryQuery("");
+                          }}
+                          className={`flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition ${active ? "bg-[#fff1f3] text-[#c81d36]" : "text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900"}`}
+                          title={session.lastMessagePreview || session.title}
+                        >
+                          <MessageSquare size={13} className="mt-0.5 shrink-0 opacity-70" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[11px] font-medium">{session.title}</span>
+                            {session.lastMessagePreview && <span className="mt-0.5 block truncate text-[10px] opacity-65">{session.lastMessagePreview}</span>}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
           {messages.length > 0 && (
             <button onClick={clear} title="清空对话" className="p-1 text-zinc-400 hover:text-zinc-600 rounded transition-colors">
@@ -729,22 +1117,28 @@ export default function AIPanel({
         </div>
       </div>
 
-      {sourceNotice && (
-        <div className="px-4 py-1.5 bg-[var(--color-selected)] border-b border-[var(--color-border)] shrink-0">
-          <p className="text-[10px] text-[var(--color-text-secondary)] leading-relaxed">{sourceNotice}</p>
-        </div>
-      )}
-
-      <div className="flex items-center justify-between gap-2 border-b border-zinc-100 bg-zinc-50/70 px-4 py-1.5 text-[10px] text-zinc-400">
-        <span className="truncate">页面：{pageContext.page || pageContext.route} · {effectiveAccountId == null ? "账号待确认" : `账号 ${effectiveAccountId}`}{pageContext.objectId != null ? ` · 对象 ${pageContext.objectId}` : noteId != null ? ` · 笔记 ${noteId}` : itemId != null ? ` · 素材 ${itemId}` : " · 工作区"}</span>
-        <span className={`shrink-0 ${run?.status === "running" ? "text-amber-600" : run?.status === "failed" ? "text-red-500" : run?.status === "interrupted" ? "text-amber-600" : "text-zinc-400"}`}>
-          {run?.status === "running" ? "任务进行中" : run?.status === "interrupted" ? "任务已中断" : run?.status === "failed" ? "任务失败" : "任务就绪"}
+      <div className="flex min-h-9 shrink-0 items-center justify-between gap-2 border-b border-zinc-100 bg-[var(--color-surface-2)] px-4 py-1 text-[10px] text-zinc-400">
+        <span className="truncate" title={`${contextTitle} · ${effectiveAccountId == null ? "账号待确认" : `账号 ${effectiveAccountId}`}`}>
+          {contextTitle} · {effectiveAccountId == null ? "账号待确认" : `账号 ${effectiveAccountId}`}
         </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className={`${run?.status === "running" ? "text-amber-600" : run?.status === "failed" ? "text-red-500" : run?.status === "interrupted" ? "text-amber-600" : "text-zinc-400"}`}>
+            {run?.status === "running" ? "进行中" : run?.status === "interrupted" ? "已中断" : run?.status === "failed" ? "失败" : "就绪"}
+          </span>
+          {hasContextDetails && (
+            <button type="button" onClick={() => setContextDetailsOpen((current) => !current)} aria-expanded={contextDetailsOpen} className="flex items-center gap-0.5 rounded px-1 py-0.5 text-zinc-400 transition hover:bg-[var(--color-surface)] hover:text-zinc-700" title="查看上下文与能力详情">
+              详情 <ChevronDown size={11} className={`transition-transform ${contextDetailsOpen ? "rotate-180" : ""}`} />
+            </button>
+          )}
+        </div>
       </div>
-      {pageContext.availableActions.length > 0 && (
-        <div className="flex items-center gap-1 overflow-x-auto border-b border-zinc-100 px-4 py-1 text-[10px] text-zinc-400">
-          <span className="shrink-0">页面操作：</span>
-          {pageContext.availableActions.slice(0, 5).map((action) => <span key={action.id} className="shrink-0 rounded-full bg-zinc-100 px-1.5 py-0.5">{action.label}</span>)}
+      {contextDetailsOpen && hasContextDetails && (
+        <div className="max-h-32 shrink-0 space-y-1.5 overflow-y-auto border-b border-zinc-100 bg-[var(--color-surface-2)] px-4 py-2 text-[10px] leading-relaxed text-zinc-500">
+          {sourceNotice && <p>{sourceNotice}</p>}
+          {pageActions.length > 0 && <p>本页可用操作：{pageActions.slice(0, 5).map((action) => action.label).join(" · ")}</p>}
+          {localReady && <p>本地 AI CLI：{localProvider.label} · {localProviderTextVerified ? "文本输出已验证" : "等待真实文本输出验证"} · 图片和工具能力尚未声明</p>}
+          {contextSummary && <p>{contextSummary}</p>}
+          {localProbeError && <p className="text-red-600">{localProbeError}</p>}
         </div>
       )}
 
@@ -770,30 +1164,53 @@ export default function AIPanel({
         </div>
       )}
 
-      {localReady && activeHostMode !== "floating" && activeHostMode !== "page" && (
-        <div className="mx-3 mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 shrink-0" role="status">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-xs font-medium text-emerald-800">本地 AI CLI：{localProvider.label}</p>
-            <span className="text-[10px] text-emerald-700">可在输入区切换 Provider / Model</span>
-          </div>
-          <p className="mt-1 text-[10px] leading-relaxed text-emerald-700">
-            {localProviderTextVerified ? "文本能力已由真实非空输出验证" : "已发现命令，发送一次真实文本后才会确认文本能力"}；图片和工具能力仍未声明。
-          </p>
-        </div>
-      )}
-
-      {/* 经验库注入状态 */}
-      {knowledgeSummary && activeHostMode !== "floating" && activeHostMode !== "page" && (
-        <div className="px-4 py-1.5 bg-[#ff2442]/5 border-b border-[#ff2442]/10 shrink-0">
-          <p className="text-[10px] text-[#ff2442]/70 leading-relaxed">{knowledgeSummary}</p>
-        </div>
-      )}
-
       {/* 对话区 */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <div className={`flex min-h-full w-full flex-col space-y-3 ${activeHostMode === "page" ? "mx-auto max-w-3xl" : ""}`}>
+        {messages.length === 0 && !loading && !streaming && !error && aiReady && (
+          <div className={`flex min-h-full w-full flex-col justify-center py-4 ${activeHostMode === "page" ? "" : "mx-auto max-w-lg"}`}>
+            <div className="mb-3 flex items-center gap-2 text-zinc-500">
+              <Sparkles size={15} className="text-[#ff2442]" />
+              <span className="text-xs font-medium">从当前页面开始</span>
+            </div>
+            <div className="grid gap-2">
+              {welcomeSuggestions.map((suggestion) => (
+                <button
+                  key={suggestion.title}
+                  type="button"
+                  onClick={() => sendPrompt(suggestion.prompt)}
+                  disabled={loading}
+                  className="group rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-left transition hover:border-[#ff2442]/35 hover:bg-[#fff8f9] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className="block text-xs font-medium text-zinc-700 group-hover:text-[#c81d36]">{suggestion.title}</span>
+                  <span className="mt-0.5 block text-[10px] leading-relaxed text-zinc-400">{suggestion.detail}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {messages.map((msg, i) => {
           const isLast = i === messages.length - 1;
-          const outputType = msg.role === "assistant" ? detectOutputType(msg.content) : "generic";
+          const response = responseEnvelopes[i];
+          const responseActions = response?.actions.flatMap((requested) => {
+            const declared = pageContext.availableActions.find((action) => action.id === requested.id);
+            return declared && canExecuteResponseAction(declared) ? [{ requested, declared }] : [];
+          }) ?? [];
+          const hasNoteDraft = response?.blocks.some((block) => block.type === "note-draft") ?? false;
+          const proposalScopeMatches = msg.proposalNoteId === noteId && msg.proposalAccountId === effectiveAccountId;
+          const hasRestorableProposalVersion = proposalScopeMatches && typeof msg.proposalBaseVersion === "number";
+          const legacySessionMatchesNote = noteId != null && historyKey === makeAISessionKey({ accountId: effectiveAccountId, noteId });
+          const hasProposalScopeMetadata = msg.proposalNoteId != null || Object.prototype.hasOwnProperty.call(msg, "proposalAccountId") || typeof msg.proposalBaseVersion === "number";
+          const canRestoreNoteDraftActions = hasNoteDraft && (
+            hasRestorableProposalVersion || (!hasProposalScopeMetadata && legacySessionMatchesNote)
+          );
+          const noteDraftActions = canRestoreNoteDraftActions ? {
+            title: pageContext.availableActions.find((action) => action.handler === "apply-note-title" && canExecuteResponseAction(action)),
+            bodyReplace: pageContext.availableActions.find((action) => action.handler === "apply-note-body-replace" && canExecuteResponseAction(action)),
+            bodyAppend: pageContext.availableActions.find((action) => action.handler === "apply-note-body-append" && canExecuteResponseAction(action)),
+            tags: pageContext.availableActions.find((action) => action.handler === "apply-note-tags" && canExecuteResponseAction(action)),
+          } : undefined;
+          const footerActions = responseActions.filter(({ declared }) => !isFieldScopedAction(declared));
           return (
             <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
               {msg.role === "user" ? (
@@ -801,25 +1218,46 @@ export default function AIPanel({
                   <p className="whitespace-pre-wrap">{msg.content}</p>
                 </div>
               ) : (
-                <div className="max-w-[92%] group select-text">
-                  <div className="bg-zinc-50 border border-zinc-100 rounded-2xl rounded-tl-sm px-3 py-2.5 text-xs text-zinc-700 select-text">
-                    <MdContent content={msg.content} />
-                    {/* 结构化操作区 —— 仅最后一条 AI 消息显示 */}
-                    {isLast && !streaming && (
-                      <StructuredOutput
-                        content={msg.content}
-                        outputType={outputType}
-                        onApplyTitle={onApplyTitle}
-                        onApplyTags={onApplyTags}
-                        onApplyBody={onApplyBody}
-                        onRegenerate={() => {
-                          // 找到最后一条用户消息重发
-                          const lastUser = [...messages].reverse().find((m) => m.role === "user");
-                          if (lastUser) send(lastUser.content);
-                        }}
+                <div className="w-full max-w-full group select-text">
+                  <div className="w-full rounded-2xl rounded-tl-sm border border-zinc-100 bg-zinc-50 px-4 py-3 text-xs text-zinc-700 select-text">
+                    {response ? (
+                      <AIResponseBlocks
+                        blocks={response.blocks}
+                        noteDraftActions={noteDraftActions}
+                        onNoteDraftAction={(action, block) => executeResponseAction(action.id, response, block, hasRestorableProposalVersion ? msg.proposalBaseVersion : undefined)}
                       />
-                    )}
+                    ) : <MdContent content={msg.content} />}
                   </div>
+                  {response && (response.references.length > 0 || (isLast && (response.suggestions.length > 0 || footerActions.length > 0))) && (
+                    <div className="mt-2 space-y-2 px-1">
+                      {response.references.length > 0 && <div className="flex flex-wrap items-center gap-1.5"><span className="text-[10px] text-zinc-400">引用</span>{response.references.map((reference, referenceIndex) => <button key={`${reference.type}-${reference.id}-${referenceIndex}`} type="button" onClick={() => openNoteReference(reference)} disabled={reference.type !== "note"} className={`max-w-full truncate rounded-md border px-2 py-1 text-[10px] ${reference.type === "note" ? "border-zinc-200 bg-white text-zinc-600 hover:border-[#ff2442]/40 hover:text-[#d21f3a]" : "border-zinc-100 bg-zinc-50 text-zinc-400"}`} title={reference.title}>{reference.type === "note" ? `笔记 · ${reference.title}` : `${reference.type} · ${reference.title}`}</button>)}</div>}
+                      {isLast && response.suggestions.length > 0 && <div className="space-y-1"><div className="text-[10px] text-zinc-400">Suggest · 继续对话</div><div className="flex flex-wrap gap-1.5">{response.suggestions.map((suggestion, suggestionIndex) => <button key={`${suggestion.text}-${suggestionIndex}`} type="button" disabled={loading} onClick={() => sendPrompt(suggestion.text)} className="max-w-full rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-left text-[10px] text-zinc-600 transition hover:border-[#ff2442]/40 hover:bg-[#fff5f6] hover:text-[#c81d36] disabled:opacity-50" title={suggestion.text}>{suggestion.label}</button>)}</div></div>}
+                      {isLast && footerActions.length > 0 && <div className="space-y-1"><div className="text-[10px] text-zinc-400">Action · 页面操作</div><div className="flex flex-wrap gap-1.5">{footerActions.map(({ requested, declared }) => <button key={requested.id} type="button" onClick={() => executeResponseAction(requested.id, response)} className="rounded-md border border-[#ff2442]/20 bg-[#fff5f6] px-2.5 py-1 text-[10px] font-medium text-[#c81d36] transition hover:border-[#ff2442]/50 hover:bg-[#ffedf0]" title={declared.description}>{declared.label}{declared.requiresConfirmation ? " · 确认" : ""}</button>)}</div></div>}
+                    </div>
+                  )}
+                  {isLast && IS_TAURI_RUNTIME && !loading && (
+                    <div className="mt-2 space-y-1 px-1">
+                      <div className="text-[10px] text-zinc-400">沉淀 · 本轮经验</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => openSaveDraft("entry", msg.content)}
+                          className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-medium text-amber-700 transition hover:bg-amber-100"
+                          title="把本轮谈到的事实/偏好存为记忆，默认停用"
+                        >
+                          存为记忆
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openSaveDraft("prompt", msg.content)}
+                          className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-medium text-amber-700 transition hover:bg-amber-100"
+                          title="把希望 AI 遵守的写法存为经验提示词"
+                        >
+                          存为经验
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   {/* hover 操作栏 */}
                   <div className="flex gap-2 mt-1 opacity-0 group-hover:opacity-100 transition-opacity px-1">
                     <button
@@ -845,7 +1283,9 @@ export default function AIPanel({
         {streaming && (
           <div className="flex justify-start">
             <div className="max-w-[92%] bg-zinc-50 border border-zinc-100 rounded-2xl rounded-tl-sm px-3 py-2.5 text-xs text-zinc-700 select-text">
-              <MdContent content={streaming} streaming />
+              {/^(?:\s*```json\s*)?\s*\{\s*"intent"/.test(streaming)
+                ? <span className="text-zinc-400">正在整理结构化回复…</span>
+                : <MdContent content={streaming} streaming />}
             </div>
           </div>
         )}
@@ -870,7 +1310,7 @@ export default function AIPanel({
             {messages.some((message) => message.role === "user" && message.content.trim()) && (
               <button
                 type="button"
-                onClick={retry}
+                onClick={() => { onAIRequestStart?.(); retry(); }}
                 disabled={loading}
                 className="shrink-0 rounded-md border border-red-200 bg-white px-2 py-1 text-[10px] text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -881,23 +1321,45 @@ export default function AIPanel({
         )}
 
         <div ref={bottomRef} />
+        </div>
       </div>
 
       {/* 快捷操作 — 常驻横向滚动，位于输入框上方 */}
-      {aiReady && enabledActions.length > 0 && (
-        <QuickActionBar actions={enabledActions} onSend={send} loading={loading} hasMessages={messages.length > 0} />
+      {aiReady && messages.length > 0 && enabledActions.length > 0 && (
+        <QuickActionBar actions={enabledActions} onSend={sendPrompt} loading={loading} />
       )}
 
       {/* 输入框 */}
       <div className="border-t border-zinc-100 p-3 shrink-0">
-        <div className="mb-2 flex items-center gap-1.5 overflow-x-auto whitespace-nowrap">
-          <span className="max-w-[70%] truncate rounded-md bg-zinc-100 px-2 py-1 text-[10px] text-zinc-500" title="当前页面上下文">
-            当前页 · {pageContext.page}{pageContext.objectId != null ? ` · 对象 ${pageContext.objectId}` : ""}
-          </span>
-          {pageContext.selectedIds.length > 0 && (
-            <span className="rounded-md bg-[#ff2442]/10 px-2 py-1 text-[10px] text-[#ff2442]">已选 {pageContext.selectedIds.length} 项</span>
-          )}
-        </div>
+        <div className={activeHostMode === "page" ? "mx-auto w-full max-w-3xl" : undefined}>
+        {selectedContextItems.length > 0 && (
+          <div className="mb-2 flex items-center gap-1.5 overflow-x-auto whitespace-nowrap">
+            <button
+              type="button"
+              onClick={() => setSelectedContextOpen((current) => !current)}
+              aria-expanded={selectedContextOpen}
+              aria-controls="ai-selected-context-items"
+              title="查看本次已选内容"
+              className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[#ff2442]/10 px-2 py-1 text-[10px] text-[#c81d36] transition hover:bg-[#ff2442]/15"
+            >
+              已选 {selectedContextItems.length} 项
+              <ChevronDown size={11} className={`transition-transform ${selectedContextOpen ? "rotate-180" : ""}`} />
+            </button>
+          </div>
+        )}
+        {selectedContextOpen && selectedContextItems.length > 0 && (
+          <div id="ai-selected-context-items" className="mb-2 max-h-28 overflow-y-auto rounded-lg border border-zinc-200 bg-[var(--color-surface-2)] p-2">
+            <div className="mb-1.5 text-[10px] font-medium text-zinc-500">本次已选内容</div>
+            <div className="space-y-1">
+              {selectedContextItems.map((item) => (
+                <div key={`${item.kind}-${item.id}`} className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-white px-2 py-1.5 text-[10px]">
+                  <span className="min-w-0 truncate text-zinc-700" title={item.label}>{item.label}</span>
+                  <span className="shrink-0 text-zinc-400">{item.kind} · #{item.id}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="ai-composer-shell relative rounded-xl bg-white transition-colors">
           {referenceMenuOpen && (
             <AIReferencePicker
@@ -969,19 +1431,13 @@ export default function AIPanel({
                 </button>
               ))}
             </div>
-            <span className="ml-1 hidden max-w-[38%] truncate text-[10px] text-zinc-400 sm:inline" title="当前上下文已自动注入">
-              {pageContext.page}{pageContext.objectId != null ? ` · 对象 ${pageContext.objectId}` : ""}
-            </span>
-            <ProviderModelPopover
-              open={providerMenuOpen}
-              onOpenChange={setProviderMenuOpen}
-              search={providerSearch}
-              onSearch={setProviderSearch}
-              providers={localProviders}
-              selectedId={selectedConnectionId || localProvider?.id || ""}
-              onSelect={selectConnection}
-              tauriRuntime={IS_TAURI_RUNTIME}
-            />
+            <div className="ml-auto w-[200px] shrink-0">
+              <DefaultModelPicker
+                groups={pickerGroups}
+                current={pickerCurrent}
+                onApply={applyPickerTarget}
+              />
+            </div>
             {loading ? (
               <button type="button" onClick={abort} className="rounded-lg p-1.5 text-zinc-400 transition hover:bg-red-50 hover:text-red-500" title="停止生成">
                 <StopCircle size={17} />
@@ -1000,7 +1456,20 @@ export default function AIPanel({
           </div>
         </div>
         <p className="mt-1.5 text-right text-[10px] text-zinc-300">Enter 发送 · Shift+Enter 换行 · {promptMode === "agent" ? "Agent 会先请求确认" : "Ask 只回答和分析"}</p>
+        </div>
       </div>
+      {memorySaveDraft && (
+        <MemorySaveDialog
+          draft={memorySaveDraft}
+          onClose={() => setMemorySaveDraft(null)}
+          onSaved={() => {
+            void qc.invalidateQueries({ queryKey: ["memory-entries"] });
+            void qc.invalidateQueries({ queryKey: ["experience-prompts"] });
+            void qc.invalidateQueries({ queryKey: ["ai-memory-entries"] });
+            void qc.invalidateQueries({ queryKey: ["ai-memory-prompts"] });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1095,65 +1564,7 @@ function AICommandPalette({
   );
 }
 
-function ProviderModelPopover({
-  open,
-  onOpenChange,
-  search,
-  onSearch,
-  providers,
-  selectedId,
-  onSelect,
-  tauriRuntime,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  search: string;
-  onSearch: (value: string) => void;
-  providers: LocalAIProviderStatus[];
-  selectedId: string;
-  onSelect: (id: string) => void;
-  tauriRuntime: boolean;
-}) {
-  const modelApiDisabled = tauriRuntime;
-  const selectedProvider = providers.find((provider) => provider.id === selectedId);
-  const selectedLabel = selectedProvider?.label ?? (selectedId === "model-api" ? "Model API" : "选择模型");
-  const query = search.trim().toLowerCase();
-  const filteredProviders = providers.filter((provider) => `${provider.label} ${provider.id} ${provider.version ?? ""}`.toLowerCase().includes(query));
-  return (
-    <div className="relative ml-auto shrink-0">
-      <button type="button" onClick={() => onOpenChange(!open)} aria-expanded={open} aria-label="选择 AI Provider 与模型" className={`flex max-w-[150px] items-center gap-1 rounded-lg border px-2 py-1 text-[11px] text-zinc-500 transition hover:border-[#ff2442]/50 hover:text-zinc-700 ${open ? "border-[#ff2442]/50 bg-[#fff7f8]" : "border-zinc-200 bg-white"}`}>
-        <span className={`h-1.5 w-1.5 rounded-full ${selectedProvider?.state === "present" || selectedId === "model-api" ? "bg-emerald-500" : "bg-zinc-300"}`} />
-        <span className="truncate">{selectedLabel}</span>
-        <ChevronDown size={12} className="shrink-0 text-zinc-300" />
-      </button>
-      {open && (
-        <div className="absolute bottom-full right-0 z-40 mb-2 w-72 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-xl">
-          <div className="flex items-center gap-2 border-b border-zinc-100 px-3 py-2">
-            <Search size={13} className="text-zinc-400" />
-        <input value={search} onChange={(event) => onSearch(event.target.value)} autoFocus placeholder="搜索 Provider 或模型…" className="ai-composer-search h-8 min-w-0 flex-1 rounded-md border border-zinc-200 bg-zinc-50 px-2 text-xs text-zinc-700 outline-none transition-colors focus:border-zinc-300 focus:outline-none focus-visible:outline-none focus:ring-0 placeholder:text-zinc-300" />
-          </div>
-          <div className="max-h-64 overflow-y-auto p-1.5">
-            <p className="px-2 py-1 text-[10px] font-medium text-zinc-400">Model API</p>
-            <button type="button" disabled={modelApiDisabled} onClick={() => onSelect("model-api")} className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition ${selectedId === "model-api" ? "bg-[#fff0f2]" : "hover:bg-zinc-50"} disabled:cursor-not-allowed disabled:opacity-40`}>
-              <span className="flex h-6 w-6 items-center justify-center rounded-md bg-blue-50 text-[10px] text-blue-600">API</span>
-              <span className="min-w-0 flex-1"><span className="block truncate text-xs text-zinc-700">兼容模型接口</span><span className="block text-[10px] text-zinc-400">{modelApiDisabled ? "桌面端当前使用 Agent CLI" : "服务端 Model API"}</span></span>
-              {selectedId === "model-api" && <Check size={13} className="text-[#ff2442]" />}
-            </button>
-            <p className="px-2 pb-1 pt-3 text-[10px] font-medium text-zinc-400">Agent CLI</p>
-            {filteredProviders.length === 0 ? <p className="px-2.5 py-3 text-xs text-zinc-400">未找到本地 CLI</p> : filteredProviders.map((provider) => (
-              <button key={provider.id} type="button" disabled={provider.state !== "present"} onClick={() => onSelect(provider.id)} className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition ${selectedId === provider.id ? "bg-[#fff0f2]" : "hover:bg-zinc-50"} disabled:cursor-not-allowed disabled:opacity-40`}>
-                <span className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-50 text-[10px] text-emerald-700">CLI</span>
-                <span className="min-w-0 flex-1"><span className="block truncate text-xs text-zinc-700">{provider.label}</span><span className="block truncate text-[10px] text-zinc-400">{provider.version ?? provider.reason}</span></span>
-                <span className={`text-[10px] ${provider.state === "present" ? "text-emerald-600" : "text-zinc-400"}`}>{provider.state === "present" ? "可用" : provider.state === "missing" ? "未安装" : "检测失败"}</span>
-                {selectedId === provider.id && <Check size={13} className="text-[#ff2442]" />}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+
 
 // ── 常驻快捷操作栏 ─────────────────────────────────────────────────
 function QuickActionBar({
@@ -1164,7 +1575,6 @@ function QuickActionBar({
   actions: QuickAction[];
   onSend: (prompt: string) => void;
   loading: boolean;
-  hasMessages: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
