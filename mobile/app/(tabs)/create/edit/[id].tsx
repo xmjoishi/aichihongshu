@@ -245,7 +245,11 @@ export default function EditNoteScreen() {
         : getImageAssetReference(photo.assetId, photo.imagePath)
     ));
     const rows = await recordAssetUse(
-      references.map((reference) => ({ ...reference, title: '新图片' })),
+      references.map((reference) => ({
+        imagePath: reference.uri,
+        sourceAssetId: reference.sourceAssetId,
+        title: '新图片',
+      })),
       source,
     );
     const next = currentPhotos.map((photo, index) => ({

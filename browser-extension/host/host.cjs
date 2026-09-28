@@ -108,26 +108,7 @@ function deliver(target, message) {
 }
 
 async function main() {
-  // 排障日志：Chrome 启动宿主时会带上 chrome-extension:// 协议参数。
-  try {
-    const fs = require("node:fs");
-    const os = require("node:os");
-    const logPath = path.join(os.homedir(), ".aichihongshu", "host-debug.log");
-    fs.appendFileSync(
-      logPath,
-      `[${new Date().toISOString()}] start argv=${JSON.stringify(process.argv)} pid=${process.pid}\n`,
-    );
-  } catch {}
   const raw = await readNativeMessage(process.stdin);
-  try {
-    const fs = require("node:fs");
-    const os = require("node:os");
-    const logPath = path.join(os.homedir(), ".aichihongshu", "host-debug.log");
-    fs.appendFileSync(
-      logPath,
-      `[${new Date().toISOString()}] got ${raw.length} bytes: ${raw.toString("utf8").slice(0, 200)}\n`,
-    );
-  } catch {}
   let message;
   try {
     message = JSON.parse(raw.toString("utf8"));

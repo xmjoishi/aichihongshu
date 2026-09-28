@@ -752,47 +752,34 @@ fn start_model_api_run(
     if model.is_empty() {
         return Err("该 Provider 未配置模型".to_string());
     }
-    let stop = state.model_api.register(&request.run_id)?;
+    state.model_api.register(&request.run_id)?;
     let run_id = request.run_id.clone();
     let prompt = request.prompt.clone();
-    thread::spawn(move || {
+    let task_run_id = run_id.clone();
+    let task = tauri::async_runtime::spawn(async move {
         let mut on_text = |delta: String| {
-            if stop.load(std::sync::atomic::Ordering::SeqCst) {
-                return false;
-            }
             model_api::emit_event(
                 &app,
                 "local-ai://chunk",
                 model_api::ModelApiEvent {
-                    run_id: run_id.clone(),
+                    run_id: task_run_id.clone(),
                     text: Some(delta),
                     error: None,
                 },
             );
             true
         };
-        let result = model_api::run_stream(&provider, &model, &prompt, &stop, &mut on_text);
+        let result =
+            model_api::run_stream_cancellable(&provider, &model, &prompt, &mut on_text).await;
         let app_state = app.state::<AppState>();
-        app_state.model_api.finish(&run_id);
-        let cancelled = stop.load(std::sync::atomic::Ordering::SeqCst);
+        app_state.model_api.finish(&task_run_id);
         match result {
             Ok(()) => {
                 model_api::emit_event(
                     &app,
                     "local-ai://done",
                     model_api::ModelApiEvent {
-                        run_id,
-                        text: None,
-                        error: None,
-                    },
-                );
-            }
-            Err(_error) if cancelled => {
-                model_api::emit_event(
-                    &app,
-                    "local-ai://done",
-                    model_api::ModelApiEvent {
-                        run_id,
+                        run_id: task_run_id,
                         text: None,
                         error: None,
                     },
@@ -803,7 +790,7 @@ fn start_model_api_run(
                     &app,
                     "local-ai://error",
                     model_api::ModelApiEvent {
-                        run_id,
+                        run_id: task_run_id,
                         text: None,
                         error: Some(error),
                     },
@@ -811,6 +798,7 @@ fn start_model_api_run(
             }
         }
     });
+    state.model_api.attach_task(&run_id, task);
     Ok(())
 }
 

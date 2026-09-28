@@ -1,4 +1,4 @@
-import { MenuDestinationContext, primaryMenu } from "./lib/pageRetention";
+import { MenuDestinationContext, primaryMenu, retainPage, type RetainedPage } from "./lib/pageRetention";
 import { lazy, Suspense, type MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from "react";
 import { type Location, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { PanelLeft } from "lucide-react";
@@ -162,9 +162,9 @@ export default function App() {
   const { scopeKey } = account;
   const assistantRouteActive = location.pathname === "/assistant";
   const activeKey = `${scopeKey}:${primaryMenu(location.pathname)}`;
-  const [pages, setPages] = useState<Record<string, { location: Location; account: AccountContext }>>({});
+  const [pages, setPages] = useState<Record<string, RetainedPage<Location, AccountContext>>>({});
   if (!assistantRouteActive && pages[activeKey]?.location !== location) {
-    setPages({ ...pages, [activeKey]: { location, account } });
+    setPages((current) => retainPage(current, activeKey, { location, account }));
   }
   const menuDestination = (path: string) => {
     const saved = pages[`${scopeKey}:${primaryMenu(path)}`]?.location;

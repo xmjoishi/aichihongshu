@@ -504,6 +504,23 @@ fn parse_anthropic_chunk(line: &str, buffer: &mut String) -> Option<String> {
     accumulate_delta(delta, buffer)
 }
 
+fn process_sse_line(
+    line: &str,
+    kind: ModelApiProviderKind,
+    buffer: &mut String,
+    on_text: &mut impl FnMut(String) -> bool,
+) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with(':') || trimmed.starts_with("event:") {
+        return true;
+    }
+    let emitted = match kind {
+        ModelApiProviderKind::OpenaiCompatible => parse_openai_chunk(trimmed, buffer),
+        ModelApiProviderKind::AnthropicCompatible => parse_anthropic_chunk(trimmed, buffer),
+    };
+    emitted.map(on_text).unwrap_or(true)
+}
+
 /// 累积并只返回新增片段，避免重复推送。
 fn accumulate_delta(delta: &str, buffer: &mut String) -> Option<String> {
     if delta.is_empty() {
@@ -530,23 +547,120 @@ fn read_sse_stream<R: Read>(
             Some(Err(error)) => return Err(format!("读取模型响应失败: {error}")),
             None => return Ok(()),
         };
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with(':') {
-            continue;
+        if !process_sse_line(&line, kind, &mut buffer, &mut on_text) {
+            return Ok(());
         }
-        if trimmed.starts_with("event:") {
-            continue;
+    }
+}
+
+const MODEL_API_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const MODEL_API_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const MAX_MODEL_API_ERROR_BODY_BYTES: usize = 8 * 1024;
+static RUSTLS_PROVIDER: std::sync::Once = std::sync::Once::new();
+
+async fn model_api_http_error(mut response: reqwest::Response) -> String {
+    let status = response.status();
+    let mut body = Vec::new();
+    while body.len() < MAX_MODEL_API_ERROR_BODY_BYTES {
+        let next = tokio::time::timeout(MODEL_API_READ_TIMEOUT, response.chunk()).await;
+        let Ok(Ok(Some(chunk))) = next else { break };
+        let remaining = MAX_MODEL_API_ERROR_BODY_BYTES - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+    let summary: String = String::from_utf8_lossy(&body).chars().take(240).collect();
+    if summary.is_empty() {
+        format!("模型接口返回 HTTP {}", status.as_u16())
+    } else {
+        format!("模型接口返回 HTTP {}：{summary}", status.as_u16())
+    }
+}
+
+fn process_complete_sse_lines(
+    pending: &mut Vec<u8>,
+    kind: ModelApiProviderKind,
+    buffer: &mut String,
+    on_text: &mut impl FnMut(String) -> bool,
+) -> Result<bool, String> {
+    while let Some(line_end) = pending.iter().position(|byte| *byte == b'\n') {
+        let mut line = pending.drain(..=line_end).collect::<Vec<_>>();
+        line.pop(); // newline
+        let line = std::str::from_utf8(&line)
+            .map_err(|error| format!("模型响应不是有效 UTF-8: {error}"))?;
+        if !process_sse_line(line, kind, buffer, on_text) {
+            return Ok(false);
         }
-        let emitted = match kind {
-            ModelApiProviderKind::OpenaiCompatible => parse_openai_chunk(trimmed, &mut buffer),
-            ModelApiProviderKind::AnthropicCompatible => {
-                parse_anthropic_chunk(trimmed, &mut buffer)
+    }
+    Ok(true)
+}
+
+/// Cancellable async SSE reader used by interactive runs. Aborting its Tauri
+/// task drops the reqwest response immediately, including while waiting for a
+/// network chunk; the synchronous reader remains only for the short test call.
+pub async fn run_stream_cancellable(
+    provider: &ModelApiProviderConfig,
+    model: &str,
+    prompt: &str,
+    mut on_text: impl FnMut(String) -> bool,
+) -> Result<(), String> {
+    let api_key = provider.api_key.trim();
+    if api_key.is_empty() {
+        return Err("该 Provider 未配置 API Key".to_string());
+    }
+    let endpoint = provider.endpoint.trim();
+    if endpoint.is_empty() {
+        return Err("该 Provider 未配置 Endpoint".to_string());
+    }
+    RUSTLS_PROVIDER.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+    let client = reqwest::Client::builder()
+        .connect_timeout(MODEL_API_CONNECT_TIMEOUT)
+        .build()
+        .map_err(|error| format!("创建模型接口客户端失败: {error}"))?;
+    let payload = match provider.kind {
+        ModelApiProviderKind::OpenaiCompatible => build_openai_payload(model, prompt),
+        ModelApiProviderKind::AnthropicCompatible => build_anthropic_payload(model, prompt),
+    };
+    let mut request = client
+        .post(endpoint)
+        .header(reqwest::header::ACCEPT, "text/event-stream")
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(&payload);
+    request = match provider.kind {
+        ModelApiProviderKind::OpenaiCompatible => {
+            request.header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
+        }
+        ModelApiProviderKind::AnthropicCompatible => request
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01"),
+    };
+    let mut response = tokio::time::timeout(MODEL_API_READ_TIMEOUT, request.send())
+        .await
+        .map_err(|_| "等待模型接口响应超时".to_string())?
+        .map_err(|error| format!("连接模型接口失败: {error}"))?;
+    if !response.status().is_success() {
+        return Err(model_api_http_error(response).await);
+    }
+
+    let mut pending = Vec::new();
+    let mut text_buffer = String::new();
+    loop {
+        let chunk = tokio::time::timeout(MODEL_API_READ_TIMEOUT, response.chunk())
+            .await
+            .map_err(|_| "读取模型响应超时（60 秒无数据）".to_string())?
+            .map_err(|error| format!("读取模型响应失败: {error}"))?;
+        let Some(chunk) = chunk else {
+            if !pending.is_empty() {
+                let line = std::str::from_utf8(&pending)
+                    .map_err(|error| format!("模型响应不是有效 UTF-8: {error}"))?;
+                let _ = process_sse_line(line, provider.kind, &mut text_buffer, &mut on_text);
             }
+            return Ok(());
         };
-        if let Some(delta) = emitted {
-            if !on_text(delta) {
-                return Ok(());
-            }
+        pending.extend_from_slice(&chunk);
+        if !process_complete_sse_lines(&mut pending, provider.kind, &mut text_buffer, &mut on_text)?
+        {
+            return Ok(());
         }
     }
 }
@@ -720,38 +834,49 @@ pub fn run_stream(
 
 #[derive(Default)]
 pub struct ModelApiRuntime {
-    stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    runs: Mutex<HashMap<String, Option<tauri::async_runtime::JoinHandle<()>>>>,
 }
 
 impl ModelApiRuntime {
-    pub fn register(&self, run_id: &str) -> Result<Arc<AtomicBool>, String> {
-        let mut stops = self
-            .stops
+    pub fn register(&self, run_id: &str) -> Result<(), String> {
+        let mut runs = self
+            .runs
             .lock()
             .map_err(|_| "Model API 运行锁不可用".to_string())?;
-        if stops.contains_key(run_id) {
+        if runs.contains_key(run_id) {
             return Err("该 Model API 运行 ID 已存在".to_string());
         }
-        let stop = Arc::new(AtomicBool::new(false));
-        stops.insert(run_id.to_string(), stop.clone());
-        Ok(stop)
+        runs.insert(run_id.to_string(), None);
+        Ok(())
+    }
+
+    pub fn attach_task(&self, run_id: &str, task: tauri::async_runtime::JoinHandle<()>) {
+        if let Ok(mut runs) = self.runs.lock() {
+            if let Some(entry) = runs.get_mut(run_id) {
+                *entry = Some(task);
+                return;
+            }
+        }
+        // The run may have been cancelled or completed before the task handle
+        // was installed. In that race, do not leave the request running.
+        task.abort();
     }
 
     pub fn finish(&self, run_id: &str) {
-        if let Ok(mut stops) = self.stops.lock() {
-            stops.remove(run_id);
+        if let Ok(mut runs) = self.runs.lock() {
+            runs.remove(run_id);
         }
     }
 
     pub fn cancel(&self, run_id: &str) -> Result<(), String> {
-        let stop = self
-            .stops
+        let task = self
+            .runs
             .lock()
             .map_err(|_| "Model API 运行锁不可用".to_string())?
-            .get(run_id)
-            .cloned();
-        if let Some(stop) = stop {
-            stop.store(true, Ordering::SeqCst);
+            .remove(run_id)
+            .flatten();
+        if let Some(task) = task {
+            task.abort();
         }
         Ok(())
     }
@@ -759,4 +884,41 @@ impl ModelApiRuntime {
 
 pub fn emit_event(app: &AppHandle, event: &str, payload: ModelApiEvent) {
     let _ = app.emit(event, payload);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ModelApiRuntime;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct DropNotifier(mpsc::Sender<()>);
+
+    impl Drop for DropNotifier {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    #[test]
+    fn cancelling_a_run_aborts_its_task() {
+        let runtime = ModelApiRuntime::default();
+        runtime.register("cancel-test").expect("register run");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        let task = tauri::async_runtime::spawn(async move {
+            let _drop_notifier = DropNotifier(dropped_tx);
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        runtime.attach_task("cancel-test", task);
+
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("task should start");
+        runtime.cancel("cancel-test").expect("cancel run");
+        dropped_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("cancellation should drop the task");
+    }
 }

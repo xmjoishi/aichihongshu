@@ -199,7 +199,14 @@ export default function ChatScreen() {
       }
       if (usedImageRefs.length > 0) {
         void Promise.all(usedImageRefs)
-          .then((references) => recordAssetUse(references.map((reference) => ({ ...reference, title: '新图片' })), 'ai_creation'))
+          .then((references) => recordAssetUse(
+            references.map((reference) => ({
+              imagePath: reference.uri,
+              sourceAssetId: reference.sourceAssetId,
+              title: '新图片',
+            })),
+            'ai_creation',
+          ))
           .catch((error) => console.warn('record chat image use failed', error));
       }
       if (linkedItemIds.length > 0) {

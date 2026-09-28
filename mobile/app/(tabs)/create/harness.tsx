@@ -4,7 +4,7 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { AuroraBackground, InlineNav, LiquidButton, LiquidCard, GlassBackBar } from '../../../components/ui';
 import { Brand, Text as TText, Font, Radius } from '../../../utils/theme';
 import { getImageAssetReference } from '../../../services/media';
@@ -16,10 +16,14 @@ import {
   type CompanionTask,
 } from '../../../services/pcHarness';
 
+const MAX_COMPANION_PHOTOS = 9;
+
 export default function PcCompanionScreen() {
   const router = useRouter();
   const recordAssetUse = useStore((s) => s.recordAssetUse);
   const [photos, setPhotos] = useState<Array<CompanionPhoto & { assetId?: string | null }>>([]);
+  const photosRef = useRef(photos);
+  const photoPickerActiveRef = useRef(false);
   const [topic, setTopic] = useState('');
   const [task, setTask] = useState<CompanionTask | null>(null);
   const [draft, setDraft] = useState<CompanionDraft | null>(null);
@@ -27,19 +31,44 @@ export default function PcCompanionScreen() {
   const [busy, setBusy] = useState(false);
 
   async function pickPhotos(useCamera: boolean) {
-    const result = useCamera
-      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.9 })
-      : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, quality: 0.9 });
-    if (result.canceled) return;
-    setPhotos((current) => [
-      ...current,
-        ...result.assets.map((asset, index) => ({
-          uri: asset.uri,
-          assetId: asset.assetId,
-          filename: asset.fileName ?? `photo-${current.length + index + 1}.jpg`,
+    if (photoPickerActiveRef.current) return;
+    const remaining = MAX_COMPANION_PHOTOS - photosRef.current.length;
+    if (remaining <= 0) {
+      Alert.alert('已达到图片上限', `一次最多添加 ${MAX_COMPANION_PHOTOS} 张图片。`);
+      return;
+    }
+
+    photoPickerActiveRef.current = true;
+    try {
+      const result = useCamera
+        ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.9 })
+        : await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ['images'],
+            allowsMultipleSelection: true,
+            selectionLimit: remaining,
+            quality: 0.9,
+          });
+      if (result.canceled) return;
+
+      const selected = result.assets.slice(0, remaining);
+      const current = photosRef.current;
+      const additions = selected.map((asset, index) => ({
+        uri: asset.uri,
+        assetId: asset.assetId,
+        filename: asset.fileName ?? `photo-${current.length + index + 1}.jpg`,
         mimeType: asset.mimeType ?? 'image/jpeg',
-      })),
-    ]);
+      }));
+      const next = [...current, ...additions];
+      photosRef.current = next;
+      setPhotos(next);
+      if (selected.length < result.assets.length) {
+        Alert.alert('图片数量已限制', `一次最多添加 ${MAX_COMPANION_PHOTOS} 张图片。`);
+      }
+    } catch (error) {
+      Alert.alert('选取图片失败', error instanceof Error ? error.message : String(error));
+    } finally {
+      photoPickerActiveRef.current = false;
+    }
   }
 
   async function sendToPc() {
@@ -54,7 +83,14 @@ export default function PcCompanionScreen() {
         clientTaskId,
       });
       void Promise.all(photos.map((photo) => getImageAssetReference(photo.assetId, photo.uri)))
-        .then((photoReferences) => recordAssetUse(photoReferences.map((reference) => ({ ...reference, title: '新图片' })), 'pc_harness'))
+        .then((photoReferences) => recordAssetUse(
+          photoReferences.map((reference) => ({
+            imagePath: reference.uri,
+            sourceAssetId: reference.sourceAssetId,
+            title: '新图片',
+          })),
+          'pc_harness',
+        ))
         .catch((error) => console.warn('record PC Harness photo use failed', error));
       setTask(created);
       setDraft(null);
@@ -124,6 +160,7 @@ export default function PcCompanionScreen() {
           <Text style={styles.eyebrow}>手机输入 → PC 出稿</Text>
           <Text style={styles.title}>拍照和写主题，交给 PC Harness 继续处理</Text>
           <Text style={styles.desc}>手机端只提交当前任务；相册照片和笔记仍由 PC 管理。手机记忆以手机为事实源；PC 在线修改会发到手机保存，再同步更新 PC 缓存。PC 记忆不会下发到手机。</Text>
+          <Text style={styles.photoCount}>已选 {photos.length}/{MAX_COMPANION_PHOTOS} 张</Text>
           <View style={styles.photoActions}>
             <Pressable onPress={() => void pickPhotos(true)} style={styles.secondaryButton}><Text style={styles.secondaryText}>拍照</Text></Pressable>
             <Pressable onPress={() => void pickPhotos(false)} style={styles.secondaryButton}><Text style={styles.secondaryText}>从相册选图</Text></Pressable>
@@ -201,6 +238,7 @@ const styles = StyleSheet.create({
   eyebrow: { color: Brand.red, fontSize: Font.caption, fontWeight: Font.semibold, letterSpacing: 0.6 },
   title: { color: TText.primary, fontSize: Font.callout, fontWeight: Font.semibold },
   desc: { color: TText.secondary, fontSize: Font.footnote, lineHeight: 19 },
+  photoCount: { color: TText.tertiary, fontSize: Font.caption },
   photoActions: { flexDirection: 'row', gap: 8 },
   secondaryButton: { borderWidth: 1, borderColor: Brand.redMid, borderRadius: Radius.md, paddingHorizontal: 14, paddingVertical: 9 },
   secondaryText: { color: Brand.red, fontSize: Font.footnote, fontWeight: Font.semibold },
