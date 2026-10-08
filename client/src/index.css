@@ -206,6 +206,20 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .app-topbar { min-width: 0; }
 .app-route-shell { min-width: 0; min-height: 0; }
 
+/* Clippings flow by card height while keeping photos at their stored ratio. */
+.clipping-masonry {
+  columns: 280px;
+  column-gap: 16px;
+}
+
+.clipping-card {
+  display: inline-block;
+  width: 100%;
+  margin: 0 0 16px;
+  break-inside: avoid;
+  vertical-align: top;
+}
+
 @media (max-width: 960px) {
   .app-topbar {
     padding-inline-start: 6rem !important;

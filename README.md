@@ -7,24 +7,14 @@
 
 三种使用方式：**GUI 客户端**（日常使用）/ **CLI**（批量/自动化）/ **MCP**（AI Agent 直接调用）。
 
+当前桌面、Web、CLI 与 MCP 主链路由 Rust 提供。第一方 Python CLI、MCP、FastAPI 和爬虫脚本已退役，当前应用不依赖 Python 或 `uv`；第三方 MediaCrawler 子模块不参与构建、运行或打包。多平台发行与真实页面流程仍按 CHG-20260916-001 验收记录跟进。
+
 ## 项目结构
 
 ```
 RN-家居类/
-├── app/
-│   ├── server.py                 # FastAPI REST API（端口 8765）
-│   ├── cli.py                    # 统一 CLI 入口
-│   ├── mcp/server.py             # MCP Server（stdio 模式）
-│   ├── db/                       # SQLite 建库建表
-│   ├── models/                   # Pydantic 数据模型
-│   └── modules/
-│       ├── library/              # 图库管理 + MiniMax 图片分析
-│       └── content/              # 笔记 prompt 生成 + 草稿管理
 ├── client/                       # Tauri + React GUI 客户端
-├── crawler/
-│   ├── xhs_search.py             # 关键词搜索抓取
-│   ├── xhs_creator.py            # 账号主页笔记抓取
-│   └── xhs_analyze.py            # 数据分析报告
+│   └── rn/                       # Rust HTTP、CLI、MCP 与共享服务
 ├── tools/MediaCrawler/            # git submodule
 ├── data/                          # 运行时数据（git ignored）
 ├── assets/                        # 图库图片（git ignored）
@@ -32,26 +22,20 @@ RN-家居类/
 └── AGENTS.md                      # Agent 快速上手指南
 ```
 
-## 初始化（首次 clone 后必做）
+## 初始化（Rust 客户端与 Web 开发）
 
 ```bash
-# 1. 初始化 submodule
-git submodule update --init --recursive
-cd tools/MediaCrawler && uv sync && cd ../..
-
-# 2. 安装项目依赖
-uv sync
-
-# 3. 安装客户端依赖（使用 GUI 客户端时需要）
+# 安装 Web/Tauri 前端依赖
 cd client && pnpm install && cd ..
 
-# 4. 配置环境变量
-cp .env.example .env
-# 编辑 .env，填入 MINIMAX_API_KEY（MiniMax Token Plan Key，sk-cp- 开头）
+# 构建 Rust HTTP/CLI/MCP
+cargo build --locked --manifest-path client/rn/Cargo.toml
 
-# 5. 初始化数据库
-uv run python app/cli.py db init
+# 仅在尚无本地数据库时初始化（默认 data/app.db）
+client/rn/target/debug/rn db init
 ```
+
+桌面、Rust Web、CLI、MCP、AI 与浏览器 worker 当前均不依赖 Python/`uv`。关键词搜索与主页采集由 Rust CLI/API 和受管浏览器 worker 承接。
 
 ## 启动
 
@@ -63,55 +47,68 @@ uv run python app/cli.py db init
 
 ### GUI 客户端（推荐日常使用）
 
-需要**同时**启动后端 API 和前端客户端：
-
 ```bash
-# 终端 1：启动后端 API（必须先启动）
-uv run python -m app.server --port 8765
-
-# 终端 2：启动 GUI 客户端（开发模式，热重载）
-cd client && pnpm tauri dev
+npm run tauri
 ```
 
-客户端启动后会自动打开桌面窗口。后端 API 默认运行在 `http://localhost:8765`。
+Tauri 桌面通过 Rust commands 访问本地服务，无需启动兼容 HTTP 服务。
+
+### 浏览器 Web 开发模式
+
+```bash
+./scripts/start.sh
+```
+
+脚本启动 Rust `rn serve`（8765）与 Vite（1420）；`./scripts/stop.sh` 只停止本脚本启动且进程身份仍匹配的服务。若 8765 被其他服务占用，启动会提示先释放端口，不会接管或误杀未知进程。
 
 > **生产打包**：`cd client && pnpm tauri build`，产物在 `client/src-tauri/target/release/`
 
 ### 桌面打包版说明
 
-- 打包后的 Tauri 客户端会在启动时自动拉起本地 FastAPI 服务，关闭应用时自动停止。
-- 若后端启动失败，前端会显示「本地服务未启动」兜底页，而不是在页面内零散报 `127.0.0.1:8765` 连接错误。
-- 后端日志默认写入系统日志目录；若获取失败，则回退到临时目录：`aichihongshu-backend.log`。
-- 当前桌面包会随应用携带 Python 源码与 MediaCrawler 运行资源，但**仍要求目标机器已安装 `uv` 和可用的 Python 3.11+ 环境**。它还不是完全离线、零依赖的单文件后端包。
+- Tauri 桌面直接使用 Rust commands；桌面包不携带 Python 源码或 MediaCrawler 资源，也不要求安装 `uv`/Python。
+- Web 兼容服务仅供浏览器开发入口使用，由 `scripts/start.sh` 启动 Rust HTTP adapter。
+- Rust adapter 不提供交互式 `/docs` 页面；健康检查地址为 `http://127.0.0.1:8765/health`。
 
-### 仅启动后端 API
+### 仅启动 Rust API
 
-如只需 REST API（供其他客户端或脚本调用）：
+在项目根目录运行：
 
 ```bash
-uv run python -m app.server --port 8765
-
-# 开启热重载（开发时）
-uv run python -m app.server --port 8765 --reload
+client/rn/target/debug/rn serve --port 8765
 ```
 
-API 文档：启动后访问 `http://localhost:8765/docs`
+Rust API 默认只监听 loopback，并对写请求校验 Origin 与会话令牌。
 
 ### MCP Server（供 OpenCode / Claude Desktop 调用）
 
-MCP Server 由 AI 工具自动以 stdio 模式启动，无需手动运行。在配置文件中添加：
+Rust MCP 入口已提供，不启动 Python。开发者可在项目根目录构建并为目标数据库生成客户端配置：
+
+```bash
+cargo build --release --manifest-path client/rn/Cargo.toml
+client/rn/target/release/rn mcp config --db /绝对路径/data/app.db
+```
+
+将命令输出的 `mcpServers` 合并进对应客户端配置。`rn mcp config` 只打印片段，不会改写用户配置文件。Rust 版保留旧 14 个 tool schema，并附加笔记关键词搜索、PC 记忆和 PC 写作经验维护工具，目前共 22 项；手机记忆/经验缓存不能通过 MCP 修改。隔离测试覆盖旧 schema、FastMCP 文本结果格式、参数类型、素材导入、记忆来源与账号隔离及错误路径。CLI 参数、主要文本/JSON 输出和 Unix 确认流程已有隔离回归；仍待 Windows TTY、少量低频输出、远端多平台构建及真实产品验收，见 PY07/PY10 检查点。
+
+如果需要调用 `add_item_from_path`，请在 MCP server 配置中为它指定明确的本地图片目录；未设置时该工具会拒绝导入。配置片段示例：
 
 ```json
 {
   "mcpServers": {
-    "rednote-home": {
-      "command": "uv",
-      "args": ["run", "--project", "/path/to/RN-家居类", "python", "-m", "app.mcp.server"],
-      "cwd": "/path/to/RN-家居类"
+    "aichihongshu": {
+      "command": "/absolute/path/to/rn",
+      "args": ["--db", "/absolute/path/to/app.db", "mcp"],
+      "env": {
+        "AICHIHONGSHU_MCP_ALLOWED_IMPORT_DIR": "/absolute/path/to/approved-images"
+      }
     }
   }
 }
 ```
+
+该目录限制只作用于 MCP 图片导入；不需要导入本地图片时，无需添加 `env` 项。
+
+如果此前配置了 `uv`/Python MCP，请在旧 MCP 客户端配置中保留其它 server 条目，将 `aichihongshu` 的 `command`、`args` 替换成 `rn mcp config` 当前输出，并删除旧的 `cwd` 字段；`rn mcp` 使用配置中的绝对程序和数据库路径，不需要工作目录。保存后完全退出并重启客户端，再确认 22 个工具可见。`rn mcp config` 不会自动改写客户端配置。
 
 配置文件位置：
 - OpenCode：`~/.config/opencode/config.json`
@@ -127,8 +124,12 @@ MCP Server 由 AI 工具自动以 stdio 模式启动，无需手动运行。在�
 #   - 新建小号：role=operation，独立 user_data_dir、独立扫码登录
 #   - 顶栏切到目标账号后，下面所有命令都隐式落到当前激活账号
 
+# Rust CLI：先构建并设置命令路径
+cargo build --locked --manifest-path client/rn/Cargo.toml
+RN=client/rn/target/debug/rn
+
 # Step 1：初始化当前账号的人设（首次必做）
-uv run python app/cli.py profile init \
+"$RN" profile init \
   --name "虾薯的家" \
   --niche "家居软装/出租屋改造" \
   --persona-name "虾薯" \
@@ -140,28 +141,28 @@ uv run python app/cli.py profile init \
   --hashtags "家居好物,软装分享,出租屋改造,装修日记"
 
 # Step 2：录入榜样账号（v0.3.1 起按账号隔离，每个运营账号有自己的对标榜样）
-uv run python app/cli.py accounts add <account_id> \
+"$RN" accounts add xhs_account_id \
   --name "榜样账号名" \
   --note-count 80 --avg-likes 5000 \
   --style "内容风格描述" \
   --top-notes "高赞标题1,高赞标题2"
 
 # Step 3：导入图库物品（自动调用 MiniMax 分析）
-uv run python app/cli.py library add ./my-sofa.jpg --title "奶油色布艺沙发"
+"$RN" library add ./my-sofa.jpg --title "奶油色布艺沙发"
 
 # Step 4：生成笔记 Prompt
-uv run python app/cli.py content draft 1 --account-id <account_id> --save
+"$RN" content draft 1 --account-id xhs_account_id --save
 # 将输出的 prompt 粘贴给 OpenCode（或直接在当前对话中发送）生成标题/正文
 
 # Step 5：填入生成的内容
-uv run python app/cli.py content edit 1 \
+"$RN" content edit 1 \
   --title "买了这个沙发，朋友都以为我花了大价钱" \
   --body "正文内容..." \
   --tags "家居,沙发,客厅,奶油风,软装" \
   --status ready
 
 # Step 6：导出发布
-uv run python app/cli.py content export 1
+"$RN" content export 1
 ```
 
 > **角色说明**
@@ -172,11 +173,8 @@ uv run python app/cli.py content export 1
 
 ```bash
 git pull
-git submodule update --init --recursive
-uv sync
-# 启动 server，迁移脚本会自动跑（备份在 /tmp/app.db.before-v0*）
-nohup uv run python -m app.server --port 8765 > /tmp/rn-server.log 2>&1 &
-tail -f /tmp/rn-server.log
+cargo build --locked --manifest-path client/rn/Cargo.toml
+./scripts/start.sh
 ```
 
 详见 [CHANGELOG.md](./docs/CHANGELOG.md)。

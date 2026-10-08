@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>架构页｜爱吃红薯</title>
-  <meta name="description" content="查看爱吃红薯如何通过 CLI、Tauri、FastAPI、MCP、SQLite 和发布链路组合成完整产品。">
+  <meta name="description" content="查看爱吃红薯如何通过 Rust CLI、Tauri、MCP、SQLite 与浏览器 worker 组成完整产品。">
   <meta property="og:title" content="架构页｜爱吃红薯">
   <meta property="og:description" content="不是单一前端，而是官网、桌面端、后端与 Agent 调用协同的完整产品。">
   <meta property="og:type" content="website">
@@ -72,24 +72,24 @@
 
         <article class="system-card">
           <h3>业务层</h3>
-          <p>`app/` 提供 FastAPI 路由、业务模块和发布链路。CLI、Tauri、MCP 都调用同一套能力，不会形成多套逻辑。</p>
+          <p>`client/rn` 提供 Rust 本地 API、CLI 与 MCP；Tauri 和 Web 共用 Rust 领域服务，主页采集由账号隔离的 Node Playwright worker 执行。</p>
           <div class="architecture-block">
             <div class="architecture-row">
-              <div class="architecture-node">FastAPI</div>
-              <div class="architecture-node">modules/</div>
-              <div class="architecture-node">publish worker</div>
+              <div class="architecture-node">Rust API</div>
+              <div class="architecture-node">Shared services</div>
+              <div class="architecture-node">MCP / CLI</div>
             </div>
           </div>
         </article>
 
         <article class="system-card">
           <h3>数据与执行层</h3>
-          <p>`data/app.db`、`assets/`、`crawler/` 和浏览器登录态共同支撑图库、自动发布和趋势复盘，不是一个只会生成文字的孤立前端。</p>
+          <p>`data/app.db`、`assets/`、受管浏览器会话和浏览器扩展支撑图库、主页采集、人工发布与趋势复盘。平台最终提交由用户完成。</p>
           <div class="architecture-block">
             <div class="architecture-row">
               <div class="architecture-node">SQLite</div>
               <div class="architecture-node">assets/</div>
-              <div class="architecture-node">crawler/</div>
+              <div class="architecture-node">Browser worker</div>
             </div>
           </div>
         </article>
@@ -159,7 +159,9 @@
   screens/
 
 client/
-app/
+  rn/ (Rust API / CLI / MCP)
+  services/
+  browser-worker/ (Node + Playwright)
 docs/</pre>
         </article>
 
@@ -184,7 +186,7 @@ deploy:
       <div class="section-head compact">
         <div>
           <h2 id="why-title">为什么这比单点 AI 工具更有产品感</h2>
-          <p>因为它不是把 AI 套在一个页面外面，而是通过 GUI、CLI、FastAPI、发布链路和数据回流形成闭环。</p>
+          <p>因为它不是把 AI 套在一个页面外面，而是通过 GUI、Rust CLI/API、MCP、人工发布和数据回流形成闭环。</p>
         </div>
       </div>
 

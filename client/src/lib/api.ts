@@ -1,5 +1,6 @@
-// API base URL — FastAPI server
-export const API_BASE = "http://127.0.0.1:8765";
+// Local API base URL. Web dev can point at `rn serve` without changing source.
+const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.trim();
+export const API_BASE = (configuredApiBase || "http://127.0.0.1:8765").replace(/\/+$/, "");
 
 export const IS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -36,6 +37,66 @@ export async function checkBackendHealth(): Promise<boolean> {
   }
 }
 
+let writeSessionToken: string | null | undefined;
+let writeSessionExpiresAt = 0;
+let writeSessionRequest: Promise<string | null> | null = null;
+
+async function getWriteSessionToken(forceRefresh = false): Promise<string | null> {
+  if (!forceRefresh && writeSessionExpiresAt > Date.now()) return writeSessionToken ?? null;
+  if (!forceRefresh && writeSessionRequest) return writeSessionRequest;
+
+  writeSessionToken = undefined;
+  writeSessionExpiresAt = 0;
+  const request = fetch(`${API_BASE}/api/session`, { cache: "no-store" })
+    .then(async (response) => {
+      if (response.status === 404 || response.status === 405) {
+        throw new Error("当前 API 服务缺少安全写入会话；请使用 Rust rn serve 服务后重试");
+      }
+      if (!response.ok) {
+        throw new Error(`获取本地写入会话失败：HTTP ${response.status}`);
+      }
+      const payload: unknown = await response.json();
+      if (typeof payload !== "object" || payload === null || !("token" in payload)
+        || typeof payload.token !== "string" || !payload.token) {
+        throw new Error("本地 API 返回了无效的写入会话");
+      }
+      writeSessionToken = payload.token;
+      // The token lives until the Rust process exits; a 403 forces one refresh.
+      writeSessionExpiresAt = Number.POSITIVE_INFINITY;
+      return payload.token;
+    })
+    .catch((error: unknown) => {
+      writeSessionToken = undefined;
+      writeSessionExpiresAt = 0;
+      throw error;
+    })
+    .finally(() => {
+      if (writeSessionRequest === request) writeSessionRequest = null;
+    });
+  writeSessionRequest = request;
+  return request;
+}
+
+async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  const method = (options.method || "GET").toUpperCase();
+  const isWrite = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+  if (!isWrite) return fetch(`${API_BASE}${path}`, options);
+
+  const send = (token: string | null) => {
+    const headers = new Headers(options.headers);
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    return fetch(`${API_BASE}${path}`, { ...options, headers });
+  };
+  const token = await getWriteSessionToken();
+  const response = await send(token);
+  if (response.status !== 403) return response;
+
+  // A restarted Rust process gets a new token. Refresh once and retry; the
+  // server still performs the final Origin, token, account and payload checks.
+  const refreshedToken = await getWriteSessionToken(true);
+  return refreshedToken ? send(refreshedToken) : response;
+}
+
 async function handleResponse(r: Response, label: string) {
   if (r.status === 428) {
     // 风险二次确认
@@ -65,36 +126,36 @@ export const riskAckHeader = (ack: boolean): Record<string, string> =>
 
 export const api = {
   get: (path: string, headers: Record<string, string> = {}) =>
-    fetch(`${API_BASE}${path}`, { headers })
+    apiFetch(path, { headers })
       .then((r) => handleResponse(r, `GET ${path}`)),
 
   post: (path: string, body: unknown, headers: Record<string, string> = {}) =>
-    fetch(`${API_BASE}${path}`, {
+    apiFetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
     }).then((r) => handleResponse(r, `POST ${path}`)),
 
   patch: (path: string, body: unknown, headers: Record<string, string> = {}) =>
-    fetch(`${API_BASE}${path}`, {
+    apiFetch(path, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
     }).then((r) => handleResponse(r, `PATCH ${path}`)),
 
   delete: (path: string, headers: Record<string, string> = {}) =>
-    fetch(`${API_BASE}${path}`, { method: "DELETE", headers })
+    apiFetch(path, { method: "DELETE", headers })
       .then((r) => handleResponse(r, `DELETE ${path}`)),
 
   put: (path: string, body: unknown, headers: Record<string, string> = {}) =>
-    fetch(`${API_BASE}${path}`, {
+    apiFetch(path, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
     }).then((r) => handleResponse(r, `PUT ${path}`)),
 
   upload: (path: string, formData: FormData) =>
-    fetch(`${API_BASE}${path}`, { method: "POST", body: formData })
+    apiFetch(path, { method: "POST", body: formData })
       .then((r) => handleResponse(r, `UPLOAD ${path}`)),
 
   imageUrl: (itemId: number) => `${API_BASE}/api/library/${itemId}/image`,
@@ -126,7 +187,7 @@ export const api = {
           fetchOpts.body = JSON.stringify(body);
         }
         fetchOpts.headers = hdrs;
-        const r = await fetch(`${API_BASE}${path}`, fetchOpts);
+        const r = await apiFetch(path, fetchOpts);
         if (!r.ok) {
           // v0.2: 428 → 风险确认请求
           if (r.status === 428) {
@@ -170,18 +231,32 @@ export const api = {
 };
 
 /**
- * 用 Playwright Chromium（爬虫同款浏览器）打开指定 URL。
- * 适合需要小红书登录态的内容链接（笔记、用户主页等）。
- * 若爬虫浏览器已在运行则在其中开新标签，否则启动 Chromium 并打开。
- * fire-and-forget：不 await，不做任何 fallback，避免触发 Tauri about:blank。
+ * 打开用户明确选择的外部网页。
+ * 桌面端使用系统默认浏览器；Web 端使用当前浏览器的新标签，不依赖爬虫服务。
  */
-export function openInBrowser(url: string): void {
-  if (!url) return;
-  fetch(`${API_BASE}/api/crawler/open-url`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
-  }).catch(() => {/* 静默失败 */});
+export async function openExternalUrl(input: string): Promise<void> {
+  const value = input.trim();
+  if (!value) throw new Error("链接为空");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("链接格式无效");
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error("只允许打开 HTTP 或 HTTPS 链接");
+  }
+
+  if (IS_TAURI) {
+    await openUrl(url.toString());
+    return;
+  }
+  const link = document.createElement("a");
+  link.href = url.toString();
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.referrerPolicy = "no-referrer";
+  link.click();
 }
 
 /**
@@ -190,7 +265,7 @@ export function openInBrowser(url: string): void {
  */
 export async function openInSystemBrowser(url: string): Promise<void> {
   if (!url) return;
-  await openUrl(url);
+  await openExternalUrl(url);
 }
 
 // ---- 灵感页接口 ----

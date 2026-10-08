@@ -1,5 +1,5 @@
 import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { Copy, ExternalLink, Check, X, Send, FolderOpen, Images, Loader2 } from "lucide-react";
@@ -15,9 +15,11 @@ import {
   readLocalWorkspaceSnapshot,
   readLocalPublishOutbox,
   prepareLocalPublish,
+  requestLocalPublishFill,
   updateLocalPublish,
   updateLocalNoteStatus,
   stageLocalNoteImages,
+  importLocalVideoFile,
   openLocalStageDir,
   clearLocalNoteStage,
   type LocalWorkspaceSnapshot,
@@ -425,6 +427,10 @@ function LocalPublishWorkflow({ embedded = false }: { embedded?: boolean } = {})
           accountId={accountId}
           history={outbox.filter((entry) => entry.noteId === publishingNote.id)}
           onClose={() => setPublishingNote(null)}
+          onNoteUpdated={(updated) => {
+            setPublishingNote(updated);
+            void qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey] });
+          }}
           onConfirmed={async (url) => {
             if (await moveTo(publishingNote, "published", url)) {
               setPublishingNote(null);
@@ -501,18 +507,32 @@ function publishOutboxStatusClass(status: LocalPublishOutboxStatus): string {
   }[status];
 }
 
+function publishFillStatusLabel(status: LocalPublishOutboxSummary["fillStatus"]): string {
+  return {
+    not_requested: "未创建",
+    queued: "等待在创作页领取",
+    claimed: "已领取，等待填入确认",
+    partial: "部分成功，可重试失败字段",
+    filled: "文字已填入，等待人工检查和提交",
+    cancelled: "已取消",
+    expired: "已过期",
+  }[status];
+}
+
 function LocalPublishModal({
   note,
   accountId,
   history,
   onClose,
   onConfirmed,
+  onNoteUpdated,
 }: {
   note: Note;
   accountId: number | null;
   history: LocalPublishOutboxSummary[];
   onClose: () => void;
   onConfirmed: (noteUrl?: string) => Promise<void>;
+  onNoteUpdated: (note: Note) => void;
 }) {
   const { toast } = useToast();
   const [noteUrl, setNoteUrl] = useState(note.note_url ?? "");
@@ -524,10 +544,41 @@ function LocalPublishModal({
   const [stageFiles, setStageFiles] = useState<LocalStagedImageFile[] | null>(null);
   const [stageError, setStageError] = useState<string | null>(null);
   const [openingStage, setOpeningStage] = useState(false);
+  const [videoUploading, setVideoUploading] = useState(false);
+  const [videoUploadProgress, setVideoUploadProgress] = useState(0);
+  const [videoUploadError, setVideoUploadError] = useState<string | null>(null);
+  const videoInputRef = useRef<HTMLInputElement | null>(null);
   const preparation: PublishPreparation = preparePublish(note, accountId);
   const attempt = useMemo(() => createPublishAttempt(preparation), [preparation.noteId, preparation.snapshotKey]);
   const tagLine = note.tags.length ? `\n\n${note.tags.map((tag) => `#${tag}`).join(" ")}` : "";
   const fullText = `${note.title ?? ""}\n\n${note.body ?? ""}${tagLine}`.trim();
+
+  async function attachVideo(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file || accountId === null || videoUploading) return;
+    setVideoUploading(true);
+    setVideoUploadProgress(0);
+    setVideoUploadError(null);
+    setOutboxEntry(null);
+    try {
+      const updated = await importLocalVideoFile(
+        note.id,
+        accountId,
+        note.content_version ?? 1,
+        file,
+        (received, total) => setVideoUploadProgress(Math.floor((received / total) * 100)),
+      );
+      onNoteUpdated(localNoteToNote(updated));
+      toast("视频已校验并保存到当前账号的本地素材目录", "success");
+    } catch (cause: unknown) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setVideoUploadError(message);
+      toast(message, "error");
+    } finally {
+      setVideoUploading(false);
+    }
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -547,6 +598,7 @@ function LocalPublishModal({
         body: preparation.body,
         tags: preparation.tags,
         itemIds: preparation.itemIds,
+        videoPath: preparation.videoPath,
       }),
     }).then((entry) => {
       if (mounted) setOutboxEntry(entry);
@@ -557,7 +609,7 @@ function LocalPublishModal({
   }, [accountId, attempt.id, preparation.accountId, preparation.body, preparation.contentVersion, preparation.itemIds.join(","), preparation.noteId, preparation.snapshotKey, preparation.tags.join("\u0000"), preparation.title, preparation.ready]);
 
   // 打开弹窗时自动把笔记图片按上传顺序暂存到本地文件夹，供一键打开后拖拽上传。
-  const hasImages = (note.item_ids?.length ?? 0) > 0;
+  const hasImages = note.note_type !== "video" && (note.item_ids?.length ?? 0) > 0;
   const itemIdsKey = note.item_ids?.join(",") ?? "";
   useEffect(() => {
     let mounted = true;
@@ -666,6 +718,20 @@ function LocalPublishModal({
     }
   }
 
+  async function createBrowserFillTask() {
+    if (!outboxEntry || accountId === null || outboxEntry.status !== "prepared") return;
+    setSaving(true);
+    try {
+      const queued = await requestLocalPublishFill(outboxEntry.attemptId, accountId);
+      setOutboxEntry(queued);
+      toast("已创建 30 分钟有效的文字填充任务。打开创作页后由你在插件中领取并确认", "success");
+    } catch (cause: unknown) {
+      toast(cause instanceof Error ? cause.message : String(cause), "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
       <div className="bg-[var(--color-surface)] rounded-2xl shadow-2xl w-full max-w-6xl max-h-[calc(100vh-48px)] flex flex-col overflow-hidden">
@@ -688,10 +754,25 @@ function LocalPublishModal({
               <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-xs" role="status">
                 <p className="font-medium text-zinc-700">本地发布 outbox：{outboxEntry ? publishOutboxStatusLabel(outboxEntry.status) : "准备中…"}</p>
                 {outboxEntry && <p className={`mt-1 ${publishOutboxStatusClass(outboxEntry.status)}`}>记录时间：{outboxEntry.updatedAt} · 结果不明不会自动重试</p>}
+                {outboxEntry && <p className="mt-1 text-zinc-600">浏览器文字填充：{publishFillStatusLabel(outboxEntry.fillStatus)}{outboxEntry.fillExpiresAt ? ` · 截止 ${outboxEntry.fillExpiresAt}` : ""}</p>}
                 {outboxError && <p className="mt-1 text-red-600">无法持久化发布准备：{outboxError}</p>}
               </div>
               {history.length > 0 && <div className="rounded-xl border border-zinc-200 px-4 py-3 text-[11px] text-zinc-500"><p className="font-medium text-zinc-700 mb-1">历史状态</p>{history.slice(0, 5).map((entry) => <p key={entry.attemptId} className="flex justify-between gap-2"><span>{publishOutboxStatusLabel(entry.status)}</span><span>{entry.updatedAt}</span></p>)}</div>}
-              {note.item_ids?.length ? (
+              {note.note_type === "video" ? (
+                <div className="rounded-xl border border-zinc-200 px-4 py-3 text-xs">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="font-medium text-zinc-700">视频素材</p>
+                    <button type="button" onClick={() => videoInputRef.current?.click()} disabled={videoUploading || accountId === null} className="rounded-lg border border-zinc-200 px-2.5 py-1.5 text-[11px] text-zinc-600 hover:border-[#ff2442] hover:text-[#ff2442] disabled:opacity-50">
+                      {videoUploading ? `正在导入 ${videoUploadProgress}%` : note.video_path ? "更换视频" : "选择视频"}
+                    </button>
+                    <input ref={videoInputRef} type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.m4v,.webm" className="hidden" onChange={(event) => void attachVideo(event)} />
+                  </div>
+                  <p className="mt-1 break-all text-zinc-500">{note.video_path || "尚未关联视频文件"}</p>
+                  {videoUploading && <progress className="mt-2 h-1.5 w-full accent-[#ff2442]" max={100} value={videoUploadProgress} />}
+                  {videoUploadError && <p className="mt-2 text-red-600">{videoUploadError}</p>}
+                  <p className="mt-2 text-amber-700">视频会复制到当前账号的本地受管目录，并校验格式和 SHA-256。打开创作页后，插件会在你确认后尝试传入视频；页面未接受时可手动选择。</p>
+                </div>
+              ) : note.item_ids?.length ? (
                 <div className="rounded-xl border border-zinc-200 overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-3 bg-[var(--color-surface-2)] border-b border-zinc-100">
                     <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--color-text-secondary)]">
@@ -727,6 +808,8 @@ function LocalPublishModal({
               <div className="rounded-xl bg-[var(--color-surface-2)] p-4"><div className="flex items-center justify-between mb-1.5"><span className="text-xs text-[var(--color-text-secondary)]">标题</span><button type="button" onClick={() => void copy("title")} className="text-xs text-zinc-400 hover:text-[#ff2442]">{copied === "title" ? "已复制" : "复制"}</button></div><p className="text-sm font-medium text-[var(--color-text-primary)]">{note.title || "（无标题）"}</p></div>
               <div className="rounded-xl bg-[var(--color-surface-2)] p-4"><div className="flex items-center justify-between mb-1.5"><span className="text-xs text-[var(--color-text-secondary)]">正文 + 标签</span><button type="button" onClick={() => void copy("body")} className="text-xs text-zinc-400 hover:text-[#ff2442]">{copied === "body" ? "已复制" : "复制"}</button></div><p className="text-xs text-[var(--color-text-primary)] whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto">{note.body || "（无正文）"}</p></div>
               <button type="button" onClick={() => void copy("all")} className="w-full rounded-xl border-2 border-dashed border-zinc-200 py-3 text-xs text-zinc-500 hover:border-[#ff2442] hover:text-[#ff2442]">{copied === "all" ? "已复制全文" : "一键复制全文（标题 + 正文 + 标签）"}</button>
+              <button type="button" onClick={() => void createBrowserFillTask()} disabled={saving || !outboxEntry || outboxEntry.status !== "prepared"} className="w-full rounded-xl border border-[#ff2442]/30 bg-[#fff5f6] py-3 text-xs text-[#c91d36] hover:bg-[#ffebee] disabled:opacity-50">{outboxEntry?.fillStatus === "queued" ? "重新创建文字填充任务（30 分钟）" : "创建浏览器文字填充任务（30 分钟）"}</button>
+              <p className="text-[11px] text-zinc-500">打开创作页后，点插件领取一条任务；插件会预览标题、正文和媒体，并等待你确认后填入。{note.note_type === "video" ? "视频传输失败时可在创作页手动选择。" : "图片会按快照顺序传输并填入。"}</p>
               <button type="button" onClick={() => openInSystemBrowser("https://creator.xiaohongshu.com/publish/publish")} className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[#ff2442] text-white text-xs font-medium hover:bg-[#e01f3a]"><ExternalLink size={13} />打开小红书发布页</button>
               <label className="block text-xs text-[var(--color-text-secondary)]">发布后粘贴笔记链接（可选）<input value={noteUrl} onChange={(event) => setNoteUrl(event.target.value)} placeholder="https://www.xiaohongshu.com/explore/..." className="mt-1.5 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5 text-xs" /></label>
               {(noteUrl || note.note_url) && (

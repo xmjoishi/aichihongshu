@@ -50,22 +50,18 @@ const LOCAL_CAPABILITIES: Record<CapabilityId, CapabilityState> = {
     id: "ai.generate",
     available: false,
     transport: "local",
-    reason: "本地 AI Provider 需要运行时检测",
-    nextStep: "打开 AI 助手检测已安装 CLI，并完成一次真实文本调用",
+    reason: "等待检测已配置的 API Provider 或本地 Agent CLI",
+    nextStep: "在 AI 设置中连接 API Provider，或安装本地 Agent CLI",
   },
   "collect": {
     id: "collect",
-    available: false,
+    available: true,
     transport: "local",
-    reason: "本地收集入口尚未迁移",
-    nextStep: "完成来源快照和目标账号校验后开放",
   },
   "publish": {
     id: "publish",
-    available: false,
+    available: true,
     transport: "local",
-    reason: "本地发布链路尚未迁移",
-    nextStep: "完成发布准备、浏览器适配和结果核查后开放",
   },
   "note.delete": {
     id: "note.delete",
@@ -79,10 +75,8 @@ const LOCAL_CAPABILITIES: Record<CapabilityId, CapabilityState> = {
   },
   "library.analyze": {
     id: "library.analyze",
-    available: false,
+    available: true,
     transport: "local",
-    reason: "本地图片分析任务尚未迁移",
-    nextStep: "接入已验证的本地 AI 能力后开放",
   },
   "note.createFromLibrary": {
     id: "note.createFromLibrary",

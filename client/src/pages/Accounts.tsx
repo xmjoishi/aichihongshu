@@ -1,7 +1,7 @@
 import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
 import { useState, useRef, useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, openInBrowser, riskAckHeader, RiskConfirmationRequiredError } from "../lib/api";
+import { api, openExternalUrl, riskAckHeader, RiskConfirmationRequiredError } from "../lib/api";
 import { ReferenceAccount } from "../lib/types";
 import { Spinner, Empty } from "../components/ui";
 import {
@@ -15,10 +15,12 @@ import remarkGfm from "remark-gfm";
 import { usePanelResize } from "../hooks/usePanelResize";
 import {
   IS_TAURI_RUNTIME,
+  addLocalKnowledgeReferenceSample,
   createLocalReferenceAccount,
   deleteLocalReferenceAccount,
   localReferenceAccountToReferenceAccount,
   readLocalWorkspaceSnapshot,
+  refreshLocalReferenceProfile,
   updateLocalReferenceAccount,
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
@@ -40,6 +42,76 @@ function parseStyleKeywords(raw?: string): string[] {
     if (Array.isArray(cs.keywords)) return cs.keywords.slice(0, 6);
   } catch {}
   return [];
+}
+
+type ReferenceMetricKey = "likes" | "comments" | "collects";
+type ReferenceCaptureEvidence = {
+  source: "browser-profile-capture" | "legacy" | "other";
+  state: string | null;
+  loadedNotes: number | null;
+  maximumNotes: number | null;
+  sampledAt: string | null;
+  metricSamples: Record<ReferenceMetricKey, number | null>;
+  publishedRange: string | null;
+};
+
+function parseReferenceCaptureEvidence(raw?: string): ReferenceCaptureEvidence | null {
+  if (!raw?.trim()) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    const object = value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+    const notes = Array.isArray(value) ? value : Array.isArray(object?.notes) ? object.notes : [];
+    const metricSamples = object?.metricSamples && typeof object.metricSamples === "object"
+      ? object.metricSamples as Record<string, unknown>
+      : null;
+    const sampleCount = (key: ReferenceMetricKey): number | null => {
+      const explicit = metricSamples?.[key];
+      if (typeof explicit === "number" && Number.isInteger(explicit) && explicit >= 0) return explicit;
+      if (!notes.length) return null;
+      return notes.filter((note) => note && typeof note === "object"
+        && (note as Record<string, unknown>)[key] !== null
+        && (note as Record<string, unknown>)[key] !== undefined).length;
+    };
+    const validDates = notes.flatMap((note) => {
+      if (!note || typeof note !== "object") return [];
+      const publishedAt = (note as Record<string, unknown>).publishedAt;
+      if (typeof publishedAt !== "string" || !/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(publishedAt)) return [];
+      return [publishedAt.slice(0, 10)];
+    }).sort();
+    return {
+      source: object?.source === "browser-profile-capture" ? "browser-profile-capture" : object ? "other" : "legacy",
+      state: typeof (object?.scope as Record<string, unknown> | undefined)?.state === "string"
+        ? String((object?.scope as Record<string, unknown>).state) : null,
+      loadedNotes: typeof (object?.scope as Record<string, unknown> | undefined)?.loadedNotes === "number"
+        ? Number((object?.scope as Record<string, unknown>).loadedNotes) : notes.length || null,
+      maximumNotes: typeof (object?.scope as Record<string, unknown> | undefined)?.maximumNotes === "number"
+        ? Number((object?.scope as Record<string, unknown>).maximumNotes) : null,
+      sampledAt: typeof object?.sampledAt === "string" ? object.sampledAt : null,
+      metricSamples: { likes: sampleCount("likes"), comments: sampleCount("comments"), collects: sampleCount("collects") },
+      publishedRange: validDates.length ? `${validDates[0]} 至 ${validDates[validDates.length - 1]}` : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function formatReferenceAverage(value: number, sampleCount: number | null, evidence?: ReferenceCaptureEvidence | null): string {
+  if (evidence && sampleCount === 0) return "—";
+  return Number.isFinite(value) ? value.toLocaleString("zh-CN", { maximumFractionDigits: 1 }) : "—";
+}
+
+function referenceAnalysisState(acc: ReferenceAccount): { label: string; analyzedAt: string | null; stale: boolean } {
+  const candidates = [acc.analyzed_at, acc.insights_at].filter((value): value is string => Boolean(value));
+  const analyzedAt = candidates.sort((left, right) => Date.parse(right) - Date.parse(left))[0] || null;
+  const hasAnalysis = Boolean(acc.content_style?.trim() || acc.insights?.trim() || analyzedAt);
+  const stale = Boolean(acc.crawled_at && analyzedAt && Date.parse(acc.crawled_at) > Date.parse(analyzedAt));
+  return {
+    label: stale ? "资料更新后待刷新" : hasAnalysis ? "已有分析" : "待分析",
+    analyzedAt,
+    stale,
+  };
 }
 
 function fixJsonQuotes(s: string): string {
@@ -103,6 +175,10 @@ function CrawlerModal({ onClose, onDone, accountPoolId }: { onClose: () => void;
   function start() {
     if (!url.trim()) return;
     if (IS_TAURI_RUNTIME && accountPoolId === null) return;
+    if (IS_TAURI_RUNTIME && !/^[A-Za-z0-9_-]{1,128}$/.test(url.trim())) {
+      setLogs(["请输入小红书主页账号 ID（字母、数字、下划线或连字符），不要粘贴整段主页 URL。"]);
+      return;
+    }
     setLogs([]);
     setRunning(true);
     setDone(false);
@@ -115,9 +191,22 @@ function CrawlerModal({ onClose, onDone, accountPoolId }: { onClose: () => void;
         accountId: url.trim(),
         name: name.trim() || null,
         followers: 0,
-        })
-        .then(() => {
-          setLogs(["已保存到当前账号的本地榜样库。平台主页抓取仍需浏览器链路。"]);
+      })
+        .then(async () => {
+          try {
+            const result = await refreshLocalReferenceProfile(accountPoolId, url.trim());
+            const imported = result.profileNotesImported + result.profileNotesUpdated;
+            setLogs([
+              result.profileNotesComplete
+                ? "榜样主页已同步：" + (result.displayName || name.trim() || url.trim())
+                  + "，最近笔记 " + imported + " 篇已更新。"
+                : "榜样账号已保存，主页资料已同步；笔记只读取到 " + imported
+                  + " 篇，完整汇总将在下次完整读取后更新。",
+            ]);
+          } catch (error) {
+            const detail = typeof error === "string" ? error : (error as Error).message;
+            setLogs(["榜样账号已保存。主页同步未完成：" + detail]);
+          }
           setRunning(false);
           setDone(true);
           onDone();
@@ -168,7 +257,10 @@ function CrawlerModal({ onClose, onDone, accountPoolId }: { onClose: () => void;
 
   function abort() { ctrlRef.current?.abort(); setRunning(false); }
 
-  const urlWarning = !IS_TAURI_RUNTIME && url.trim() && !url.trim().includes("xsec_token=");
+  const urlWarning = !IS_TAURI_RUNTIME && url.trim() && !(
+    /^[A-Za-z0-9_-]{1,128}$/.test(url.trim())
+    || /^https:\/\/(www\.)?xiaohongshu\.com\/user\/profile\/[A-Za-z0-9_-]{1,128}(?:[/?#]|$)/i.test(url.trim())
+  );
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
@@ -182,18 +274,17 @@ function CrawlerModal({ onClose, onDone, accountPoolId }: { onClose: () => void;
           <div>
             <label className="text-xs text-zinc-500 block mb-1">{IS_TAURI_RUNTIME ? "账号 ID 或主页标识" : "账号主页 URL"}</label>
             <input type="text" value={url} onChange={(e) => setUrl(e.target.value)}
-              placeholder={IS_TAURI_RUNTIME ? "例如：creator_123 或 xhs 用户 ID" : "https://www.xiaohongshu.com/user/profile/...?xsec_token=..."}
+              placeholder={IS_TAURI_RUNTIME ? "例如：creator_123 或 xhs 用户 ID" : "https://www.xiaohongshu.com/user/profile/账号ID"}
               className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#ff2442]/30 focus:border-[#ff2442] ${urlWarning ? "border-amber-400 bg-amber-50" : "border-zinc-200"}`} />
             {IS_TAURI_RUNTIME ? (
-              <p className="text-xs text-zinc-400 mt-1">只保存账号标识、名称和手工元数据；不会复制 Cookie，也不会自动抓取平台资料。</p>
+              <p className="text-xs text-zinc-400 mt-1">登录态保存在应用独立浏览器目录；主页资料和最近笔记由你点击后读取，不复制旧浏览器 Cookie。</p>
             ) : urlWarning ? (
               <p className="text-xs text-amber-600 mt-1 font-medium">
-                ⚠️ URL 缺少 xsec_token！直接输入账号 URL 小红书会返回自己的数据。<br />
-                正确做法：在爬虫浏览器里<strong>搜索</strong>目标账号名 → 从搜索结果点击进入主页 → 再从地址栏复制完整 URL。
+                请输入小红书官网个人主页链接或账号 ID。临时访问参数会自动移除；若页面要求登录，请在独立浏览器中手动登录后重试。
               </p>
             ) : (
               <p className="text-xs text-zinc-400 mt-1">
-                在爬虫浏览器搜索账号名 → 点击进入主页（会自动带 xsec_token） → 从地址栏复制完整 URL
+                采集使用应用独立浏览器会话；URL 中的临时访问参数不会保存。
               </p>
             )}
           </div>
@@ -235,9 +326,9 @@ function CrawlerModal({ onClose, onDone, accountPoolId }: { onClose: () => void;
                 <RefreshCw size={13} className="animate-spin" />停止
               </button>
             ) : (
-              <button onClick={done ? onClose : start} disabled={(!url.trim() && !done) || running}
+              <button onClick={done ? onClose : start} disabled={(!url.trim() && !done) || Boolean(urlWarning) || running}
                 className="flex items-center gap-1.5 text-sm bg-[#ff2442] text-white px-4 py-1.5 rounded-lg hover:bg-[#e01f3a] disabled:opacity-40">
-                {done ? "完成" : IS_TAURI_RUNTIME ? "保存到本地" : urlWarning ? "忽略警告，强行导入" : "开始导入"}
+                {done ? "完成" : IS_TAURI_RUNTIME ? "保存到本地" : urlWarning ? "检查主页链接" : "开始导入"}
               </button>
             )}
           </div>
@@ -253,16 +344,21 @@ function AccountCard({
   selected,
   onClick,
   onDelete,
+  onOpenUrl,
 }: {
   acc: ReferenceAccount;
   selected: boolean;
   onClick: () => void;
   onDelete: () => void;
+  onOpenUrl: (url: string) => void;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const keywords = parseStyleKeywords(acc.content_style);
-  const hasStyle = keywords.length > 0;
+  const hasStyle = Boolean(acc.content_style?.trim());
+  const analysis = referenceAnalysisState(acc);
+  const captureEvidence = parseReferenceCaptureEvidence(acc.raw_data);
+  const likesSamples = captureEvidence?.metricSamples.likes ?? null;
 
   function handleDeleteClick(e: React.MouseEvent) {
     e.stopPropagation();
@@ -286,7 +382,7 @@ function AccountCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <button
-              onClick={(e) => { e.stopPropagation(); openInBrowser(`https://www.xiaohongshu.com/user/profile/${acc.account_id}`); }}
+              onClick={(e) => { e.stopPropagation(); onOpenUrl(`https://www.xiaohongshu.com/user/profile/${acc.account_id}`); }}
               className="font-medium text-zinc-900 truncate hover:text-[#ff2442] transition-colors flex items-center gap-1"
             >
               {acc.name ?? acc.account_id}
@@ -298,8 +394,8 @@ function AccountCard({
         </div>
         <div className="flex items-center gap-3 shrink-0 ml-3">
           <div className="text-right">
-            <p className="text-sm font-semibold text-[#ff2442]">❤ {acc.avg_likes.toLocaleString()}</p>
-            <p className="text-xs text-zinc-400">均赞</p>
+            <p className="text-sm font-semibold text-[#ff2442]">❤ {formatReferenceAverage(acc.avg_likes, likesSamples, captureEvidence)}</p>
+            <p className="text-xs text-zinc-400">均赞{likesSamples !== null ? ` · ${likesSamples} 条样本` : ""}</p>
           </div>
           <button
             onClick={handleDeleteClick}
@@ -318,12 +414,18 @@ function AccountCard({
       <div className="flex gap-4 text-xs text-zinc-400 mb-3">
         <span>粉丝 {acc.followers.toLocaleString()}</span>
         <span>笔记 {acc.note_count}</span>
-        <span>均评 {acc.avg_comments}</span>
-        <span>均藏 {acc.avg_collects}</span>
+        <span>均评 {formatReferenceAverage(acc.avg_comments, captureEvidence?.metricSamples.comments ?? null, captureEvidence)}{captureEvidence?.metricSamples.comments !== null && captureEvidence?.metricSamples.comments !== undefined ? `（${captureEvidence.metricSamples.comments} 条样本）` : ""}</span>
+        <span>均藏 {formatReferenceAverage(acc.avg_collects, captureEvidence?.metricSamples.collects ?? null, captureEvidence)}{captureEvidence?.metricSamples.collects !== null && captureEvidence?.metricSamples.collects !== undefined ? `（${captureEvidence.metricSamples.collects} 条样本）` : ""}</span>
       </div>
 
+      <p className="mb-3 text-[10px] text-zinc-400">
+        {analysis.label}{analysis.analyzedAt ? ` · 分析依据截至 ${new Date(analysis.analyzedAt).toLocaleDateString("zh-CN")}` : ""}
+        {captureEvidence && ` · 主页样本 ${captureEvidence.loadedNotes === null ? "数量未知" : `${captureEvidence.loadedNotes} 条`}${captureEvidence.state === "partial" ? "（部分加载）" : captureEvidence.state === "complete" ? "（滚动到已加载底部）" : "（范围未记录）"}`}
+        {captureEvidence?.publishedRange ? ` · 笔记发布时间 ${captureEvidence.publishedRange}` : ""}
+      </p>
+
       {/* chip 标签 */}
-      {hasStyle ? (
+      {hasStyle && keywords.length > 0 ? (
         <div className="flex flex-wrap gap-1.5 mb-3">
           {keywords.slice(0, 4).map((kw, i) => (
             <span key={i} className="text-[11px] bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full">
@@ -337,7 +439,7 @@ function AccountCard({
       ) : (
         <div className="flex items-center gap-1 mb-3">
           <span className="text-[11px] bg-amber-50 text-amber-500 border border-amber-200 px-2 py-0.5 rounded-full">
-            ✦ 待分析风格
+            ✦ {analysis.label === "待分析" ? "待分析风格" : analysis.label === "资料更新后待刷新" ? "资料更新后待刷新" : keywords.length ? "已有风格分析" : "已有分析，未提取关键词"}
           </span>
         </div>
       )}
@@ -350,7 +452,7 @@ function AccountCard({
               <span className="text-zinc-300 shrink-0">{i + 1}.</span>
               {n.url ? (
                 <button
-                  onClick={(e) => { e.stopPropagation(); openInBrowser(n.url!); }}
+                  onClick={(e) => { e.stopPropagation(); onOpenUrl(n.url!); }}
                   className="text-zinc-600 flex-1 truncate hover:text-[#ff2442] transition-colors text-left"
                 >
                   {n.title}
@@ -378,7 +480,8 @@ function AccountDrawer({
   onUpdated: () => void;
 }) {
   const { toast } = useToast();
-  const { accountId } = useAccountContext();
+  const { accountId, scopeKey } = useAccountContext();
+  const queryClient = useQueryClient();
   const { width, dragging, onDragStart } = usePanelResize({
     defaultWidth: 400,
     min: 300,
@@ -441,6 +544,9 @@ function AccountDrawer({
   const [addedToLib, setAddedToLib] = useState<Set<number>>(new Set());
 
   const styleObj = parseStyleFull(acc.content_style);
+  const captureEvidence = parseReferenceCaptureEvidence(acc.raw_data);
+  const analysisState = referenceAnalysisState(acc);
+  const unsupportedInsightClaim = /引流|完播率|曝光(?:量)?|流量(?:来源)?|点击转化|转化率/u.test(insights || acc.insights || "");
 
   async function saveStyle() {
     setSavingStyle(true);
@@ -532,9 +638,26 @@ function AccountDrawer({
     }
   }
 
-  async function addToRefLib(note: { title: string; likes: number }, idx: number) {
+  async function addToRefLib(note: { title: string; likes: number; url?: string }, idx: number) {
     if (IS_TAURI_RUNTIME) {
-      toast("本地榜样样本暂未接入经验库", "info");
+      if (accountId === null) {
+        toast("当前账号尚未就绪", "error");
+        return;
+      }
+      try {
+        const result = await addLocalKnowledgeReferenceSample({
+          accountId: acc.account_id,
+          accountPoolId: accountId,
+          title: note.title,
+          likes: note.likes,
+          noteUrl: note.url,
+        });
+        setAddedToLib((prev) => new Set(prev).add(idx));
+        await queryClient.invalidateQueries({ queryKey: ["local-knowledge-reference-samples", scopeKey] });
+        toast(result.duplicate ? "该样本已在经验库中" : "已加入经验库参考样本", result.duplicate ? "info" : "success");
+      } catch (error) {
+        toast(`加入失败：${error instanceof Error ? error.message : String(error)}`, "error");
+      }
       return;
     }
     try {
@@ -614,7 +737,7 @@ function AccountDrawer({
           <div className="flex items-center justify-between">
             <div>
               <button
-                onClick={() => openInBrowser(`https://www.xiaohongshu.com/user/profile/${acc.account_id}`)}
+                onClick={() => openExternalUrl(`https://www.xiaohongshu.com/user/profile/${acc.account_id}`).catch((error) => toast(`打开链接失败：${error instanceof Error ? error.message : String(error)}`, "error"))}
                 className="font-semibold text-zinc-900 text-sm hover:text-[#ff2442] transition-colors flex items-center gap-1"
               >
                 {acc.name ?? acc.account_id}
@@ -646,17 +769,26 @@ function AccountDrawer({
         {/* 数据看板 */}
         <div className="grid grid-cols-3 gap-px bg-zinc-100 border-b border-zinc-100">
           {[
-            { label: "均赞", value: acc.avg_likes.toLocaleString(), red: true },
-            { label: "均评", value: acc.avg_comments.toLocaleString() },
-            { label: "均藏", value: acc.avg_collects.toLocaleString() },
+            { label: "均赞", value: formatReferenceAverage(acc.avg_likes, captureEvidence?.metricSamples.likes ?? null, captureEvidence), samples: captureEvidence?.metricSamples.likes, red: true },
+            { label: "均评", value: formatReferenceAverage(acc.avg_comments, captureEvidence?.metricSamples.comments ?? null, captureEvidence), samples: captureEvidence?.metricSamples.comments },
+            { label: "均藏", value: formatReferenceAverage(acc.avg_collects, captureEvidence?.metricSamples.collects ?? null, captureEvidence), samples: captureEvidence?.metricSamples.collects },
           ].map((stat) => (
             <div key={stat.label} className="bg-white px-4 py-3 text-center">
               <p className={`text-lg font-bold ${stat.red ? "text-[#ff2442]" : "text-zinc-700"}`}>
                 {stat.value}
               </p>
-              <p className="text-xs text-zinc-400">{stat.label}</p>
+              <p className="text-xs text-zinc-400">{stat.label}{stat.samples !== null && stat.samples !== undefined ? ` · ${stat.samples} 条样本` : ""}</p>
             </div>
           ))}
+        </div>
+
+        <div className="border-b border-zinc-100 bg-zinc-50 px-4 py-2 text-[11px] leading-5 text-zinc-500">
+          <p>{analysisState.label}{analysisState.analyzedAt ? ` · 分析依据截至 ${new Date(analysisState.analyzedAt).toLocaleString("zh-CN")}` : ""}{acc.crawled_at ? ` · 资料更新于 ${new Date(acc.crawled_at).toLocaleString("zh-CN")}` : ""}</p>
+          {captureEvidence ? <p>
+            主页样本：{captureEvidence.loadedNotes === null ? "数量未知" : `${captureEvidence.loadedNotes} 条`}{captureEvidence.maximumNotes ? `（单次上限 ${captureEvidence.maximumNotes}）` : ""}；范围 {captureEvidence.state === "partial" ? "部分加载" : captureEvidence.state === "complete" ? "滚动到已加载底部" : "未记录"}。
+            {captureEvidence.publishedRange ? ` 笔记发布时间 ${captureEvidence.publishedRange}。` : " 笔记发布时间范围未知。"}
+            {' '}互动均值分母：赞 {captureEvidence.metricSamples.likes ?? "未知"} 条、评 {captureEvidence.metricSamples.comments ?? "未知"} 条、藏 {captureEvidence.metricSamples.collects ?? "未知"} 条。
+          </p> : <p>均值样本数与主页采集范围未记录，暂不能核对统计覆盖。</p>}
         </div>
 
         {/* ── 值得学习的地方 ── */}
@@ -666,6 +798,7 @@ function AccountDrawer({
               <Sparkles size={14} className="text-[#ff2442]" />
               <span className="text-sm font-semibold text-zinc-800">值得学习的地方</span>
             </div>
+            <span className={`rounded-full px-2 py-1 text-[10px] ${analysisState.stale ? "bg-amber-50 text-amber-700" : "bg-zinc-100 text-zinc-500"}`}>{analysisState.label}</span>
             <div className="flex gap-1">
               {insightsLoaded && (
                 <button
@@ -693,6 +826,8 @@ function AccountDrawer({
               正在分析…
             </div>
           )}
+          {unsupportedInsightClaim && <p className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">这段分析提到了当前没有采集的流量、引流、曝光或完播指标，相关结论暂无样本支持。</p>}
+          {(insights || acc.insights) && <p className="mb-2 text-[10px] text-zinc-400">学习要点只依据上方注明范围的主页与笔记样本；没有数据支持的指标应保持未知。</p>}
           {insights ? (
             <div className="text-sm leading-relaxed">
               <ReactMarkdown
@@ -857,7 +992,7 @@ function AccountDrawer({
                     <span className="text-zinc-300 shrink-0 mt-0.5">{i + 1}.</span>
                     {n.url ? (
                       <button
-                        onClick={() => openInBrowser(n.url!)}
+                        onClick={() => openExternalUrl(n.url!).catch((error) => toast(`打开链接失败：${error instanceof Error ? error.message : String(error)}`, "error"))}
                         className="text-zinc-700 flex-1 leading-relaxed hover:text-[#ff2442] transition-colors flex items-start gap-1 text-left"
                       >
                         {n.title}
@@ -917,7 +1052,9 @@ function AccountDrawer({
         <div className="px-4 py-4">
           <p className="text-xs text-zinc-400">
             爬取于 {acc.crawled_at ? new Date(acc.crawled_at).toLocaleDateString("zh-CN") : "未知"}
-            {acc.analyzed_at && ` · 分析于 ${new Date(acc.analyzed_at).toLocaleDateString("zh-CN")}`}
+            {acc.analyzed_at && ` · 风格分析于 ${new Date(acc.analyzed_at).toLocaleDateString("zh-CN")}`}
+            {acc.insights_at && ` · 学习要点于 ${new Date(acc.insights_at).toLocaleDateString("zh-CN")}`}
+            {captureEvidence?.sampledAt && ` · 互动样本采集于 ${new Date(captureEvidence.sampledAt).toLocaleDateString("zh-CN")}`}
           </p>
         </div>
       </div>
@@ -939,6 +1076,18 @@ export default function Accounts({ embedded = false }: { embedded?: boolean } = 
     setShowModal(false);
     setSelectedId(null);
   });
+
+  useEffect(() => {
+    if (!IS_TAURI_RUNTIME || accountId === null) return;
+    const onReferenceProfileUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ accountPoolId?: number }>).detail;
+      if (detail?.accountPoolId === accountId) {
+        void qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey, "references"] });
+      }
+    };
+    window.addEventListener("aichihongshu-reference-profile-updated", onReferenceProfileUpdated);
+    return () => window.removeEventListener("aichihongshu-reference-profile-updated", onReferenceProfileUpdated);
+  }, [accountId, qc, scopeKey]);
 
   const { data: remoteAccounts = [], isLoading: remoteLoading } = useQuery<ReferenceAccount[]>({
     queryKey: ["accounts"],
@@ -1014,6 +1163,7 @@ export default function Accounts({ embedded = false }: { embedded?: boolean } = 
                 <AccountCard
                   key={acc.account_id}
                   acc={acc}
+                  onOpenUrl={(url) => { void openExternalUrl(url).catch((error) => toast(`打开链接失败：${error instanceof Error ? error.message : String(error)}`, "error")); }}
                   selected={selectedId === acc.account_id}
                   onClick={() => setSelectedId(selectedId === acc.account_id ? null : acc.account_id)}
                   onDelete={() => deleteMutation.mutate(acc)}

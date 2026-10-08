@@ -31,7 +31,7 @@ assignees: ''
 ## 环境信息
 
 - OS：（如 macOS 14.5 / Ubuntu 22.04）
-- Python 版本：（`python3 --version`）
+- 运行方式 / 版本：（桌面、Rust CLI、Rust Web 或 MCP；可附设置页运行时状态）
 - 项目版本/commit：（`git log -1 --oneline`）
 - 使用方式：（GUI 客户端 / CLI / MCP）
 

@@ -19,7 +19,8 @@ import { useHDRSetting } from "../hooks/useHDRSetting";
 import { useSavedScrollPosition } from "../hooks/useSavedScrollPosition";
 import {
   IS_TAURI_RUNTIME,
-  createLocalDraftFromItems,
+  analyzeLocalItem,
+  createLocalPromptDraftFromItems,
   deleteLocalItem,
   fileToBase64,
   fileToThumbnailBase64,
@@ -192,6 +193,39 @@ export default function Library() {
   }, [items]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 导入后追踪哪些图片需要等待 AI 分析
+  function scheduleLocalAnalyses(ids: number[], poolId: number) {
+    if (ids.length === 0) return;
+    setAnalyzingIds((previous) => new Set([...previous, ...ids]));
+    void (async () => {
+      let cursor = 0;
+      const failures: string[] = [];
+      const worker = async () => {
+        while (cursor < ids.length) {
+          const index = cursor++;
+          const id = ids[index];
+          try {
+            await analyzeLocalItem(id, poolId);
+          } catch (error: unknown) {
+            failures.push(`素材 ${id}: ${(error as Error)?.message ?? "分析失败"}`);
+          } finally {
+            setAnalyzingIds((previous) => {
+              const next = new Set(previous);
+              next.delete(id);
+              return next;
+            });
+            await qc.invalidateQueries({ queryKey: ["local-workspace"] });
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(2, ids.length) }, worker));
+      if (failures.length > 0) {
+        toast(`${failures.length} 张图片分析失败：${failures[0]}`, "error");
+      } else {
+        toast(`${ids.length} 张图片 AI 识别完成`, "success");
+      }
+    })();
+  }
+
   async function handleUpload(files: FileList | File[] | null) {
     if (!files || !files.length) return;
     if (!libraryImport.available) {
@@ -206,10 +240,11 @@ export default function Library() {
       setUploading(true);
       let imported = 0;
       const failures: string[] = [];
+      const pendingAnalysis: number[] = [];
       try {
         for (const file of Array.from(files)) {
           try {
-            await importLocalImage({
+            const item = await importLocalImage({
               accountPoolId: accountId,
               fileName: file.name,
               mimeType: file.type || undefined,
@@ -217,15 +252,17 @@ export default function Library() {
               thumbnailDataBase64: await fileToThumbnailBase64(file),
             });
             imported += 1;
+            if (!item.analysisRaw) pendingAnalysis.push(item.id);
           } catch (error: unknown) {
             failures.push(`${file.name}: ${(error as Error)?.message ?? "导入失败"}`);
           }
         }
         if (imported > 0) {
           await qc.invalidateQueries({ queryKey: ["local-workspace"] });
+          scheduleLocalAnalyses(pendingAnalysis, accountId);
         }
         if (failures.length === 0) {
-          toast(`已导入 ${imported} 张图片`, "success");
+          toast(`已导入 ${imported} 张图片${pendingAnalysis.length ? "，AI 识别中..." : ""}`, "success");
         } else if (imported > 0) {
           toast(`已导入 ${imported} 张，${failures.length} 张失败：${failures[0]}`, "info");
         } else {
@@ -283,7 +320,7 @@ export default function Library() {
         return;
       }
       try {
-        const localNote = await createLocalDraftFromItems([selected.id], accountId);
+        const localNote = await createLocalPromptDraftFromItems([selected.id], accountId);
         navigate(`/notes/${localNote.id}`);
       } catch (e: unknown) {
         toast((e as Error).message, "error");
@@ -478,7 +515,7 @@ export default function Library() {
         return;
       }
       try {
-        const localNote = await createLocalDraftFromItems(Array.from(multiSelected), accountId);
+        const localNote = await createLocalPromptDraftFromItems(Array.from(multiSelected), accountId);
         navigate(`/notes/${localNote.id}`);
       } catch (e: unknown) {
         toast((e as Error).message, "error");
@@ -576,6 +613,16 @@ export default function Library() {
       toast("所选图片均已识别", "success");
       return;
     }
+    if (IS_TAURI_RUNTIME) {
+      if (accountId == null) {
+        toast("当前账号尚未就绪，无法分析图片", "error");
+        return;
+      }
+      scheduleLocalAnalyses(ids, accountId);
+      setMultiSelected(new Set());
+      toast(`开始识别 ${ids.length} 张图片...`, "success");
+      return;
+    }
     // 加入 analyzingIds，触发轮询
     setAnalyzingIds((prev) => {
       const next = new Set(prev);
@@ -589,6 +636,11 @@ export default function Library() {
         await api.post(`/api/library/${id}/analyze`, {});
       } catch {
         // 单张失败不中断整体
+        setAnalyzingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
       }
     }
     setMultiSelected(new Set());
@@ -1138,6 +1190,15 @@ export default function Library() {
             <button
               onClick={async () => {
                 if (!selected) return;
+                if (IS_TAURI_RUNTIME) {
+                  if (accountId == null) {
+                    toast("当前账号尚未就绪，无法分析图片", "error");
+                    return;
+                  }
+                  scheduleLocalAnalyses([selected.id], accountId);
+                  toast("AI 识别已触发，稍后自动刷新", "success");
+                  return;
+                }
                 try {
                   await api.post(`/api/library/${selected.id}/analyze`, {});
                   setAnalyzingIds((prev) => new Set(prev).add(selected.id));

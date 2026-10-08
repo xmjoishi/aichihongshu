@@ -2,7 +2,7 @@ import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, openInBrowser } from "../lib/api";
+import { api, openExternalUrl } from "../lib/api";
 import type { Note, Item, Profile, ReferenceAccount } from "../lib/types";
 import { Dialog, Spinner, primaryButtonClass, secondaryButtonClass, StatusBadge } from "../components/ui";
 import { useToast } from "../components/Toast";
@@ -58,6 +58,7 @@ function SuggestionCard({
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const { accountId, scopeKey } = useAccountContext();
 
   // Tauri 桌面端只读取 Rust 本地快照，浏览器预览继续使用原 HTTP 数据源。
@@ -339,7 +340,7 @@ export default function Dashboard() {
                 <span className="text-sm font-semibold text-[#ff2442] shrink-0">❤ {n.likes}</span>
                 {n.note_url && (
                   <button
-                    onClick={() => openInBrowser(n.note_url!)}
+                    onClick={() => openExternalUrl(n.note_url!).catch((error) => toast(`打开链接失败：${error instanceof Error ? error.message : String(error)}`, "error"))}
                     title="在小红书查看"
                     className="shrink-0 p-1 text-zinc-300 hover:text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity"
                   >

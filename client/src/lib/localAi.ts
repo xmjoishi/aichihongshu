@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
+import { startLocalAIStream, type LocalAIStreamEvent } from "./localAiStream";
 
 export type LocalAIProviderState = "present" | "missing" | "failed";
 export type LocalAIProviderId = "claude" | "codex" | "opencode";
@@ -18,12 +19,6 @@ export interface LocalAIProviderStatus {
   tools: boolean;
   cancel: boolean;
   reason: string;
-}
-
-interface LocalAIEvent {
-  runId: string;
-  text?: string;
-  error?: string;
 }
 
 export interface ProbeLocalAIProvidersOptions {
@@ -128,12 +123,7 @@ export function markLocalAITextVerified(scopeKey: string, provider: LocalAIProvi
   }
 }
 
-/**
- * 启动一次本地 CLI 文本调用。
- *
- * 事件监听先于 invoke 注册，避免极快 CLI 输出在前端订阅前丢失。
- * AbortController 会请求 Rust kill 子进程；如果进程已结束，取消是幂等的。
- */
+/** Start a local CLI call; the listener lifecycle is shared with Model API streams. */
 export function streamLocalAI(
   runId: string,
   provider: LocalAIProviderStatus["id"],
@@ -142,60 +132,20 @@ export function streamLocalAI(
   onDone: () => void,
   onError: (error: Error) => void,
 ): AbortController {
-  const controller = new AbortController();
-  let listeners: UnlistenFn[] = [];
-  let cleaned = false;
-
-  const cleanup = () => {
-    if (cleaned) return;
-    cleaned = true;
-    listeners.forEach((unlisten) => unlisten());
-    listeners = [];
-  };
-
-  controller.signal.addEventListener("abort", () => {
-    cleanup();
-    void invoke("cancel_local_ai", { runId }).catch(() => {
-      // 取消是幂等动作；进程可能已自然退出。
-    });
-  }, { once: true });
-
-  void (async () => {
-    try {
-      const [chunkOff, doneOff, errorOff] = await Promise.all([
-        listen<LocalAIEvent>("local-ai://chunk", (event) => {
-          if (event.payload.runId === runId && event.payload.text) onChunk(event.payload.text);
-        }),
-        listen<LocalAIEvent>("local-ai://done", (event) => {
-          if (event.payload.runId !== runId || cleaned) return;
-          cleanup();
-          onDone();
-        }),
-        listen<LocalAIEvent>("local-ai://error", (event) => {
-          if (event.payload.runId !== runId || cleaned) return;
-          cleanup();
-          onError(new Error(event.payload.error || "本地 AI CLI 调用失败"));
-        }),
-      ]);
-      listeners = [chunkOff, doneOff, errorOff];
-      if (controller.signal.aborted) {
-        cleanup();
-        return;
-      }
-      await invoke("start_local_ai", { request: { runId, provider, prompt } });
-    } catch (error) {
-      cleanup();
-      if (!controller.signal.aborted) onError(error instanceof Error ? error : new Error(String(error)));
-    }
-  })();
-
-  return controller;
+  return startLocalAIStream({
+    runId,
+    startRun: () => invoke("start_local_ai", { request: { runId, provider, prompt } }),
+    cancelCommand: "cancel_local_ai",
+    listen: (eventName, callback) => listen<LocalAIStreamEvent>(eventName, callback),
+    invoke: (command, args) => invoke(command, args),
+    onChunk,
+    onDone,
+    onError,
+    fallbackError: "本地 AI CLI 调用失败",
+  });
 }
 
-/**
- * 启动一次 Model API 流式文本调用。
- * 与本地 CLI 共用 `local-ai://chunk|done|error` 事件契约。
- */
+/** Start a Model API stream using the same event contract and cancellation lifecycle. */
 export function streamModelApi(
   runId: string,
   providerId: string,
@@ -205,54 +155,17 @@ export function streamModelApi(
   onDone: () => void,
   onError: (error: Error) => void,
 ): AbortController {
-  const controller = new AbortController();
-  let listeners: UnlistenFn[] = [];
-  let cleaned = false;
-
-  const cleanup = () => {
-    if (cleaned) return;
-    cleaned = true;
-    listeners.forEach((unlisten) => unlisten());
-    listeners = [];
-  };
-
-  controller.signal.addEventListener("abort", () => {
-    cleanup();
-    void invoke("cancel_model_api_run", { runId }).catch(() => {
-      // 取消是幂等动作；运行可能已自然结束。
-    });
-  }, { once: true });
-
-  void (async () => {
-    try {
-      const [chunkOff, doneOff, errorOff] = await Promise.all([
-        listen<LocalAIEvent>("local-ai://chunk", (event) => {
-          if (event.payload.runId === runId && event.payload.text) onChunk(event.payload.text);
-        }),
-        listen<LocalAIEvent>("local-ai://done", (event) => {
-          if (event.payload.runId !== runId || cleaned) return;
-          cleanup();
-          onDone();
-        }),
-        listen<LocalAIEvent>("local-ai://error", (event) => {
-          if (event.payload.runId !== runId || cleaned) return;
-          cleanup();
-          onError(new Error(event.payload.error || "Model API 调用失败"));
-        }),
-      ]);
-      listeners = [chunkOff, doneOff, errorOff];
-      if (controller.signal.aborted) {
-        cleanup();
-        return;
-      }
-      await invoke("start_model_api_run", {
-        request: { runId, providerId, model: model ?? null, prompt },
-      });
-    } catch (error) {
-      cleanup();
-      if (!controller.signal.aborted) onError(error instanceof Error ? error : new Error(String(error)));
-    }
-  })();
-
-  return controller;
+  return startLocalAIStream({
+    runId,
+    startRun: () => invoke("start_model_api_run", {
+      request: { runId, providerId, model: model ?? null, prompt },
+    }),
+    cancelCommand: "cancel_model_api_run",
+    listen: (eventName, callback) => listen<LocalAIStreamEvent>(eventName, callback),
+    invoke: (command, args) => invoke(command, args),
+    onChunk,
+    onDone,
+    onError,
+    fallbackError: "Model API 调用失败",
+  });
 }

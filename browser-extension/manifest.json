@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "爱吃红薯数据抓取",
-  "version": "0.3.5",
-  "description": "识别当前页归属后，收藏素材或记录数据快照（本地 Native Messaging）",
+  "version": "0.9.0",
+  "description": "本地采集与创作页确认式文字、图片填充（不自动发布）",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnyiofNSJE/tK4i11sIRTMKKnfa7DM3z7dGpFyELJlNorf6VFvax3vXF7l2rooDrbL9DXJ9AeNM1E1bwRF6YVSm9hamDP6CSrK54Gmq177prt7IhS/AAvFRaRiUSpqvHQsU1jyGqO5xh26iQp9R5GPWOgijh/KeAs4C6+7+6E/lnJMmloNqyTjZ2Smp2UQW2Z7ma7+Skbm8S/X6zjA2zxCBa+94hXCtsvyjYXabg2ZRTwmSviNlqtaJklEP+5naly4sx4V3LWX1AqUBmi91XsckAHO0InRYribd3RDYog18CHliJigNfOvm1n8L2K0tsN4JFIYFThusGtpkB1fmjedQIDAQAB",
-  "permissions": ["nativeMessaging", "scripting", "activeTab"],
+  "permissions": ["nativeMessaging", "scripting", "activeTab", "storage"],
   "host_permissions": [],
+  "optional_host_permissions": ["https://*/*"],
   "background": { "service_worker": "background.js" },
   "action": {
     "default_title": "数据抓取（当前页）",

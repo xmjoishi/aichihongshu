@@ -2,8 +2,8 @@ import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useToast } from "./Toast";
 import { useAccountContext } from "../lib/accountContext";
-import { validateBrowserCapture } from "../lib/browserCapture";
-import { IS_TAURI_RUNTIME, LOCAL_INSPIRATIONS_UPDATED_EVENT, saveLocalInspiration, savePageSnapshot } from "../lib/local";
+import { serializeBrowserCapturePayload, validateBrowserCapture } from "../lib/browserCapture";
+import { IS_TAURI_RUNTIME, LOCAL_INSPIRATIONS_UPDATED_EVENT, saveBrowserCapturePayload, saveLocalInspiration, savePageSnapshot } from "../lib/local";
 
 /**
  * Keep the extension transport alive across route changes. Browser collection
@@ -17,29 +17,66 @@ export default function BrowserCaptureBridge() {
   useEffect(() => {
     if (!IS_TAURI_RUNTIME || accountId === null) return;
 
-    const acceptCapture = async (raw: unknown, collectionAlreadySaved = false) => {
-      const validated = validateBrowserCapture(raw, accountId);
+    const acceptCapture = async (raw: unknown, persistedByHost = false) => {
+      const eventEnvelope = raw && typeof raw === "object" ? raw as {
+        capture?: unknown;
+        outcomes?: {
+          collectionSaved?: boolean;
+          collectionError?: string | null;
+          snapshotSaved?: boolean;
+          snapshotError?: string | null;
+          profileRefreshed?: boolean;
+          profileRefreshError?: string | null;
+          referenceProfileUpdated?: boolean;
+          captureDetailsSaved?: boolean;
+          captureDetailsError?: string | null;
+        };
+      } : null;
+      const outcomes = persistedByHost ? eventEnvelope?.outcomes : undefined;
+      const captureInput = eventEnvelope?.capture ?? raw;
+      const persistedAccountId = persistedByHost && captureInput && typeof captureInput === "object"
+        ? (captureInput as { targetAccountId?: unknown }).targetAccountId
+        : null;
+      const validationAccountId = typeof persistedAccountId === "number" ? persistedAccountId : accountId;
+      const validated = validateBrowserCapture(captureInput, validationAccountId);
       if (!validated.ok) {
         toast(validated.message, "error");
         return;
       }
 
       const capture = validated.value;
-      const wantsCollect = capture.modules.collect.titleBody || capture.modules.collect.authorSource;
-      const wantsData = capture.modules.data.metrics;
+      if (outcomes?.profileRefreshed === true) {
+        window.dispatchEvent(new CustomEvent("aichihongshu-profile-refreshed", {
+          detail: { accountPoolId: capture.targetAccountId },
+        }));
+      }
+      if (outcomes?.referenceProfileUpdated === true) {
+        window.dispatchEvent(new CustomEvent("aichihongshu-reference-profile-updated", {
+          detail: { accountPoolId: capture.targetAccountId },
+        }));
+      }
+      const wantsCollect = capture.modules.collect.titleBody
+        || capture.modules.collect.authorSource
+        || capture.modules.collect.images
+        || capture.modules.collect.comments;
+      const wantsDetails = capture.modules.collect.images || capture.modules.collect.comments;
+      const wantsData = capture.modules.data.metrics || capture.modules.data.publishedAt;
+      const captureIdSuffix = (capture.requestId || crypto.randomUUID()).slice(0, 96);
+      const captureId = `bc:${capture.targetAccountId}:${captureIdSuffix}`;
       let collectionSaved = false;
       let collectionError = "";
+      let captureDetailsError = "";
       let dataSaved = false;
       let dataError = "";
 
       if (wantsCollect) {
-        if (collectionAlreadySaved) {
-          collectionSaved = true;
+        if (outcomes) {
+          collectionSaved = outcomes.collectionSaved === true;
+          collectionError = outcomes.collectionError || "";
         } else {
           try {
-            const requestSuffix = (capture.requestId || crypto.randomUUID()).slice(0, 96);
             await saveLocalInspiration({
-              id: `bc:${capture.targetAccountId}:${requestSuffix}`,
+              id: captureId,
               accountPoolId: capture.targetAccountId,
               title: capture.title,
               sourceUrl: capture.sourceUrl,
@@ -53,6 +90,8 @@ export default function BrowserCaptureBridge() {
                 ...(capture.modules.collect.titleBody ? ["titleBody"] : []),
                 ...(capture.modules.collect.authorSource ? ["authorSource"] : []),
                 ...(capture.modules.data.metrics ? ["metrics"] : []),
+                ...(capture.modules.collect.images ? ["images"] : []),
+                ...(capture.modules.collect.comments ? ["comments"] : []),
               ],
             });
             collectionSaved = true;
@@ -62,29 +101,46 @@ export default function BrowserCaptureBridge() {
         }
       }
 
-      if (wantsData && capture.kind !== "clip") {
+      if (collectionSaved && !outcomes) {
         try {
-          await savePageSnapshot({
-            accountPoolId: capture.targetAccountId,
-            kind: capture.kind,
-            sourceUrl: capture.sourceUrl,
-            title: capture.title,
-            author: capture.author,
-            bodyExcerpt: capture.body.slice(0, 4000),
-            metrics: {
-              like: capture.metrics.like ?? null,
-              collect: capture.metrics.collect ?? null,
-              comment: capture.metrics.comment ?? null,
-              followers: capture.metrics.followers ?? null,
-              noteCount: capture.metrics.noteCount ?? null,
-            },
-            referenceAccountId: capture.referenceAccountId,
-            ...(capture.requestId ? { requestId: capture.requestId } : {}),
-            observedAt: capture.observedAt,
-          });
-          dataSaved = true;
+          await saveBrowserCapturePayload(captureId, capture.targetAccountId, serializeBrowserCapturePayload(capture));
         } catch (error) {
-          dataError = error instanceof Error ? error.message : String(error);
+          captureDetailsError = error instanceof Error ? error.message : String(error);
+        }
+      } else if (wantsDetails && outcomes?.captureDetailsSaved !== true) {
+        captureDetailsError = outcomes?.captureDetailsError || "桌面端未确认摘录入库";
+      }
+
+      if (wantsData && capture.kind !== "clip") {
+        if (outcomes) {
+          dataSaved = outcomes.snapshotSaved === true;
+          dataError = outcomes.snapshotError || "";
+          if (!dataSaved && !dataError) dataError = "数据快照未持久化，请重试";
+        } else {
+          try {
+            await savePageSnapshot({
+              accountPoolId: capture.targetAccountId,
+              kind: capture.kind,
+              sourceUrl: capture.sourceUrl,
+              title: capture.title,
+              author: capture.author,
+              bodyExcerpt: capture.body.slice(0, 4000),
+              metrics: {
+                like: capture.metrics.like ?? null,
+                collect: capture.metrics.collect ?? null,
+                comment: capture.metrics.comment ?? null,
+                followers: capture.metrics.followers ?? null,
+                noteCount: capture.metrics.noteCount ?? null,
+                captureDetails: capture.captureDetails,
+              },
+              referenceAccountId: capture.referenceAccountId,
+              ...(capture.requestId ? { requestId: capture.requestId } : {}),
+              observedAt: capture.observedAt,
+            });
+            dataSaved = true;
+          } catch (error) {
+            dataError = error instanceof Error ? error.message : String(error);
+          }
         }
       }
 
@@ -95,14 +151,15 @@ export default function BrowserCaptureBridge() {
       }
 
       const messages: string[] = [];
-      if (collectionSaved) messages.push("浏览器收藏已保存到网页收藏");
-      if (collectionError) messages.push(`网页收藏保存失败：${collectionError}`);
+      if (collectionSaved) messages.push("浏览器剪藏已保存到本地剪藏");
+      if (collectionError) messages.push(`浏览器剪藏保存失败：${collectionError}`);
+      if (captureDetailsError) messages.push(`图片/评论摘录保存失败：${captureDetailsError}`);
       if (dataSaved) messages.push("数据快照已更新");
       if (dataError) messages.push(`数据快照失败：${dataError}`);
       if (!wantsCollect && !wantsData) messages.push("未勾选任何模块，未入库");
       if (wantsData && capture.kind === "clip") messages.push("当前页面类型不支持更新数据");
       if (messages.length > 0) {
-        const failed = Boolean(dataError || collectionError);
+        const failed = Boolean(dataError || collectionError || captureDetailsError);
         toast(messages.join("；"), failed ? "error" : "success");
       }
     };
@@ -111,10 +168,10 @@ export default function BrowserCaptureBridge() {
       if (event.source !== window) return;
       const data = event.data;
       if (!data || data.type !== "AICHIHONGSHU_BROWSER_CAPTURE") return;
-      void acceptCapture(data.message ?? data.payload ?? data, false);
+      void acceptCapture(data.message ?? data.payload ?? data);
     };
     const onCaptureEvent = (event: Event) => {
-      void acceptCapture((event as CustomEvent).detail, false);
+      void acceptCapture((event as CustomEvent).detail);
     };
 
     window.addEventListener("message", onMessage);

@@ -128,6 +128,15 @@ export default function Settings() {
   );
 }
 
+function browserCaptureErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) return error.trim();
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message.trim();
+  }
+  return "操作失败，桌面端未返回可读错误。请运行链路自检并复制诊断信息。";
+}
+
 // ── 浏览器插件（独立页签）────────────────────────────────────────
 function BrowserCaptureSection({ standalone = false }: { standalone?: boolean }) {
   void standalone;
@@ -137,13 +146,18 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
   const [status, setStatus] = useState<BrowserCaptureStatus | null>(null);
   const [linkHops, setLinkHops] = useState<Array<[string, boolean, string]> | null>(null);
   const [testing, setTesting] = useState(false);
+  const [communicationCheck, setCommunicationCheck] = useState<"idle" | "waiting" | "passed" | "failed">("idle");
+  const [communicationCheckStartedAt, setCommunicationCheckStartedAt] = useState(0);
 
   const refreshStatus = async () => {
-    if (!IS_TAURI_RUNTIME) return;
+    if (!IS_TAURI_RUNTIME) return null;
     try {
-      setStatus(await browserCaptureStatus());
+      const next = await browserCaptureStatus();
+      setStatus(next);
+      return next;
     } catch {
       setStatus(null);
+      return null;
     }
   };
 
@@ -154,13 +168,17 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
 
   async function install(browser: "chrome" | "edge") {
     setBusy(browser);
+    setInstallResult(null);
     try {
       const message = await installBrowserCaptureHost(browser);
       setInstallResult(message);
       await refreshStatus();
       toast(`已安装到 ${browser === "chrome" ? "Chrome" : "Edge"}，请在扩展页加载已解压`, "success");
     } catch (error) {
-      toast((error as Error).message, "error");
+      const message = `${browser === "chrome" ? "Chrome" : "Edge"} 修复失败：${browserCaptureErrorMessage(error)}`;
+      setInstallResult(message);
+      console.error("[browser-capture] install failed", { browser, error });
+      toast(message, "error");
     } finally {
       setBusy(null);
     }
@@ -170,9 +188,10 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
     setBusy("copy");
     try {
       await copyBrowserExtensionPath();
+      await refreshStatus();
       toast("路径已复制", "success");
     } catch (error) {
-      toast((error as Error).message, "error");
+      toast(browserCaptureErrorMessage(error), "error");
     } finally {
       setBusy(null);
     }
@@ -183,9 +202,10 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
     try {
       const message = await copyBrowserExtensionDir();
       setInstallResult(message);
+      await refreshStatus();
       toast("扩展副本已导出并打开", "success");
     } catch (error) {
-      toast((error as Error).message, "error");
+      toast(browserCaptureErrorMessage(error), "error");
     } finally {
       setBusy(null);
     }
@@ -199,22 +219,90 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
       const failed = hops.filter(([, ok]) => !ok);
       toast(failed.length ? `自检发现 ${failed.length} 处未就绪` : "链路自检通过", failed.length ? "warning" : "success");
     } catch (error) {
-      toast((error as Error).message, "error");
+      toast(browserCaptureErrorMessage(error), "error");
     } finally {
       setTesting(false);
+    }
+  }
+
+  async function verifyPluginCommunication() {
+    if (!IS_TAURI_RUNTIME) return;
+    const startedAt = Date.now();
+    setCommunicationCheckStartedAt(startedAt);
+    setCommunicationCheck("waiting");
+    setInstallResult("正在等待真实插件握手。现在切到浏览器并点击工具栏中的爱吃红薯插件；此检测不会启动桌面 APP，也不会写入业务数据。");
+    const deadline = startedAt + 15_000;
+    while (Date.now() < deadline) {
+      const next = await refreshStatus();
+      if (next?.lastReportedAtMs && next.lastReportedAtMs > startedAt
+        && next.lastReportedChannel === next.channel
+        && (next.lastReportedStep === "version_handshake" || next.lastReportedStep === "account_read")) {
+        if (next.lastReportedErrorCode) {
+          setCommunicationCheck("failed");
+          setInstallResult(`已收到插件通信，但失败于 ${next.lastReportedStep}：${next.lastReportedErrorCode}。请按错误码修复后重试。`);
+          return;
+        }
+        setCommunicationCheck("passed");
+        setInstallResult(`已收到插件真实握手：${next.lastReportedChannel === "dev" ? "DEV" : "正式版"} · 插件 v${next.lastReportedExtensionVersion ?? "?"} · ${next.lastReportedStep === "account_read" ? "账号读取" : "协议握手"}耗时 ${next.lastReportedDurationMs ?? "未知"} ms。`);
+        return;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+    }
+    setCommunicationCheck("failed");
+    setInstallResult("15 秒内没有收到本通道插件握手。检查扩展是否已加载、Native Host 清单是否匹配，并再次点击“验证插件通信”。");
+  }
+
+  async function copyRedactedDiagnostics() {
+    const hasLatestReport = Boolean(status?.lastReportedAtMs);
+    const pluginReported = hasLatestReport && (!communicationCheckStartedAt
+      || Number(status?.lastReportedAtMs) > communicationCheckStartedAt);
+    const failedHop = linkHops?.find(([, ok]) => !ok)?.[0] ?? "插件通信";
+    const diagnostics = {
+      appVersion: status?.appVersion ?? "unknown",
+      bundledExtensionVersion: status?.extensionVersion ?? "unknown",
+      reportedExtensionVersion: status?.lastReportedExtensionVersion ?? "unknown",
+      channel: status?.channel ?? "unknown",
+      step: pluginReported ? status?.lastReportedStep ?? "unknown" : failedHop,
+      errorCode: pluginReported ? status?.lastReportedErrorCode ?? "none" : communicationCheck === "failed" ? "PLUGIN_HANDSHAKE_NOT_RECEIVED" : "unknown",
+      durationMs: pluginReported ? status?.lastReportedDurationMs ?? null : null,
+      protocolVersion: status?.protocolVersion ?? null,
+      chromeHostRegistered: Boolean(status?.hostManifestMatches),
+      edgeHostRegistered: Boolean(status?.hostManifestMatchesEdge),
+      pluginHandshakeReceived: pluginReported,
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+      toast("已复制脱敏连接诊断", "success");
+    } catch (error) {
+      toast(`复制失败：${(error as Error).message}`, "error");
     }
   }
 
   return (
     <div className="space-y-6">
       <Section title="浏览器插件">
-        <Field label="扩展信息" hint="在浏览器扩展页搜索此名称；版本需与弹窗右上角一致">
+        <Field label="扩展信息" hint="本机包来自桌面应用嵌入的扩展文件；浏览器版本是本次桌面运行期间最近一次插件上报">
           <div className="space-y-1 text-xs">
             <p className="text-sm font-medium text-zinc-800">
               爱吃红薯数据抓取
-              <span className="ml-2 text-zinc-500">
-                v{status?.extensionVersion ?? "?"} · 协议 v{status?.protocolVersion ?? 2}
+              <span className={`ml-2 rounded px-1.5 py-0.5 text-[10px] ${status?.channel === "dev" ? "bg-amber-100 text-amber-800" : "bg-zinc-100 text-zinc-600"}`}>
+                {status?.channel === "dev" ? "DEV" : "正式版"}
               </span>
+              <span className="ml-2 text-zinc-500">
+                应用 v{status?.appVersion ?? "?"} · 扩展 v{status?.extensionVersion ?? "?"} · 协议 v{status?.protocolVersion ?? 2}
+              </span>
+            </p>
+            <p className="text-[10px] text-zinc-500">开发工作区：{status?.workspaceId ?? "读取中"}</p>
+            <p className="text-[10px] text-zinc-500">
+              浏览器最近上报：{status?.lastReportedExtensionVersion
+                ? `v${status.lastReportedExtensionVersion} · ${new Date(status.lastReportedAtMs ?? 0).toLocaleString()}`
+                : "本次运行尚未收到上报"}
+              。更新扩展目录后，请在浏览器扩展页手动重载。
+            </p>
+            <p className="text-[10px] text-zinc-500">
+              插件实际通信：{status?.lastReportedExtensionVersion
+                ? `${status.lastReportedChannel === "dev" ? "DEV" : "正式版"} 插件 v${status.lastReportedExtensionVersion} · ${status.lastReportedStep ?? "握手"} · ${status.lastReportedDurationMs ?? "未知"} ms · ${new Date(status.lastReportedAtMs ?? 0).toLocaleString()}`
+                : "本次尚未收到插件 Native Messaging 回执"}
             </p>
             <p className="text-[10px] text-zinc-400 break-all">
               ID：{status?.extensionId ?? "—"} · 加载目录：{status?.extensionDir ?? "—"}
@@ -222,14 +310,14 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
             <div className="flex flex-wrap gap-x-4 gap-y-1 pt-1">
               <span>
                 Chrome 宿主：
-                <strong className={status?.hostInstalled ? "text-emerald-600" : "text-amber-600"}>
-                  {status?.hostInstalled ? "已安装 ✓" : "未安装"}
+                <strong className={status?.hostManifestMatches ? "text-emerald-600" : "text-amber-600"}>
+                  {status?.hostManifestMatches ? "已安装并匹配 ✓" : status?.hostInstalled ? "已安装，需修复" : "未安装"}
                 </strong>
               </span>
               <span>
                 Edge 宿主：
-                <strong className={status?.hostInstalledEdge ? "text-emerald-600" : "text-amber-600"}>
-                  {status?.hostInstalledEdge ? "已安装 ✓" : "未安装"}
+                <strong className={status?.hostManifestMatchesEdge ? "text-emerald-600" : "text-amber-600"}>
+                  {status?.hostManifestMatchesEdge ? "已安装并匹配 ✓" : status?.hostInstalledEdge ? "已安装，需修复" : "未安装"}
                 </strong>
               </span>
             </div>
@@ -238,7 +326,7 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
       </Section>
 
       <Section title="安装">
-        <Field label="一键安装" hint="写宿主 + 打开扩展页 + 打开扩展目录；你只需「加载已解压」">
+        <Field label="安装或修复" hint={`一键重写当前 ${status?.channel === "dev" ? "DEV" : "正式"} 通道的扩展副本与 Native Host 注册，并校验允许来源；首次仍需在浏览器手动加载已解压扩展。`}>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -246,7 +334,7 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
               disabled={!IS_TAURI_RUNTIME || busy !== null}
               className="rounded-lg bg-[#ff2442] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#e01f3a] disabled:opacity-50"
             >
-              {busy === "chrome" ? "安装中…" : "安装到 Chrome"}
+              {busy === "chrome" ? "修复中…" : `一键修复 Chrome · ${status?.channel === "dev" ? "DEV" : "正式版"}`}
             </button>
             <button
               type="button"
@@ -254,7 +342,7 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
               disabled={!IS_TAURI_RUNTIME || busy !== null}
               className="rounded-lg bg-[#ff2442] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#e01f3a] disabled:opacity-50"
             >
-              {busy === "edge" ? "安装中…" : "安装到 Edge"}
+              {busy === "edge" ? "修复中…" : `一键修复 Edge · ${status?.channel === "dev" ? "DEV" : "正式版"}`}
             </button>
             <button
               type="button"
@@ -269,7 +357,7 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
               onClick={() => {
                 void openBrowserExtensionDir()
                   .then((m) => toast(m, "success"))
-                  .catch((e) => toast((e as Error).message, "error"));
+                  .catch((e) => toast(browserCaptureErrorMessage(e), "error"));
               }}
               disabled={!IS_TAURI_RUNTIME}
               className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
@@ -291,27 +379,33 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
             </pre>
           )}
         </Field>
-        <Field label="加载步骤" hint="安装后只需这一步">
+        <Field label="加载与升级步骤" hint="扩展文件位于用户目录，不依赖项目源码或系统 Node">
           <ol className="text-xs text-zinc-500 space-y-1 list-decimal list-inside">
-            <li>点「安装到 Chrome」或「安装到 Edge」（会自动打开扩展页和文件夹）</li>
-            <li>扩展页开启「开发者模式」→「加载已解压的扩展程序」→ 选刚打开的文件夹</li>
-            <li>列表出现「爱吃红薯数据抓取」且版本与上方一致即成功</li>
-            <li>点「链路自检」确认全绿</li>
+            <li>首次点「安装到 Chrome/Edge」，桌面端会导出扩展并安装宿主清单</li>
+            <li>扩展页开启「开发者模式」→「加载已解压的扩展程序」→ 选择上方显示的用户目录</li>
+            <li>升级后再次运行安装/修复，再回扩展页点重载；核对弹窗最近上报版本</li>
+            <li>升级失败时重新运行安装/修复恢复当前包；上一版副本保留在用户目录供排查</li>
+            <li>卸载时先从浏览器移除扩展，再删除对应 Chrome/Edge NativeMessagingHosts 清单；不会删除本地业务数据库</li>
+            <li>点「链路自检」确认扩展文件、宿主、清单和应用 socket 状态</li>
           </ol>
         </Field>
       </Section>
 
       <Section title="链路自检">
-        <Field label="连接测试" hint="扩展文件 → 宿主脚本 → 宿主清单 → 应用 socket">
+        <Field label="分层诊断" hint="插件 → 浏览器 Native Host 注册/启动 → 桌面实例 → 协议握手 → 账号读取">
           <div className="space-y-2">
-            <button
-              type="button"
-              onClick={() => void runLinkTest()}
-              disabled={!IS_TAURI_RUNTIME || testing}
-              className="rounded-lg border border-[#ff2442] px-3 py-1.5 text-xs text-[#ff2442] hover:bg-[#ff2442]/5 disabled:opacity-50"
-            >
-              {testing ? "检测中…" : "链路自检"}
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => void runLinkTest()} disabled={!IS_TAURI_RUNTIME || testing} className="rounded-lg border border-[#ff2442] px-3 py-1.5 text-xs text-[#ff2442] hover:bg-[#ff2442]/5 disabled:opacity-50">
+                {testing ? "检测中…" : "检查本机注册与路径"}
+              </button>
+              <button type="button" onClick={() => void verifyPluginCommunication()} disabled={!IS_TAURI_RUNTIME || communicationCheck === "waiting"} className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-50">
+                {communicationCheck === "waiting" ? "等待插件点击…" : "验证插件通信"}
+              </button>
+              <button type="button" onClick={() => void copyRedactedDiagnostics()} disabled={!IS_TAURI_RUNTIME} className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-50">
+                复制脱敏诊断
+              </button>
+            </div>
+            <p className="text-xs text-zinc-500">通信验证需要你点击浏览器工具栏插件。它只确认本通道的版本握手，不会自动启动 APP、读取网页正文或写入业务数据。</p>
             {linkHops && (
               <div className="space-y-1">
                 {linkHops.map(([label, ok, detail]) => (
@@ -969,7 +1063,7 @@ function PromptsTab() {
       qc.invalidateQueries({ queryKey: ["quick-actions"] });
       closeModal();
     } catch (e: unknown) {
-      toast((e as Error).message, "error");
+      toast(browserCaptureErrorMessage(e), "error");
     } finally {
       setSaving(false);
     }
@@ -994,7 +1088,7 @@ function PromptsTab() {
       qc.invalidateQueries({ queryKey: ["local-settings-prompts", scopeKey] });
       qc.invalidateQueries({ queryKey: ["quick-actions"] });
     } catch (e: unknown) {
-      toast((e as Error).message, "error");
+      toast(browserCaptureErrorMessage(e), "error");
     }
   }
 
@@ -1011,7 +1105,7 @@ function PromptsTab() {
       qc.invalidateQueries({ queryKey: ["quick-actions"] });
       toast("已删除", "success");
     } catch (e: unknown) {
-      toast((e as Error).message, "error");
+      toast(browserCaptureErrorMessage(e), "error");
     }
   }
 
@@ -1170,7 +1264,7 @@ function TrashSection() {
       qc.invalidateQueries({ queryKey: ["items"] });
       toast("已恢复", "success");
     } catch (e: unknown) {
-      toast((e as Error).message, "error");
+      toast(browserCaptureErrorMessage(e), "error");
     }
   }
 
@@ -1180,7 +1274,7 @@ function TrashSection() {
       qc.invalidateQueries({ queryKey: ["trash"] });
       toast("已永久删除", "success");
     } catch (e: unknown) {
-      toast((e as Error).message, "error");
+      toast(browserCaptureErrorMessage(e), "error");
     }
   }
 
@@ -1192,7 +1286,7 @@ function TrashSection() {
       toast(`已清空回收站，删除 ${res.deleted} 张图片`, "success");
       setPurgeAllConfirm(false);
     } catch (e: unknown) {
-      toast((e as Error).message, "error");
+      toast(browserCaptureErrorMessage(e), "error");
     } finally {
       setPurgingAll(false);
     }

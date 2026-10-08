@@ -30,7 +30,8 @@ const KIND_LABELS: Record<string, string> = {
 
 function clip(value: string, max: number): string {
   const trimmed = value.trim();
-  return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
+  const characters = Array.from(trimmed);
+  return characters.length > max ? `${characters.slice(0, max).join("")}…` : trimmed;
 }
 
 /**
@@ -55,7 +56,7 @@ export function buildMemoryContext(input: MemoryContextInput): MemoryContext {
   if (prompts.length) {
     lines.push("经验提示词：");
     for (const prompt of prompts) {
-      lines.push(`- [${clip(prompt.title, 40)}] ${clip(prompt.content, 300)}`);
+      lines.push(`- [${clip(prompt.title, 40)}] ${clip(prompt.content, 5000)}`);
     }
   }
   if (entries.length) {

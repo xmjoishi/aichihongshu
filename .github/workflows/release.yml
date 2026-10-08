@@ -1,9 +1,15 @@
 name: Release
 
+permissions:
+  contents: read
+
 on:
   push:
+    branches:
+      - '**'
     tags:
       - 'v*'
+  pull_request:
   workflow_dispatch:
     inputs:
       tag:
@@ -11,33 +17,21 @@ on:
         required: true
 
 jobs:
-  publish-tauri:
-    permissions:
-      contents: write
+  python-free-contracts:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: macos-latest
-            args: '--target aarch64-apple-darwin'
-            rust-targets: 'aarch64-apple-darwin'
-          - platform: macos-latest
-            args: '--target x86_64-apple-darwin'
-            rust-targets: 'x86_64-apple-darwin'
-          - platform: ubuntu-22.04
-            args: ''
-            rust-targets: ''
-          - platform: windows-latest
-            args: ''
-            rust-targets: ''
+        platform:
+          - macos-latest
+          - macos-15-intel
+          - ubuntu-22.04
+          - windows-latest
 
     runs-on: ${{ matrix.platform }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v3
@@ -47,14 +41,134 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Block Python PATH commands and audit Node children
+        working-directory: client
+        run: node ./scripts/install-python-denylist.mjs
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install Linux Tauri system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libxdo-dev \
+            patchelf
+
+      - name: Verify Rust core, services, CLI and MCP contracts
+        working-directory: client
+        run: |
+          cargo test --locked --manifest-path core/Cargo.toml
+          cargo test --locked --manifest-path services/Cargo.toml -- --include-ignored
+          cargo test --locked --manifest-path rn/Cargo.toml
+
+      - name: Verify Rust formatting and strict Clippy
+        working-directory: client
+        run: |
+          cargo fmt --manifest-path core/Cargo.toml -- --check
+          cargo fmt --manifest-path services/Cargo.toml -- --check
+          cargo fmt --manifest-path rn/Cargo.toml -- --check
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path services/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path rn/Cargo.toml --all-targets -- -D warnings
+
+      - name: Install frontend dependencies
+        working-directory: client
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: client
+        run: pnpm build
+
+      - name: Verify Tauri library contracts
+        working-directory: client
+        run: |
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Install browser worker packages
+        working-directory: client/browser-worker
+        run: npm ci --ignore-scripts
+
+      - name: Verify AI stream, browser worker and denylist contracts
+        working-directory: client
+        run: |
+          pnpm run test:ai-stream
+          pnpm run test:browser-worker
+          pnpm run test:python-denylist
+          pnpm run test:tauri-resource-guard
+
+      - name: Report blocked Python runtime attempts
+        if: always()
+        working-directory: client
+        run: node ./scripts/report-python-denylist.mjs
+
+  publish-tauri:
+    if: github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+    needs: python-free-contracts
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+            rust-targets: 'aarch64-apple-darwin'
+            tauri-target: 'aarch64-apple-darwin'
+          - platform: macos-15-intel
+            args: '--target x86_64-apple-darwin'
+            rust-targets: 'x86_64-apple-darwin'
+            tauri-target: 'x86_64-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+            rust-targets: ''
+            tauri-target: 'x86_64-unknown-linux-gnu'
+          - platform: windows-latest
+            args: ''
+            rust-targets: ''
+            tauri-target: 'x86_64-pc-windows-msvc'
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
           cache: pnpm
           cache-dependency-path: client/pnpm-lock.yaml
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
+          components: clippy, rustfmt
           targets: ${{ matrix.rust-targets }}
+
+      - name: Block Python PATH commands and audit Node children
+        working-directory: client
+        run: node ./scripts/install-python-denylist.mjs
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -73,12 +187,32 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: client
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install browser worker packages
+        working-directory: client/browser-worker
+        run: npm ci --ignore-scripts
+
+      - name: Install Playwright dependencies on Linux
+        if: matrix.platform == 'ubuntu-22.04'
+        working-directory: client/browser-worker
+        run: npx playwright install-deps chromium
+
+      - name: Stage target-matched Node and Chromium resources
+        working-directory: client/browser-worker
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: '0'
+        run: |
+          npx playwright install chromium
+          node ../scripts/package-browser-worker.mjs --target=${{ matrix.tauri-target }}
 
       - name: Build and publish Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AICHIHONGSHU_REQUIRE_BROWSER_RUNTIME: '1'
+          AICHIHONGSHU_TAURI_TARGET: ${{ matrix.tauri-target }}
+          NODE_OPTIONS: --require=${{ github.workspace }}/client/scripts/python-command-audit.cjs
         with:
           tagName: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           releaseName: '${{ github.event_name == ''workflow_dispatch'' && github.event.inputs.tag || github.ref_name }}'
@@ -97,3 +231,8 @@ jobs:
           prerelease: false
           projectPath: client
           args: ${{ matrix.args }}
+
+      - name: Report blocked Python runtime attempts
+        if: always()
+        working-directory: client
+        run: node ./scripts/report-python-denylist.mjs

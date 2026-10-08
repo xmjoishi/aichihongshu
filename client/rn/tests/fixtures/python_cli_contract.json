@@ -1,0 +1,1068 @@
+[
+  {
+    "group": "db",
+    "command": "init",
+    "params": []
+  },
+  {
+    "group": "library",
+    "command": "add",
+    "params": [
+      {
+        "name": "image_path",
+        "opts": [
+          "image_path"
+        ],
+        "secondary_opts": [],
+        "type": "PATH",
+        "default": "<UNSET>",
+        "required": true,
+        "is_flag": false,
+        "help": null
+      },
+      {
+        "name": "title",
+        "opts": [
+          "--title",
+          "-t"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "物品名称"
+      },
+      {
+        "name": "analyze",
+        "opts": [
+          "--analyze"
+        ],
+        "secondary_opts": [
+          "--no-analyze"
+        ],
+        "type": "BOOL",
+        "default": true,
+        "required": false,
+        "is_flag": true,
+        "help": "是否调用 MiniMax 分析（默认开启）"
+      }
+    ]
+  },
+  {
+    "group": "library",
+    "command": "list",
+    "params": [
+      {
+        "name": "tag",
+        "opts": [
+          "--tag",
+          "-g"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "按标签筛选"
+      },
+      {
+        "name": "style",
+        "opts": [
+          "--style",
+          "-s"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "按风格筛选"
+      }
+    ]
+  },
+  {
+    "group": "library",
+    "command": "show",
+    "params": [
+      {
+        "name": "item_id",
+        "opts": [
+          "item_id"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": "<UNSET>",
+        "required": true,
+        "is_flag": false,
+        "help": null
+      }
+    ]
+  },
+  {
+    "group": "library",
+    "command": "tag",
+    "params": [
+      {
+        "name": "item_id",
+        "opts": [
+          "item_id"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": "<UNSET>",
+        "required": true,
+        "is_flag": false,
+        "help": null
+      },
+      {
+        "name": "add_tag",
+        "opts": [
+          "--add"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "添加标签"
+      },
+      {
+        "name": "remove_tag",
+        "opts": [
+          "--remove"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "删除标签"
+      }
+    ]
+  },
+  {
+    "group": "library",
+    "command": "delete",
+    "params": [
+      {
+        "name": "item_id",
+        "opts": [
+          "item_id"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": "<UNSET>",
+        "required": true,
+        "is_flag": false,
+        "help": null
+      },
+      {
+        "name": "delete_file",
+        "opts": [
+          "--delete-file"
+        ],
+        "secondary_opts": [],
+        "type": "BOOL",
+        "default": false,
+        "required": false,
+        "is_flag": true,
+        "help": "同时删除图片文件"
+      },
+      {
+        "name": "yes",
+        "opts": [
+          "--yes"
+        ],
+        "secondary_opts": [],
+        "type": "BOOL",
+        "default": false,
+        "required": false,
+        "is_flag": true,
+        "help": "Confirm the action without prompting."
+      }
+    ]
+  },
+  {
+    "group": "content",
+    "command": "draft",
+    "params": [
+      {
+        "name": "item_id",
+        "opts": [
+          "item_id"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": "<UNSET>",
+        "required": true,
+        "is_flag": false,
+        "help": null
+      },
+      {
+        "name": "account_id",
+        "opts": [
+          "--account-id",
+          "-a"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "参考榜样账号 account_id"
+      },
+      {
+        "name": "extra",
+        "opts": [
+          "--extra",
+          "-e"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": "",
+        "required": false,
+        "is_flag": false,
+        "help": "额外创作要求"
+      },
+      {
+        "name": "save",
+        "opts": [
+          "--save"
+        ],
+        "secondary_opts": [],
+        "type": "BOOL",
+        "default": false,
+        "required": false,
+        "is_flag": true,
+        "help": "将 prompt 保存到数据库（创建草稿记录）"
+      }
+    ]
+  },
+  {
+    "group": "content",
+    "command": "topic",
+    "params": [
+      {
+        "name": "account_id",
+        "opts": [
+          "--account-id",
+          "-a"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "参考榜样账号 account_id"
+      },
+      {
+        "name": "analysis_file",
+        "opts": [
+          "--analysis-file",
+          "-f"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "xhs_analyze.py 输出的分析 JSON 文件（提供平台热信号）"
+      },
+      {
+        "name": "extra",
+        "opts": [
+          "--extra",
+          "-e"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": "",
+        "required": false,
+        "is_flag": false,
+        "help": "额外要求"
+      },
+      {
+        "name": "item_ids",
+        "opts": [
+          "--item-ids",
+          "-i"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "指定图库物品 ID，逗号分隔；不指定则取全部"
+      }
+    ]
+  },
+  {
+    "group": "content",
+    "command": "list",
+    "params": [
+      {
+        "name": "status",
+        "opts": [
+          "--status",
+          "-s"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "按状态筛选：draft / ready / published"
+      },
+      {
+        "name": "item_id",
+        "opts": [
+          "--item-id",
+          "-i"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "按物品 ID 筛选"
+      }
+    ]
+  },
+  {
+    "group": "content",
+    "command": "show",
+    "params": [
+      {
+        "name": "note_id",
+        "opts": [
+          "note_id"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": "<UNSET>",
+        "required": true,
+        "is_flag": false,
+        "help": null
+      }
+    ]
+  },
+  {
+    "group": "content",
+    "command": "edit",
+    "params": [
+      {
+        "name": "note_id",
+        "opts": [
+          "note_id"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": "<UNSET>",
+        "required": true,
+        "is_flag": false,
+        "help": null
+      },
+      {
+        "name": "title",
+        "opts": [
+          "--title",
+          "-t"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": null
+      },
+      {
+        "name": "body",
+        "opts": [
+          "--body",
+          "-b"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": null
+      },
+      {
+        "name": "cover",
+        "opts": [
+          "--cover",
+          "-c"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "封面文案"
+      },
+      {
+        "name": "tags",
+        "opts": [
+          "--tags"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "话题标签，逗号分隔"
+      },
+      {
+        "name": "status",
+        "opts": [
+          "--status",
+          "-s"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "状态：draft / ready / published"
+      }
+    ]
+  },
+  {
+    "group": "content",
+    "command": "export",
+    "params": [
+      {
+        "name": "note_id",
+        "opts": [
+          "note_id"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": "<UNSET>",
+        "required": true,
+        "is_flag": false,
+        "help": null
+      },
+      {
+        "name": "output",
+        "opts": [
+          "--output",
+          "-o"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "输出文件路径（默认打印到终端）"
+      }
+    ]
+  },
+  {
+    "group": "accounts",
+    "command": "list",
+    "params": []
+  },
+  {
+    "group": "accounts",
+    "command": "add",
+    "params": [
+      {
+        "name": "account_id",
+        "opts": [
+          "account_id"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": "<UNSET>",
+        "required": true,
+        "is_flag": false,
+        "help": null
+      },
+      {
+        "name": "name",
+        "opts": [
+          "--name",
+          "-n"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": "<UNSET>",
+        "required": true,
+        "is_flag": false,
+        "help": "账号名称"
+      },
+      {
+        "name": "note_count",
+        "opts": [
+          "--note-count"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": 0,
+        "required": false,
+        "is_flag": false,
+        "help": "笔记总数"
+      },
+      {
+        "name": "avg_likes",
+        "opts": [
+          "--avg-likes"
+        ],
+        "secondary_opts": [],
+        "type": "FLOAT",
+        "default": 0.0,
+        "required": false,
+        "is_flag": false,
+        "help": "平均点赞数"
+      },
+      {
+        "name": "avg_comments",
+        "opts": [
+          "--avg-comments"
+        ],
+        "secondary_opts": [],
+        "type": "FLOAT",
+        "default": 0.0,
+        "required": false,
+        "is_flag": false,
+        "help": "平均评论数"
+      },
+      {
+        "name": "avg_collects",
+        "opts": [
+          "--avg-collects"
+        ],
+        "secondary_opts": [],
+        "type": "FLOAT",
+        "default": 0.0,
+        "required": false,
+        "is_flag": false,
+        "help": "平均收藏数"
+      },
+      {
+        "name": "style",
+        "opts": [
+          "--style"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "内容风格描述（自由文本）"
+      },
+      {
+        "name": "top_notes",
+        "opts": [
+          "--top-notes"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "高赞笔记标题，逗号分隔，如 \"标题1,标题2,标题3\""
+      }
+    ]
+  },
+  {
+    "group": "accounts",
+    "command": "show",
+    "params": [
+      {
+        "name": "account_id",
+        "opts": [
+          "account_id"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": "<UNSET>",
+        "required": true,
+        "is_flag": false,
+        "help": null
+      }
+    ]
+  },
+  {
+    "group": "accounts",
+    "command": "delete",
+    "params": [
+      {
+        "name": "account_id",
+        "opts": [
+          "account_id"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": "<UNSET>",
+        "required": true,
+        "is_flag": false,
+        "help": null
+      },
+      {
+        "name": "yes",
+        "opts": [
+          "--yes"
+        ],
+        "secondary_opts": [],
+        "type": "BOOL",
+        "default": false,
+        "required": false,
+        "is_flag": true,
+        "help": "Confirm the action without prompting."
+      }
+    ]
+  },
+  {
+    "group": "profile",
+    "command": "init",
+    "params": [
+      {
+        "name": "url",
+        "opts": [
+          "--url"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "我的小红书账号主页 URL（含 xsec_token），提供后自动爬虫+AI推断人设"
+      },
+      {
+        "name": "account_id",
+        "opts": [
+          "--account-id"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "小红书账号 ID（可选，--url 模式下会自动解析）"
+      },
+      {
+        "name": "name",
+        "opts": [
+          "--name"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "账号显示名（--url 模式下可选）"
+      },
+      {
+        "name": "niche",
+        "opts": [
+          "--niche"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "垂类定位，如 \"家居软装/租房改造\"（--url 模式下由AI推断）"
+      },
+      {
+        "name": "audience",
+        "opts": [
+          "--audience"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "目标受众描述"
+      },
+      {
+        "name": "pillars",
+        "opts": [
+          "--pillars"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "内容支柱，逗号分隔，如 \"软装搭配,改造记录,好物分享\""
+      },
+      {
+        "name": "persona_name",
+        "opts": [
+          "--persona-name"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "人设名称/昵称"
+      },
+      {
+        "name": "persona_bio",
+        "opts": [
+          "--persona-bio"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "人设简介（50字以内）"
+      },
+      {
+        "name": "persona_tone",
+        "opts": [
+          "--persona-tone"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "语气风格，如 \"嘴硬傲娇，短句换行，不说空话\""
+      },
+      {
+        "name": "taboos",
+        "opts": [
+          "--taboos"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "禁忌词/风格，逗号分隔，如 \"精致,高品质,高级感\""
+      },
+      {
+        "name": "styles",
+        "opts": [
+          "--styles"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "偏好家居风格，逗号分隔，如 \"奶油风,侘寂风\""
+      },
+      {
+        "name": "scenes",
+        "opts": [
+          "--scenes"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "偏好场景，逗号分隔，如 \"客厅,卧室,出租屋\""
+      },
+      {
+        "name": "hashtags",
+        "opts": [
+          "--hashtags"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "常用话题标签池，逗号分隔（不含#）"
+      },
+      {
+        "name": "rhythm",
+        "opts": [
+          "--rhythm"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "发帖节奏，如 \"每周3篇，周二四六\""
+      },
+      {
+        "name": "followers",
+        "opts": [
+          "--followers"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": 0,
+        "required": false,
+        "is_flag": false,
+        "help": "当前粉丝数"
+      },
+      {
+        "name": "total_notes",
+        "opts": [
+          "--total-notes"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": 0,
+        "required": false,
+        "is_flag": false,
+        "help": "已发笔记总数"
+      },
+      {
+        "name": "avg_likes",
+        "opts": [
+          "--avg-likes"
+        ],
+        "secondary_opts": [],
+        "type": "FLOAT",
+        "default": 0.0,
+        "required": false,
+        "is_flag": false,
+        "help": "平均点赞数"
+      },
+      {
+        "name": "avg_comments",
+        "opts": [
+          "--avg-comments"
+        ],
+        "secondary_opts": [],
+        "type": "FLOAT",
+        "default": 0.0,
+        "required": false,
+        "is_flag": false,
+        "help": "平均评论数"
+      },
+      {
+        "name": "avg_collects",
+        "opts": [
+          "--avg-collects"
+        ],
+        "secondary_opts": [],
+        "type": "FLOAT",
+        "default": 0.0,
+        "required": false,
+        "is_flag": false,
+        "help": "平均收藏数"
+      }
+    ]
+  },
+  {
+    "group": "profile",
+    "command": "show",
+    "params": []
+  },
+  {
+    "group": "profile",
+    "command": "edit",
+    "params": [
+      {
+        "name": "name",
+        "opts": [
+          "--name"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "账号显示名"
+      },
+      {
+        "name": "niche",
+        "opts": [
+          "--niche"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "垂类定位"
+      },
+      {
+        "name": "audience",
+        "opts": [
+          "--audience"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "目标受众"
+      },
+      {
+        "name": "pillars",
+        "opts": [
+          "--pillars"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "内容支柱，逗号分隔"
+      },
+      {
+        "name": "persona_name",
+        "opts": [
+          "--persona-name"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "人设名称"
+      },
+      {
+        "name": "persona_bio",
+        "opts": [
+          "--persona-bio"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "人设简介"
+      },
+      {
+        "name": "persona_tone",
+        "opts": [
+          "--persona-tone"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "语气风格"
+      },
+      {
+        "name": "taboos",
+        "opts": [
+          "--taboos"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "禁忌词，逗号分隔"
+      },
+      {
+        "name": "styles",
+        "opts": [
+          "--styles"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "偏好风格，逗号分隔"
+      },
+      {
+        "name": "scenes",
+        "opts": [
+          "--scenes"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "偏好场景，逗号分隔"
+      },
+      {
+        "name": "hashtags",
+        "opts": [
+          "--hashtags"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "话题标签池，逗号分隔"
+      },
+      {
+        "name": "rhythm",
+        "opts": [
+          "--rhythm"
+        ],
+        "secondary_opts": [],
+        "type": "STRING",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "发帖节奏"
+      },
+      {
+        "name": "followers",
+        "opts": [
+          "--followers"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "粉丝数"
+      },
+      {
+        "name": "total_notes",
+        "opts": [
+          "--total-notes"
+        ],
+        "secondary_opts": [],
+        "type": "INT",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "已发笔记数"
+      },
+      {
+        "name": "avg_likes",
+        "opts": [
+          "--avg-likes"
+        ],
+        "secondary_opts": [],
+        "type": "FLOAT",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "平均点赞"
+      },
+      {
+        "name": "avg_comments",
+        "opts": [
+          "--avg-comments"
+        ],
+        "secondary_opts": [],
+        "type": "FLOAT",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "平均评论"
+      },
+      {
+        "name": "avg_collects",
+        "opts": [
+          "--avg-collects"
+        ],
+        "secondary_opts": [],
+        "type": "FLOAT",
+        "default": null,
+        "required": false,
+        "is_flag": false,
+        "help": "平均收藏"
+      }
+    ]
+  }
+]

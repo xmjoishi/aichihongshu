@@ -15,6 +15,7 @@ export interface PublishPreparation {
   body: string;
   tags: string[];
   itemIds: number[];
+  videoPath?: string;
   snapshotKey: string;
   issues: PublishIssue[];
   ready: boolean;
@@ -38,7 +39,11 @@ export function preparePublish(note: Note, accountId: number | null): PublishPre
   const issues: PublishIssue[] = [];
   if (!title) issues.push({ code: "TITLE_REQUIRED", message: "请先填写标题" });
   if (!body) issues.push({ code: "BODY_REQUIRED", message: "请先填写正文" });
-  if (note.note_type !== "text" && itemIds.length === 0) issues.push({ code: "MEDIA_REQUIRED", message: "当前发布类型需要至少一项素材" });
+  if (note.note_type === "video" && !note.video_path?.trim()) {
+    issues.push({ code: "MEDIA_REQUIRED", message: "视频笔记需要先关联一个本地视频文件" });
+  } else if (note.note_type !== "text" && note.note_type !== "video" && itemIds.length === 0) {
+    issues.push({ code: "MEDIA_REQUIRED", message: "当前发布类型需要至少一项素材" });
+  }
   const contentVersion = note.content_version ?? 1;
   return {
     noteId: note.id,
@@ -48,6 +53,7 @@ export function preparePublish(note: Note, accountId: number | null): PublishPre
     body,
     tags: [...note.tags],
     itemIds,
+    videoPath: note.video_path?.trim() || undefined,
     snapshotKey: `${accountId ?? "unresolved"}:note:${note.id}:v${contentVersion}`,
     issues,
     ready: issues.length === 0,

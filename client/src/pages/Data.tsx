@@ -1,6 +1,6 @@
 import { useWorkspaceActive } from "../lib/workspaceActivity";
 import { useWorkspaceQuery as useQuery } from "../lib/workspaceActivity";
-import { useState, useEffect, useRef, useMemo } from "react";
+import { lazy, Suspense, useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -9,7 +9,7 @@ import {
   Sparkles, X, CornerDownLeft, StopCircle,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, API_BASE, openInBrowser } from "../lib/api";
+import { api, API_BASE, openExternalUrl } from "../lib/api";
 import type { Analytics, AnalyticsNote, Insights, Note, ReferenceAccount } from "../lib/types";
 import { MdContent } from "../components/MdContent";
 import LocalImage from "../components/LocalImage";
@@ -30,6 +30,9 @@ import {
 } from "../lib/local";
 import { useAccountChange, useAccountContext } from "../lib/accountContext";
 import { pageTabActiveClass, pageTabClass, pageTabInactiveClass } from "../components/ui";
+import type { BrowserSnapshotReviewTarget } from "../components/BrowserSnapshotReviewPanel";
+
+const BrowserSnapshotReviewPanel = lazy(() => import("../components/BrowserSnapshotReviewPanel"));
 
 // ─── 工具函数 ───────────────────────────────────────────────
 
@@ -315,7 +318,7 @@ function RankingTab({ allNotes, accountId, scopeKey }: { allNotes: Note[]; accou
                   <td className="px-3 py-3">
                     {note.note_url && (
                       <button
-                        onClick={() => openInBrowser(note.note_url!)}
+                        onClick={() => openExternalUrl(note.note_url!).catch((error) => toast(`打开链接失败：${error instanceof Error ? error.message : String(error)}`, "error"))}
                         className="text-zinc-300 hover:text-[#ff2442] transition-colors"
                       >
                         <ExternalLink size={14} />
@@ -714,10 +717,10 @@ function DataAIDrawer({
 
 // ─── 主页面 ───────────────────────────────────────────────────
 
-type Tab = "overview" | "ranking" | "insights" | "knowledge";
+type Tab = "overview" | "ranking" | "insights" | "knowledge" | "review";
 
 function dataTabFromQuery(value: string | null): Tab {
-  if (value === "ranking" || value === "insights" || value === "knowledge") return value;
+  if (value === "ranking" || value === "insights" || value === "knowledge" || value === "review") return value;
   return "overview";
 }
 
@@ -726,6 +729,7 @@ const tabs: { key: Tab; label: string }[] = [
   { key: "ranking", label: "笔记排行" },
   { key: "insights", label: "内容规律" },
   { key: "knowledge", label: "经验库" },
+  { key: "review", label: "快照复盘" },
 ];
 
 export default function Data() {
@@ -778,6 +782,44 @@ export default function Data() {
   const allAccounts = IS_TAURI_RUNTIME
     ? (localWorkspace?.referenceAccounts ?? []).map(localReferenceAccountToReferenceAccount)
     : remoteAccounts;
+  const reviewTargets = useMemo<BrowserSnapshotReviewTarget[]>(() => {
+    const targets: BrowserSnapshotReviewTarget[] = allNotes
+      .filter((note) => Boolean(note.note_url?.trim()))
+      .slice(0, 150)
+      .map((note) => ({
+        key: `note:${note.id}`,
+        label: `笔记 · ${note.title?.trim() || `笔记 ${note.id}`}`,
+        url: note.note_url!.trim(),
+        pageType: "note",
+        noteId: note.id,
+      }));
+    for (const account of allAccounts) {
+      if (account.account_id?.trim()) {
+        targets.push({
+          key: `profile:${account.id}`,
+          label: `榜样主页 · ${account.name?.trim() || account.account_id}`,
+          url: `https://www.xiaohongshu.com/user/profile/${encodeURIComponent(account.account_id)}`,
+          pageType: "profile",
+        });
+      }
+      for (const [index, note] of (account.top_notes ?? []).slice(0, 20).entries()) {
+        if (!note.url?.trim()) continue;
+        targets.push({
+          key: `reference-note:${account.id}:${index}`,
+          label: `榜样笔记 · ${note.title?.trim() || account.name?.trim() || account.account_id}`,
+          url: note.url.trim(),
+          pageType: "note",
+        });
+      }
+    }
+    const seen = new Set<string>();
+    return targets.filter((target) => {
+      const normalized = target.url.replace(/[?#].*$/, "").replace(/\/$/, "").toLocaleLowerCase();
+      if (seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    });
+  }, [allAccounts, allNotes]);
 
   // ── 本地计算（替代 analytics/summary + analytics/insights）────
   const summary = useMemo<Analytics>(
@@ -819,20 +861,9 @@ export default function Data() {
         {tab === "overview" && <OverviewTab summary={summary} />}
         {tab === "ranking" && <RankingTab allNotes={allNotes} accountId={accountId} scopeKey={scopeKey} />}
         {tab === "insights" && <InsightsTab insights={insights} />}
+        {tab === "review" ? <Suspense fallback={<div className="py-12 text-center text-xs text-zinc-400">正在打开快照复盘…</div>}><BrowserSnapshotReviewPanel accountId={accountId} targets={reviewTargets} /></Suspense> : null}
         {tab === "knowledge" && (
-          <KnowledgeTab
-            notes={allNotes}
-            referenceAccounts={allAccounts.map((account) => ({
-              account_id: account.account_id,
-              name: account.name || account.account_id,
-              notes: (account.top_notes || []).map((note) => ({
-                title: note.title,
-                body: "",
-                likes: note.likes,
-                note_url: note.url,
-              })),
-            })).filter((group) => group.notes.length > 0)}
-          />
+          <KnowledgeTab notes={allNotes} />
         )}
       </div>
 

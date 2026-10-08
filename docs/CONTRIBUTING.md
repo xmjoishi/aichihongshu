@@ -8,16 +8,15 @@
 - 请勿提交任何涉及绕过平台反爬机制、批量恶意抓取的代码。
 - 提交代码前请确认已在本地正常运行，不要提交 `.env`、`data/app.db`、`assets/` 等被 `.gitignore` 忽略的文件。
 
-## 开发环境搭建
+## Rust 主链路开发环境
 
 ```bash
-# 1. Clone 并初始化 submodule
+# 1. Clone 仓库
 git clone https://github.com/xmjoishi/aichihongshu.git
 cd aichihongshu
-git submodule update --init --recursive
 
-# 2. 安装 Python 依赖（推荐使用 uv）
-uv sync
+# 2. 构建 Rust CLI / HTTP / MCP
+cargo build --locked --manifest-path client/rn/Cargo.toml
 
 # 3. 安装前端依赖
 cd client && pnpm install && cd ..
@@ -27,8 +26,10 @@ cp .env.example .env
 # 编辑 .env，填入 MINIMAX_API_KEY
 
 # 5. 初始化数据库
-uv run python app/cli.py db init
+client/rn/target/debug/rn db init --yes
 ```
+
+当前第一方运行链路不使用 Python 或 `uv`。Rust 变更运行对应 Cargo 检查；前端及 worker 变更运行相应的 pnpm/npm 构建和测试。MediaCrawler 子模块不属于产品运行依赖，也不要直接修改其代码。
 
 ## 提交 PR 流程
 
@@ -54,7 +55,7 @@ uv run python app/cli.py db init
 
 ## 代码风格
 
-- Python：遵守 PEP 8，建议使用 `ruff` 进行 lint
+- Rust：提交前运行 `cargo fmt --all -- --check` 与相关 crate 的 Clippy/tests
 - TypeScript/React：遵守项目现有风格，组件使用函数式 + Hooks
 
 ## 报告问题

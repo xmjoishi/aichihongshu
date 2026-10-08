@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
 
 const source = readFileSync("client/src/hooks/useAIStream.ts", "utf8");
-const rustSource = readFileSync("client/src-tauri/src/db.rs", "utf8");
+const rustSource = [
+  "client/src-tauri/src/db/ai.rs",
+  "client/src-tauri/src/db/migrations.rs",
+].map((file) => readFileSync(file, "utf8")).join("\n");
 const required = [
   "localStorage",
   "AIRunMetadata",

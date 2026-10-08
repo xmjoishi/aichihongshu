@@ -42,6 +42,8 @@ import { readModelApiSettings, type ModelApiSettingsView } from "../lib/modelApi
 import { readAiRuntimeSettings, type AiRuntimeSettings } from "../lib/aiRuntime";
 import DefaultModelPicker, { type DefaultPickerGroup } from "./aiSettings/DefaultModelPicker";
 import { cliDefaultModelValues, cliModelLabel } from "./aiSettings/cliModels";
+import { AICommandPalette, AIReferencePicker, QuickActionBar, type AICommandOption, type AIReferenceOption, type QuickAction } from "./aiPanel/ComposerControls";
+import { AIResponseBlocks } from "./aiPanel/AIResponseBlocks";
 
 interface AIPanelProps {
   noteId?: number;
@@ -70,28 +72,11 @@ interface AIPanelProps {
   onSelectSession?: (sessionId: string) => void;
 }
 
-interface QuickAction {
-  key: string;
-  label: string;
-  prompt: string;
-  enabled: number | boolean;
-}
 
-interface AIReferenceOption {
-  id: string;
-  token: string;
-  /** 发送给模型的可读引用文本；token 仍保留在菜单中作为稳定标识。 */
-  displayToken?: string;
-  label: string;
-  detail?: string;
-  group: string;
-}
 
-interface AICommandOption {
-  id: string;
-  label: string;
-  detail?: string;
-}
+
+
+
 
 interface ComposerToken {
   key: string;
@@ -100,74 +85,8 @@ interface ComposerToken {
   display: string;
 }
 
-type NoteDraftFieldActions = {
-  title?: AIAction;
-  bodyReplace?: AIAction;
-  bodyAppend?: AIAction;
-  tags?: AIAction;
-};
-
 const EMPTY_SELECTED_ASSETS: Item[] = [];
 
-function AIResponseBlocks({
-  blocks,
-  noteDraftActions,
-  onNoteDraftAction,
-}: {
-  blocks: AIResponseBlock[];
-  noteDraftActions?: NoteDraftFieldActions;
-  onNoteDraftAction?: (action: AIAction, block: Extract<AIResponseBlock, { type: "note-draft" }>) => boolean;
-}) {
-  const [appliedActions, setAppliedActions] = useState<Record<string, string>>({});
-
-  function fieldAction(action: AIAction | undefined, fieldLabel: string, buttonLabel: string, block: Extract<AIResponseBlock, { type: "note-draft" }>) {
-    if (!action || !onNoteDraftAction) return null;
-    const appliedLabel = appliedActions[action.id];
-    return (
-      <button
-        type="button"
-        onClick={() => {
-          if (onNoteDraftAction(action, block)) {
-            setAppliedActions((current) => ({ ...current, [action.id]: buttonLabel === "追加" ? "已追加" : "已替换" }));
-          }
-        }}
-        title={appliedLabel ? "内容已立即写入笔记，自动保存已开始" : action.description ?? `${fieldLabel}${buttonLabel}到当前笔记`}
-        aria-label={appliedLabel ? `${fieldLabel}：${appliedLabel}` : `${fieldLabel}：${buttonLabel}`}
-        className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-medium transition-colors ${appliedLabel ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-zinc-200 bg-white text-zinc-500 hover:border-[#ff2442]/40 hover:bg-[#fff5f6] hover:text-[#c81d36]"}`}
-      >
-        {appliedLabel && <Check size={11} />}
-        {appliedLabel ?? buttonLabel}
-      </button>
-    );
-  }
-
-  return (
-    <div className="space-y-2.5">
-      {blocks.map((block, index) => {
-        if (block.type === "markdown") return <MdContent key={index} content={block.content} />;
-        if (block.type === "note-draft") return (
-          <section key={index} className="space-y-2 rounded-xl border border-zinc-200 bg-white p-3">
-            {block.title && <div><div className="mb-1 flex items-center justify-between gap-2"><div className="text-[10px] font-medium text-zinc-400">标题</div>{fieldAction(noteDraftActions?.title, "标题", "替换", block)}</div><div className="font-medium text-zinc-800">{block.title}</div></div>}
-            {block.body && <div><div className="mb-1 flex items-center justify-between gap-2"><div className="text-[10px] font-medium text-zinc-400">正文</div><div className="flex shrink-0 items-center gap-1.5">{fieldAction(noteDraftActions?.bodyReplace, "正文", "替换", block)}{fieldAction(noteDraftActions?.bodyAppend, "正文", "追加", block)}</div></div><div className="whitespace-pre-wrap leading-relaxed text-zinc-700">{block.body}</div></div>}
-            {block.tags.length > 0 && <div><div className="mb-1 flex items-center justify-between gap-2"><div className="text-[10px] font-medium text-zinc-400">标签</div>{fieldAction(noteDraftActions?.tags, "标签", "替换", block)}</div><div className="flex flex-wrap gap-1">{block.tags.map((tag, tagIndex) => <span key={`${tag}-${tagIndex}`} className="rounded-full bg-[#fff0f2] px-2 py-0.5 text-[10px] text-[#d21f3a]">#{tag}</span>)}</div></div>}
-          </section>
-        );
-        if (block.type === "metrics") return (
-          <div key={index} className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {block.items.map((item, itemIndex) => <div key={`${item.label}-${itemIndex}`} className="rounded-lg border border-zinc-200 bg-white px-2.5 py-2"><div className="text-[10px] text-zinc-400">{item.label}</div><div className="mt-0.5 font-semibold text-zinc-800">{item.value}</div>{item.detail && <div className="mt-0.5 text-[10px] text-zinc-500">{item.detail}</div>}</div>)}
-          </div>
-        );
-        if (block.type === "table") return (
-          <div key={index} className="overflow-x-auto rounded-lg border border-zinc-200 bg-white"><table className="min-w-full text-left text-[11px]"><thead className="bg-zinc-50 text-zinc-500"><tr>{block.columns.map((column, columnIndex) => <th key={`${column}-${columnIndex}`} className="px-2.5 py-2 font-medium">{column}</th>)}</tr></thead><tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex} className="border-t border-zinc-100">{block.columns.map((_, columnIndex) => <td key={columnIndex} className="px-2.5 py-2 text-zinc-700">{row[columnIndex] ?? "—"}</td>)}</tr>)}</tbody></table></div>
-        );
-        if (block.type === "persona-fields") return <dl key={index} className="divide-y divide-zinc-100 rounded-lg border border-zinc-200 bg-white px-3">{block.fields.map((field, fieldIndex) => <div key={`${field.label}-${fieldIndex}`} className="grid grid-cols-[minmax(5rem,0.35fr)_1fr] gap-3 py-2"><dt className="text-zinc-400">{field.label}</dt><dd className="whitespace-pre-wrap text-zinc-700">{field.value}</dd></div>)}</dl>;
-        if (block.type === "diff") return <div key={index} className="space-y-2">{block.items.map((item, itemIndex) => <div key={`${item.label}-${itemIndex}`} className="rounded-lg border border-zinc-200 bg-white p-2.5"><div className="mb-1 font-medium text-zinc-700">{item.label}</div>{item.before != null && <div className="whitespace-pre-wrap text-zinc-500"><span className="mr-1 text-[10px] text-zinc-400">原内容</span>{item.before}</div>}{item.after != null && <div className="mt-1 whitespace-pre-wrap text-zinc-800"><span className="mr-1 text-[10px] text-[#ff2442]">建议</span>{item.after}</div>}</div>)}</div>;
-        if (block.type === "checklist") return <ul key={index} className="space-y-1.5">{block.items.map((item, itemIndex) => <li key={`${item.label}-${itemIndex}`} className="flex gap-2"><span className={item.done ? "text-emerald-600" : "text-zinc-300"}>{item.done ? "✓" : "○"}</span><span className="whitespace-pre-wrap">{item.label}</span></li>)}</ul>;
-        return null;
-      })}
-    </div>
-  );
-}
 
 function findNoteDraft(response: AIResponseEnvelope): Extract<AIResponseBlock, { type: "note-draft" }> | undefined {
   return response.blocks.find((block): block is Extract<AIResponseBlock, { type: "note-draft" }> => block.type === "note-draft");
@@ -294,6 +213,7 @@ export default function AIPanel({
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [commandSearch, setCommandSearch] = useState("");
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>(IS_TAURI_RUNTIME ? "" : "model-api");
+  const userSelectedConnectionRef = useRef(false);
   const [input, setInput] = useState("");
   const [composerTokens, setComposerTokens] = useState<ComposerToken[]>([]);
   const previousSessionKeyRef = useRef(sessionKey);
@@ -301,6 +221,7 @@ export default function AIPanel({
   useEffect(() => {
     if (previousSessionKeyRef.current === sessionKey) return;
     previousSessionKeyRef.current = sessionKey;
+    userSelectedConnectionRef.current = false;
     setInput("");
     setComposerTokens([]);
     setReferenceMenuOpen(false);
@@ -480,7 +401,10 @@ export default function AIPanel({
     enabled: IS_TAURI_RUNTIME,
     staleTime: 30_000,
   });
-  const connectedModelProviders = (modelApiSettings?.providers ?? []).filter((provider) => provider.configured);
+  const connectedModelProviders = useMemo(
+    () => (modelApiSettings?.providers ?? []).filter((provider) => provider.configured),
+    [modelApiSettings?.providers],
+  );
   const modelApiProviderId = selectedConnectionId.startsWith("model-api:")
     ? selectedConnectionId.slice("model-api:".length)
     : selectedConnectionId === "model-api"
@@ -667,11 +591,6 @@ export default function AIPanel({
               ? current
               : availableProvider?.id ?? null
           ));
-          setSelectedConnectionId((current) => (
-            current && (current === "model-api" || providers.some((provider) => provider.id === current && provider.state === "present"))
-              ? current
-              : availableProvider?.id ?? (IS_TAURI_RUNTIME ? "" : "model-api")
-          ));
           if (!providers.some((provider) => provider.state === "present")) {
             const failed = providers
               .filter((provider) => provider.state === "failed")
@@ -696,19 +615,61 @@ export default function AIPanel({
     };
   }, [localProbeVersion]);
 
+  useEffect(() => {
+    if (!IS_TAURI_RUNTIME || userSelectedConnectionRef.current) return;
+
+    const target = aiRuntime?.defaultTarget;
+    const selectApiProvider = (providerId?: string, preferredModel?: string) => {
+      const preferredProvider = connectedModelProviders.find((item) => item.id === providerId);
+      const providers = preferredProvider
+        ? [preferredProvider, ...connectedModelProviders.filter((item) => item.id !== preferredProvider.id)]
+        : connectedModelProviders;
+      for (const provider of providers) {
+        const candidates = [provider.id === providerId ? preferredModel : undefined, provider.model, ...provider.enabledModels];
+        const model = candidates.find((candidate) => (
+          candidate && (candidate === provider.model || provider.enabledModels.includes(candidate))
+        ));
+        if (!model) continue;
+        setSelectedConnectionId(`model-api:${provider.id}`);
+        setSelectedLocalProviderId(null);
+        setSelectedModel(model);
+        return true;
+      }
+      return false;
+    };
+    const selectLocalProvider = (providerId?: string, preferredModel?: string) => {
+      const provider = providerId
+        ? localProviders.find((item) => item.id === providerId && item.state === "present")
+        : localProviders.find((item) => item.state === "present");
+      if (!provider) return false;
+      setSelectedConnectionId(provider.id);
+      setSelectedLocalProviderId(provider.id);
+      setSelectedModel(preferredModel ?? "");
+      return true;
+    };
+
+    if (target?.kind === "agent-cli" && selectLocalProvider(target.provider, target.model)) return;
+    if (target?.kind === "model-api" && selectApiProvider(target.provider, target.model)) return;
+    if (selectApiProvider(modelApiSettings?.defaultProviderId, modelApiSettings?.defaultModel)) return;
+    selectLocalProvider();
+  }, [sessionKey, aiRuntime?.defaultTarget, connectedModelProviders, localProviders, modelApiSettings]);
+
   const localProvider = localProviders.find((provider) => provider.id === selectedLocalProviderId && provider.state === "present")
     ?? localProviders.find((provider) => provider.state === "present")
     ?? null;
   const verifiedLocalProviders = new Set(readVerifiedLocalAIProviders(scopeKey));
   const localProviderTextVerified = localProvider ? localProvider.text || verifiedLocalProviders.has(localProvider.id) : false;
   const localReady = localProvider?.state === "present";
-  const aiReady = available || localReady;
+  const selectedLocalReady = localProviders.some((provider) => (
+    provider.id === selectedLocalProviderId && provider.state === "present"
+  ));
+  const modelApiReady = pickerGroups.some((group) => group.kind === "model-api" && group.provider === modelApiProviderId);
+  const aiReady = available || (modelApiProviderId ? modelApiReady : selectedLocalReady);
 
   useEffect(() => {
     if (!IS_TAURI_RUNTIME) return;
     const preferred = readPreferredLocalAIProvider(scopeKey);
     setSelectedLocalProviderId(preferred);
-    if (preferred) setSelectedConnectionId(preferred);
   }, [scopeKey]);
 
   // 从后端加载快捷操作
@@ -850,9 +811,19 @@ export default function AIPanel({
       const label = item.title || `素材 ${item.id}`;
       options.push({ id: `asset-${item.id}`, token: `@asset:${item.id}`, displayToken: `@素材 · ${label}`, label, group: "最近素材" });
     }
-    for (const inspiration of localInspirations.slice(0, 8)) {
-      const label = inspiration.title || `灵感 ${inspiration.id}`;
-      options.push({ id: `inspiration-${inspiration.id}`, token: `@inspiration:${inspiration.id}`, displayToken: `@灵感 · ${label}`, label, group: "最近灵感" });
+    for (const inspiration of localInspirations) {
+      const kind = inspiration.clipKind
+        ?? (inspiration.materialType === "profile_material" ? "account" : inspiration.materialType === "image_material" ? "material" : "note");
+      const typeLabel = kind === "account" ? "账号剪藏" : kind === "material" ? "素材剪藏" : "笔记剪藏";
+      const label = inspiration.title || `${typeLabel} ${inspiration.id}`;
+      options.push({
+        id: `inspiration-${inspiration.id}`,
+        token: `@inspiration:${inspiration.id}`,
+        displayToken: `@${typeLabel} · ${label}`,
+        label,
+        detail: inspiration.author || undefined,
+        group: "剪藏",
+      });
     }
     for (const reference of (localWorkspace?.referenceAccounts ?? []).slice(0, 8)) {
       const refId = reference.id ?? reference.accountId;
@@ -943,6 +914,7 @@ export default function AIPanel({
   }
 
   function applyPickerTarget(kind: "model-api" | "agent-cli", provider: string, model: string) {
+    userSelectedConnectionRef.current = true;
     setSelectedModel(model);
     if (kind === "model-api") {
       setSelectedConnectionId(`model-api:${provider}`);
@@ -1166,7 +1138,7 @@ export default function AIPanel({
 
       {/* 对话区 */}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        <div className={`flex min-h-full w-full flex-col space-y-3 ${activeHostMode === "page" ? "mx-auto max-w-3xl" : ""}`}>
+        <div className={`flex min-h-full w-full flex-col space-y-3 ${activeHostMode === "page" ? "w-full px-2" : "mx-auto max-w-lg"}`}>
         {messages.length === 0 && !loading && !streaming && !error && aiReady && (
           <div className={`flex min-h-full w-full flex-col justify-center py-4 ${activeHostMode === "page" ? "" : "mx-auto max-w-lg"}`}>
             <div className="mb-3 flex items-center gap-2 text-zinc-500">
@@ -1331,7 +1303,7 @@ export default function AIPanel({
 
       {/* 输入框 */}
       <div className="border-t border-zinc-100 p-3 shrink-0">
-        <div className={activeHostMode === "page" ? "mx-auto w-full max-w-3xl" : undefined}>
+        <div className={activeHostMode === "page" ? "w-full px-2" : undefined}>
         {selectedContextItems.length > 0 && (
           <div className="mb-2 flex items-center gap-1.5 overflow-x-auto whitespace-nowrap">
             <button
@@ -1470,164 +1442,6 @@ export default function AIPanel({
           }}
         />
       )}
-    </div>
-  );
-}
-
-function AIReferencePicker({
-  options,
-  search,
-  onSearch,
-  onSelect,
-  onClose,
-}: {
-  options: AIReferenceOption[];
-  search: string;
-  onSearch: (value: string) => void;
-  onSelect: (option: AIReferenceOption) => void;
-  onClose: () => void;
-}) {
-  let previousGroup = "";
-  return (
-    <div className="absolute bottom-full left-0 right-0 z-30 mb-2 max-h-80 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-xl">
-      <div className="flex items-center gap-2 border-b border-zinc-100 px-3 py-2">
-        <AtSign size={13} className="text-[#ff2442]" />
-        <input
-          value={search}
-          onChange={(event) => onSearch(event.target.value)}
-          placeholder="引用当前页、笔记、素材、灵感或榜样…"
-          autoFocus
-          className="ai-composer-search h-8 min-w-0 flex-1 rounded-md border border-zinc-200 bg-zinc-50 px-2 text-xs text-zinc-700 outline-none transition-colors focus:border-zinc-300 focus:outline-none focus-visible:outline-none focus:ring-0 placeholder:text-zinc-300"
-          onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}
-        />
-        <span className="text-[10px] text-zinc-300">结构化引用</span>
-      </div>
-      <div className="max-h-64 overflow-y-auto p-1">
-        {options.length === 0 ? <p className="px-3 py-5 text-center text-xs text-zinc-400">没有匹配的引用</p> : options.map((option) => {
-          const showGroup = option.group !== previousGroup;
-          previousGroup = option.group;
-          return (
-            <div key={option.id}>
-              {showGroup && <p className="px-2.5 pb-1 pt-2 text-[10px] font-medium text-zinc-400">{option.group}</p>}
-              <button type="button" onClick={() => onSelect(option)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition hover:bg-[#fff0f2]">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-[10px] text-zinc-500">@</span>
-                <span className="min-w-0 flex-1 truncate text-xs text-zinc-700">{option.label}</span>
-                {option.detail && <span className="max-w-[35%] truncate text-[10px] text-zinc-400">{option.detail}</span>}
-                <code className="shrink-0 text-[10px] text-zinc-300">{option.token}</code>
-              </button>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function AICommandPalette({
-  options,
-  search,
-  onSearch,
-  onSelect,
-  onClose,
-}: {
-  options: AICommandOption[];
-  search: string;
-  onSearch: (value: string) => void;
-  onSelect: (option: AICommandOption) => void;
-  onClose: () => void;
-}) {
-  return (
-    <div className="absolute bottom-full left-0 right-0 z-30 mb-2 max-h-80 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-xl">
-      <div className="flex items-center gap-2 border-b border-zinc-100 px-3 py-2">
-        <span className="font-mono text-sm text-[#ff2442]">/</span>
-        <input
-          value={search}
-          onChange={(event) => onSearch(event.target.value)}
-          placeholder="选择当前页命令…"
-          autoFocus
-          className="ai-composer-search h-8 min-w-0 flex-1 rounded-md border border-zinc-200 bg-zinc-50 px-2 text-xs text-zinc-700 outline-none transition-colors focus:border-zinc-300 focus:outline-none focus-visible:outline-none focus:ring-0 placeholder:text-zinc-300"
-          onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}
-        />
-        <span className="text-[10px] text-zinc-300">页面能力</span>
-      </div>
-      <div className="max-h-64 overflow-y-auto p-1">
-        {options.length === 0 ? <p className="px-3 py-5 text-center text-xs text-zinc-400">当前页没有匹配命令</p> : options.map((option) => (
-          <button key={option.id} type="button" onClick={() => onSelect(option)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition hover:bg-[#fff0f2]">
-            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[#fff0f2] font-mono text-xs text-[#ff2442]">/</span>
-            <span className="min-w-0 flex-1 truncate text-xs text-zinc-700">{option.label}</span>
-            <span className="text-[10px] text-zinc-400">{option.detail}</span>
-            <code className="shrink-0 text-[10px] text-zinc-300">/{option.id}</code>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-
-
-// ── 常驻快捷操作栏 ─────────────────────────────────────────────────
-function QuickActionBar({
-  actions,
-  onSend,
-  loading,
-}: {
-  actions: QuickAction[];
-  onSend: (prompt: string) => void;
-  loading: boolean;
-}) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  // 鼠标拖拽横向滚动
-  const dragging = useRef(false);
-  const dragStartX = useRef(0);
-  const dragScrollLeft = useRef(0);
-
-  function onMouseDown(e: React.MouseEvent) {
-    if (!scrollRef.current) return;
-    dragging.current = true;
-    dragStartX.current = e.clientX;
-    dragScrollLeft.current = scrollRef.current.scrollLeft;
-    scrollRef.current.style.cursor = "grabbing";
-  }
-
-  function onMouseMove(e: React.MouseEvent) {
-    if (!dragging.current || !scrollRef.current) return;
-    const dx = e.clientX - dragStartX.current;
-    scrollRef.current.scrollLeft = dragScrollLeft.current - dx;
-  }
-
-  function onMouseUp() {
-    dragging.current = false;
-    if (scrollRef.current) scrollRef.current.style.cursor = "grab";
-  }
-
-  if (actions.length === 0) return null;
-
-  return (
-    <div className="border-t border-zinc-100 shrink-0 py-2 px-2">
-      <div
-        ref={scrollRef}
-        className="flex gap-1.5 overflow-x-auto scrollbar-hide"
-        style={{ cursor: "grab", WebkitOverflowScrolling: "touch" }}
-        onMouseDown={onMouseDown}
-        onMouseMove={onMouseMove}
-        onMouseUp={onMouseUp}
-        onMouseLeave={onMouseUp}
-      >
-        {actions.map((a) => (
-          <button
-            key={a.key}
-            onClick={() => onSend(a.prompt)}
-            disabled={loading}
-            className="text-xs bg-zinc-50 hover:bg-[#ff2442]/10 hover:text-[#ff2442] text-zinc-600
-                       px-2.5 py-1.5 rounded-full border border-zinc-200 hover:border-[#ff2442]/30
-                       transition-colors whitespace-nowrap shrink-0 disabled:opacity-40 select-none"
-          >
-            {a.label}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }

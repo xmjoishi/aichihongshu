@@ -2,7 +2,7 @@ import { useMenuDestination } from "../lib/pageRetention";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
-  LayoutGrid, FileText, User, BarChart2, ChartNoAxesCombined, Settings, Sparkles,
+  LayoutGrid, FileText, User, BarChart2, ChartNoAxesCombined, Settings, Sparkles, Bookmark,
   ShieldCheck, Search, Plus, MessageSquare, Pin, BriefcaseBusiness, Brain,
 } from "lucide-react";
 import { openGlobalSearch } from "./GlobalSearchHost";
@@ -14,6 +14,7 @@ import { createAgentSession, readAgentSessions, readLastAgentSession, rememberLa
 const accountNav = [
   { to: "/", icon: BarChart2, label: "概览" },
   { to: "/library", icon: LayoutGrid, label: "素材库" },
+  { to: "/clippings", icon: Bookmark, label: "剪藏" },
   { to: "/notes", icon: FileText, label: "笔记" },
   { to: "/inspire", icon: Sparkles, label: "灵感" },
   { to: "/profile", icon: User, label: "账号" },
@@ -35,8 +36,6 @@ const SIDEBAR_DEFAULT_WIDTH = 176;
 // Compact dividers align to painted edges, not the 40px hit targets.
 const COMPACT_DIVIDER_GAP = 12;
 const COMPACT_ACCOUNT_INSET = (40 - 32) / 2;
-// Lucide's 24px viewBox includes a 1-unit inset to the workspace icons' stroke.
-const COMPACT_WORKSPACE_ICON_INSET = (40 - 18) / 2 + 18 / 24;
 // Search's top painted edge is at y=2 (circle y=3 minus its stroke radius).
 const COMPACT_SEARCH_ICON_INSET = (40 - 20) / 2 + (20 / 24) * 2;
 export const SIDEBAR_TOGGLE_EVENT = "aichihongshu:toggle-sidebar";
@@ -323,7 +322,7 @@ export default function Sidebar({ onCompactChange }: { onCompactChange?: (compac
         )}
         {compact && <div
           className="h-px w-full shrink-0 bg-[var(--color-border)]"
-          style={{ marginTop: COMPACT_DIVIDER_GAP - COMPACT_ACCOUNT_INSET, marginBottom: COMPACT_DIVIDER_GAP - (agentWorkspace ? COMPACT_WORKSPACE_ICON_INSET : 0) }}
+          style={{ marginTop: COMPACT_DIVIDER_GAP - COMPACT_ACCOUNT_INSET, marginBottom: COMPACT_DIVIDER_GAP }}
           role="separator" aria-orientation="horizontal"
         />}
         <div className={`flex shrink-0 items-center ${compact ? "w-full flex-col gap-1" : "mb-1 gap-1"}`}>
@@ -369,7 +368,7 @@ export default function Sidebar({ onCompactChange }: { onCompactChange?: (compac
         </div>
         {compact && <div
           className="h-px w-full shrink-0 bg-[var(--color-border)]"
-          style={{ marginTop: COMPACT_DIVIDER_GAP - (agentWorkspace ? 0 : COMPACT_WORKSPACE_ICON_INSET) }}
+          style={{ marginTop: COMPACT_DIVIDER_GAP }}
           role="separator" aria-orientation="horizontal"
         />}
       </div>

@@ -8,7 +8,8 @@ import {
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api, openInBrowser } from "../lib/api";
+import { api, openExternalUrl } from "../lib/api";
+import { useToast } from "../components/Toast";
 import type {
   KnowledgeRule, KnowledgeMySample,
   KnowledgeRefGroup, KnowledgeInspiration, Note,
@@ -17,11 +18,16 @@ import { computeRulesFromNotes, mergeRules } from "../selectors/knowledge";
 import {
   IS_TAURI_RUNTIME,
   readLocalInspirations,
+  readLocalKnowledgeMySamples,
+  readLocalKnowledgeReferenceSamples,
+  deleteLocalKnowledgeReferenceSample,
   readLocalKnowledgePreferences,
+  setLocalKnowledgeSampleEnabled,
   saveLocalKnowledgePreferences,
   type LocalKnowledgePreferences,
   type LocalInspirationSummary,
 } from "../lib/local";
+import type { LocalKnowledgeMySample, LocalKnowledgeReferenceGroup } from "../lib/localTypes";
 import { useAccountContext } from "../lib/accountContext";
 
 // ─── 分区容器 ─────────────────────────────────────────────────────────────────
@@ -131,6 +137,7 @@ function RulesSection() {
 // ─── 分区2：我的高赞样本 ──────────────────────────────────────────────────────
 
 function MySamplesSection() {
+  const { toast } = useToast();
   const [samples, setSamples] = useState<KnowledgeMySample[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -180,7 +187,7 @@ function MySamplesSection() {
               )}
             </div>
             {s.note_url && (
-              <button onClick={(e) => { e.stopPropagation(); openInBrowser(s.note_url!); }}
+              <button onClick={(e) => { e.stopPropagation(); openExternalUrl(s.note_url!).catch((error) => toast(`打开链接失败：${error instanceof Error ? error.message : String(error)}`, "error")); }}
                 className="shrink-0 text-zinc-300 hover:text-[#ff2442] transition-colors mt-0.5">
                 <ExternalLink size={13} />
               </button>
@@ -195,6 +202,7 @@ function MySamplesSection() {
 // ─── 分区3：榜样笔记样本 ──────────────────────────────────────────────────────
 
 function RefSamplesSection() {
+  const { toast } = useToast();
   const [groups, setGroups] = useState<KnowledgeRefGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanding, setExpanding] = useState<string | null>(null);
@@ -255,7 +263,7 @@ function RefSamplesSection() {
                           </button>
                         )}
                         {note.note_url && (
-                          <button onClick={() => openInBrowser(note.note_url!)}
+                          <button onClick={() => openExternalUrl(note.note_url!).catch((error) => toast(`打开链接失败：${error instanceof Error ? error.message : String(error)}`, "error"))}
                             className="text-zinc-300 hover:text-[#ff2442] transition-colors">
                             <ExternalLink size={12} />
                           </button>
@@ -405,13 +413,8 @@ function InspirationsSection() {
 
 // ─── 主组件 ───────────────────────────────────────────────────────────────────
 
-function LocalKnowledgeTab({
-  notes,
-  referenceAccounts,
-}: {
-  notes: Note[];
-  referenceAccounts: KnowledgeRefGroup[];
-}) {
+function LocalKnowledgeTab({ notes }: { notes: Note[] }) {
+  const { toast } = useToast();
   const { accountId, scopeKey } = useAccountContext();
   const queryClient = useQueryClient();
   const defaultPreferences: LocalKnowledgePreferences = useMemo(() => ({
@@ -462,10 +465,60 @@ function LocalKnowledgeTab({
     })),
     [notes, preferences.disabledRuleKeys],
   );
-  const published = useMemo(
-    () => notes.filter((note) => note.status === "published").sort((a, b) => b.likes - a.likes),
-    [notes],
-  );
+  const { data: mySamples = [] } = useQuery<LocalKnowledgeMySample[]>({
+    queryKey: ["local-knowledge-my-samples", scopeKey],
+    queryFn: () => readLocalKnowledgeMySamples(accountId ?? undefined),
+    enabled: accountId !== null,
+  });
+  const { data: referenceAccounts = [] } = useQuery<LocalKnowledgeReferenceGroup[]>({
+    queryKey: ["local-knowledge-reference-samples", scopeKey],
+    queryFn: () => readLocalKnowledgeReferenceSamples(accountId ?? undefined),
+    enabled: accountId !== null,
+  });
+  const [sampleError, setSampleError] = useState<string | null>(null);
+  const [savingSampleId, setSavingSampleId] = useState<number | null>(null);
+  const [referenceSampleError, setReferenceSampleError] = useState<string | null>(null);
+  const [deletingReferenceSample, setDeletingReferenceSample] = useState<string | null>(null);
+  const [expandedReferenceSample, setExpandedReferenceSample] = useState<string | null>(null);
+  async function toggleSample(noteId: number, enabled: boolean) {
+    if (accountId === null || savingSampleId !== null) return;
+    const previous = mySamples;
+    const next = previous.map((sample) => sample.id === noteId
+      ? { ...sample, useAsReference: enabled }
+      : sample);
+    setSampleError(null);
+    setSavingSampleId(noteId);
+    queryClient.setQueryData(["local-knowledge-my-samples", scopeKey], next);
+    try {
+      await setLocalKnowledgeSampleEnabled(noteId, accountId, enabled);
+    } catch (error) {
+      queryClient.setQueryData(["local-knowledge-my-samples", scopeKey], previous);
+      setSampleError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingSampleId(null);
+    }
+  }
+  async function removeReferenceSample(referenceAccountId: string, index: number) {
+    if (accountId === null || deletingReferenceSample !== null) return;
+    const key = `${referenceAccountId}:${index}`;
+    const queryKey = ["local-knowledge-reference-samples", scopeKey];
+    const previous = referenceAccounts;
+    const next = previous.map((group) => group.accountId !== referenceAccountId
+      ? group
+      : { ...group, notes: group.notes.filter((_, noteIndex) => noteIndex !== index) })
+      .filter((group) => group.notes.length > 0);
+    setReferenceSampleError(null);
+    setDeletingReferenceSample(key);
+    queryClient.setQueryData(queryKey, next);
+    try {
+      await deleteLocalKnowledgeReferenceSample(referenceAccountId, index, accountId);
+    } catch (error) {
+      queryClient.setQueryData(queryKey, previous);
+      setReferenceSampleError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDeletingReferenceSample(null);
+    }
+  }
   const { data: inspirations = [], isLoading } = useQuery<LocalInspirationSummary[]>({
     queryKey: ["local-knowledge-inspirations", scopeKey],
     queryFn: () => readLocalInspirations(accountId ?? undefined),
@@ -539,37 +592,73 @@ function LocalKnowledgeTab({
         {preferenceError && <p className="text-[10px] text-red-500 mt-2" role="alert">保存经验库偏好失败：{preferenceError}</p>}
         <p className="text-[10px] text-zinc-400 mt-3">只注入当前账号的本地摘要，不发送来源链接或完整历史正文。</p>
       </Section>
-      <Section icon={BookOpen} title="我的已发布样本" badge={published.length ? `${published.length} 篇` : undefined}>
-        {!published.length ? (
+      <Section icon={BookOpen} title="我的高赞样本" badge={mySamples.some((sample) => sample.useAsReference) ? `已选 ${mySamples.filter((sample) => sample.useAsReference).length} 篇` : undefined}>
+        {!mySamples.length ? (
           <p className="text-xs text-zinc-400 py-2 text-center">当前账号暂无已发布笔记</p>
         ) : (
           <div className="space-y-2">
-            {published.map((note) => (
-              <div key={note.id} className="px-3.5 py-2.5 rounded-xl border border-zinc-100">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs font-medium text-zinc-800 truncate">{note.title || "无标题"}</span>
-                  <span className="text-[10px] text-rose-500 shrink-0">赞 {note.likes}</span>
+            {mySamples.map((sample) => (
+              <div key={sample.id} className={`flex items-start gap-3 px-3.5 py-2.5 rounded-xl border transition-colors ${sample.useAsReference ? "border-[#ff2442]/20 bg-[#ff2442]/5" : "border-zinc-100"}`}>
+                <button
+                  type="button"
+                  aria-label={`${sample.useAsReference ? "停用" : "启用"}参考样本：${sample.title || "无标题"}`}
+                  aria-pressed={sample.useAsReference}
+                  disabled={savingSampleId !== null}
+                  onClick={() => toggleSample(sample.id, !sample.useAsReference)}
+                  className="shrink-0 mt-0.5 disabled:opacity-50"
+                >
+                  {sample.useAsReference
+                    ? <ToggleRight size={20} className="text-[#ff2442]" />
+                    : <ToggleLeft size={20} className="text-zinc-300" />}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-medium text-zinc-800 truncate">{sample.title || "无标题"}</span>
+                    <span className="text-[10px] text-rose-500 shrink-0">赞 {sample.likes}</span>
+                  </div>
+                  {sample.bodyPreview && <p className="text-[11px] text-zinc-400 mt-1 line-clamp-2">{sample.bodyPreview}…</p>}
                 </div>
-                {note.body && <p className="text-[11px] text-zinc-400 mt-1 line-clamp-2">{note.body}</p>}
+                {sample.noteUrl && (
+                  <button type="button" onClick={() => openExternalUrl(sample.noteUrl!).catch((error) => toast(`打开链接失败：${error instanceof Error ? error.message : String(error)}`, "error"))} className="shrink-0 text-zinc-300 hover:text-[#ff2442]" aria-label="打开笔记链接">
+                    <ExternalLink size={13} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
         )}
+        {sampleError && <p className="text-[10px] text-red-500 mt-2" role="alert">保存样本状态失败：{sampleError}</p>}
+        <p className="text-[10px] text-zinc-400 mt-2">仅勾选的笔记会作为参考样本；也可通过上方“我的高赞样本”开关整体停用注入。</p>
       </Section>
       <Section icon={Users} title="榜样笔记样本" badge={referenceAccounts.reduce((sum, group) => sum + group.notes.length, 0) ? `${referenceAccounts.reduce((sum, group) => sum + group.notes.length, 0)} 条` : undefined}>
         {!referenceAccounts.length ? (
           <p className="text-xs text-zinc-400 py-2 text-center">当前账号暂无榜样笔记样本</p>
         ) : referenceAccounts.map((group) => (
-          <div key={group.account_id} className="mb-3 last:mb-0">
+          <div key={group.accountId} className="mb-3 last:mb-0">
             <p className="text-[10px] font-semibold text-zinc-400 mb-1.5">@{group.name}</p>
-            {group.notes.map((note, index) => (
-              <div key={`${group.account_id}-${index}`} className="flex justify-between gap-3 px-3.5 py-2.5 rounded-xl border border-zinc-100 mb-1.5">
-                <span className="text-xs text-zinc-700">{note.title}</span>
-                <span className="text-[10px] text-rose-400 shrink-0">赞 {note.likes}</span>
-              </div>
-            ))}
+            {group.notes.map((note, index) => {
+              const itemKey = `${group.accountId}:${index}`;
+              const expanded = expandedReferenceSample === itemKey;
+              return (
+                <div key={itemKey} className="border border-zinc-100 rounded-xl overflow-hidden mb-1.5">
+                  <div className="flex items-start gap-2 px-3.5 py-2.5">
+                    <div className="flex-1 min-w-0">
+                      <span className="text-xs text-zinc-700 font-medium">{note.title}</span>
+                      <span className="ml-2 text-[10px] text-rose-400">赞 {note.likes}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {note.body && <button type="button" onClick={() => setExpandedReferenceSample(expanded ? null : itemKey)} className="text-[10px] text-zinc-400 hover:text-zinc-600">{expanded ? "收起" : "正文"}</button>}
+                      {note.noteUrl && <button type="button" onClick={() => openExternalUrl(note.noteUrl!).catch((error) => toast(`打开链接失败：${error instanceof Error ? error.message : String(error)}`, "error"))} className="text-zinc-300 hover:text-[#ff2442]" aria-label="打开笔记链接"><ExternalLink size={12} /></button>}
+                      <button type="button" onClick={() => removeReferenceSample(group.accountId, index)} disabled={deletingReferenceSample !== null} className="text-zinc-300 hover:text-red-400 disabled:opacity-40" aria-label="删除榜样样本"><Trash2 size={12} /></button>
+                    </div>
+                  </div>
+                  {expanded && note.body && <div className="px-3.5 pb-3 text-[11px] text-zinc-500 leading-relaxed border-t border-zinc-50 pt-2 bg-zinc-50 whitespace-pre-wrap">{note.body}</div>}
+                </div>
+              );
+            })}
           </div>
         ))}
+        {referenceSampleError && <p className="text-[10px] text-red-500 mt-2" role="alert">删除榜样样本失败：{referenceSampleError}</p>}
       </Section>
       <Section icon={Lightbulb} title="本地灵感" badge={inspirations.length ? `${inspirations.length} 条` : undefined}>
         {isLoading ? <p className="text-xs text-zinc-400 py-2 text-center">加载中…</p> : inspirations.length ? (
@@ -583,9 +672,9 @@ function LocalKnowledgeTab({
   );
 }
 
-export default function KnowledgeTab({ notes = [], referenceAccounts = [] }: { notes?: Note[]; referenceAccounts?: KnowledgeRefGroup[] }) {
+export default function KnowledgeTab({ notes = [] }: { notes?: Note[] }) {
   if (IS_TAURI_RUNTIME) {
-    return <LocalKnowledgeTab notes={notes} referenceAccounts={referenceAccounts} />;
+    return <LocalKnowledgeTab notes={notes} />;
   }
   return (
     <div className="space-y-4">

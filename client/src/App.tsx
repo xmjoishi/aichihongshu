@@ -19,6 +19,7 @@ import { useAccountContext, AccountSnapshotProvider, type AccountContext } from 
 // 发布、素材、数据复盘等重页面全部塞进启动模块，减少白屏等待时间。
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Library = lazy(() => import("./pages/Library"));
+const Clippings = lazy(() => import("./pages/Clippings"));
 const NoteList = lazy(async () => ({ default: (await import("./pages/Notes")).NoteList }));
 const NoteEditor = lazy(async () => ({ default: (await import("./pages/Notes")).NoteEditor }));
 const AccountPool = lazy(() => import("./pages/AccountPool"));
@@ -280,6 +281,7 @@ export default function App() {
                       <Routes location={page.location}>
                         <Route path="/" element={<Dashboard />} />
                         <Route path="/library" element={<Library />} />
+                        <Route path="/clippings" element={<Clippings />} />
                         <Route path="/notes" element={<NoteList />} />
                         <Route path="/notes/:id" element={<NoteEditor />} />
                         <Route path="/publish" element={<Navigate to="/notes?view=publish" replace />} />

@@ -1,0 +1,320 @@
+[
+  {
+    "name": "get_profile",
+    "description": "获取我的账号人设（垂类/语气/禁忌词/标签池等）— 当前激活账号",
+    "inputSchema": {
+      "properties": {},
+      "title": "get_profileArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "update_profile",
+    "description": "更新账号人设字段（语气/禁忌词/发帖节奏/标签池）",
+    "inputSchema": {
+      "properties": {
+        "persona_tone": {
+          "default": null,
+          "title": "Persona Tone",
+          "type": "string"
+        },
+        "persona_taboos": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Persona Taboos"
+        },
+        "posting_rhythm": {
+          "default": null,
+          "title": "Posting Rhythm",
+          "type": "string"
+        },
+        "hashtag_pool": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hashtag Pool"
+        }
+      },
+      "title": "update_profileArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_items",
+    "description": "列出图库物品。可按 tag（标签）或 style（风格）过滤 — 当前激活账号",
+    "inputSchema": {
+      "properties": {
+        "tag": {
+          "default": null,
+          "title": "Tag",
+          "type": "string"
+        },
+        "style": {
+          "default": null,
+          "title": "Style",
+          "type": "string"
+        }
+      },
+      "title": "list_itemsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_item",
+    "description": "获取图库物品详情，包含 MiniMax 图片分析结果 — 当前激活账号",
+    "inputSchema": {
+      "properties": {
+        "item_id": {
+          "title": "Item Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item_id"
+      ],
+      "title": "get_itemArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "add_item_from_path",
+    "description": "从本地路径导入图片到图库，analyze=True 时自动触发 MiniMax 图片分析 — 当前激活账号",
+    "inputSchema": {
+      "properties": {
+        "image_path": {
+          "title": "Image Path",
+          "type": "string"
+        },
+        "title": {
+          "default": null,
+          "title": "Title",
+          "type": "string"
+        },
+        "analyze": {
+          "default": true,
+          "title": "Analyze",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "image_path"
+      ],
+      "title": "add_item_from_pathArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "tag_item",
+    "description": "给图库物品添加或删除标签。action: 'add' 或 'remove' — 当前激活账号",
+    "inputSchema": {
+      "properties": {
+        "item_id": {
+          "title": "Item Id",
+          "type": "integer"
+        },
+        "tag": {
+          "title": "Tag",
+          "type": "string"
+        },
+        "action": {
+          "default": "add",
+          "title": "Action",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "tag"
+      ],
+      "title": "tag_itemArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "draft_note_prompt",
+    "description": "\n    为图库物品生成笔记创作 Prompt。\n    返回 prompt 文本供 AI 直接使用，save=True 时同时创建草稿记录。\n    account_id: 可选的榜样账号 ID，用于风格参考\n    ",
+    "inputSchema": {
+      "properties": {
+        "item_id": {
+          "title": "Item Id",
+          "type": "integer"
+        },
+        "account_id": {
+          "default": null,
+          "title": "Account Id",
+          "type": "string"
+        },
+        "save": {
+          "default": true,
+          "title": "Save",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "item_id"
+      ],
+      "title": "draft_note_promptArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_notes",
+    "description": "列出笔记草稿。status: draft/ready/published；item_id: 按物品过滤 — 当前激活账号",
+    "inputSchema": {
+      "properties": {
+        "status": {
+          "default": null,
+          "title": "Status",
+          "type": "string"
+        },
+        "item_id": {
+          "default": null,
+          "title": "Item Id",
+          "type": "integer"
+        }
+      },
+      "title": "list_notesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_note",
+    "description": "获取笔记草稿详情 — 当前激活账号",
+    "inputSchema": {
+      "properties": {
+        "note_id": {
+          "title": "Note Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "note_id"
+      ],
+      "title": "get_noteArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "save_note",
+    "description": "保存笔记内容（标题/正文/标签/封面文案）",
+    "inputSchema": {
+      "properties": {
+        "note_id": {
+          "title": "Note Id",
+          "type": "integer"
+        },
+        "title": {
+          "default": null,
+          "title": "Title",
+          "type": "string"
+        },
+        "body": {
+          "default": null,
+          "title": "Body",
+          "type": "string"
+        },
+        "tags": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tags"
+        },
+        "cover_desc": {
+          "default": null,
+          "title": "Cover Desc",
+          "type": "string"
+        }
+      },
+      "required": [
+        "note_id"
+      ],
+      "title": "save_noteArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "publish_note",
+    "description": "将笔记标记为已发布，可同时记录发布链接",
+    "inputSchema": {
+      "properties": {
+        "note_id": {
+          "title": "Note Id",
+          "type": "integer"
+        },
+        "note_url": {
+          "default": null,
+          "title": "Note Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "note_id"
+      ],
+      "title": "publish_noteArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "export_note",
+    "description": "导出笔记为 Markdown 格式（可直接粘贴到小红书）",
+    "inputSchema": {
+      "properties": {
+        "note_id": {
+          "title": "Note Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "note_id"
+      ],
+      "title": "export_noteArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_accounts",
+    "description": "列出当前激活账号下的榜样账号（按均赞降序）",
+    "inputSchema": {
+      "properties": {},
+      "title": "list_accountsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_analytics",
+    "description": "获取运营数据汇总（图库数量/笔记状态/均赞评藏）",
+    "inputSchema": {
+      "properties": {},
+      "title": "get_analyticsArguments",
+      "type": "object"
+    }
+  }
+]

@@ -8,6 +8,9 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+/core/target/
+/rn/target/
+/services/target/
 dist
 dist-ssr
 *.local
@@ -22,3 +25,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Generated per-target Node, Playwright and Chromium release resources.
+/src-tauri/resources/browser-worker/*
+!/src-tauri/resources/browser-worker/.gitkeep

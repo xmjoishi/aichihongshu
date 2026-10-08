@@ -17,6 +17,7 @@ import {
   IS_TAURI_RUNTIME,
   localProfileToProfile,
   readLocalWorkspaceSnapshot,
+  refreshLocalProfile,
   updateLocalProfile,
   type LocalWorkspaceSnapshot,
 } from "../lib/local";
@@ -121,8 +122,8 @@ function XhsProfileCard({ profile, onRefresh, refreshing }: {
             {/* Tooltip */}
             <div className="absolute right-0 top-full mt-2 w-56 bg-zinc-800 text-white text-xs rounded-xl px-3 py-2 leading-relaxed
                             opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150 z-50 shadow-lg">
-              <p className="font-medium mb-0.5">🕷️ 重新爬取小红书主页</p>
-              <p className="text-zinc-300">调用爬虫抓取最新粉丝数、简介、笔记互动数据，并同步到本地数据库。需要浏览器已登录。</p>
+              <p className="font-medium mb-0.5">同步小红书主页</p>
+              <p className="text-zinc-300">通过应用的独立可见浏览器读取主页资料与最近笔记并同步到本地。需要登录；安全验证由你手动完成。</p>
             </div>
           </div>
         </div>
@@ -360,6 +361,13 @@ export default function ProfilePage() {
   });
   useWorkspaceEffect(() => {
     if (!refreshing) return;
+    if (IS_TAURI_RUNTIME) {
+      const timer = window.setTimeout(() => {
+        setRefreshing(false);
+        toast("主页同步仍未完成，请确认独立浏览器已打开主页并完成登录或安全验证", "info");
+      }, 120_000);
+      return () => window.clearTimeout(timer);
+    }
     const timer = setInterval(async () => {
       try {
         const status = await api.get("/api/profile/refresh-status");
@@ -381,9 +389,48 @@ export default function ProfilePage() {
     return () => clearInterval(timer);
   }, [refreshing, qc, toast]);
 
+  useEffect(() => {
+    if (!IS_TAURI_RUNTIME || accountId === null) return;
+    const onProfileRefreshed = (event: Event) => {
+      const detail = (event as CustomEvent<{ accountPoolId?: number }>).detail;
+      if (detail?.accountPoolId !== accountId) return;
+      void qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey, "profile"] });
+      if (refreshing) {
+        setRefreshing(false);
+        toast("主页资料已同步", "success");
+      }
+    };
+    window.addEventListener("aichihongshu-profile-refreshed", onProfileRefreshed);
+    return () => window.removeEventListener("aichihongshu-profile-refreshed", onProfileRefreshed);
+  }, [accountId, qc, refreshing, scopeKey, toast]);
+
   async function handleRefresh() {
     if (IS_TAURI_RUNTIME) {
-      toast("本地账号尚未接入平台资料抓取；可直接编辑并保存人设字段", "info");
+      const xhsAccountId = profile?.account_id?.trim();
+      if (!xhsAccountId) {
+        toast("请先在人设资料中填写小红书账号 ID", "error");
+        return;
+      }
+      if (accountId === null) {
+        toast("当前运营账号尚未就绪", "error");
+        return;
+      }
+      setRefreshing(true);
+      try {
+        const result = await refreshLocalProfile(accountId, xhsAccountId);
+        await qc.invalidateQueries({ queryKey: ["local-workspace", scopeKey, "profile"] });
+        const imported = result.profileNotesImported + result.profileNotesUpdated;
+        toast(
+          result.profileNotesComplete
+            ? "主页资料已同步，主页笔记 " + imported + " 篇已更新"
+            : "主页资料已同步，笔记仅读取到 " + imported + " 篇，汇总统计保持不变",
+          result.profileNotesComplete ? "success" : "info",
+        );
+      } catch (e: unknown) {
+        toast(typeof e === "string" ? e : e instanceof Error ? e.message : "主页同步失败", "error");
+      } finally {
+        setRefreshing(false);
+      }
       return;
     }
     try {
@@ -470,10 +517,7 @@ export default function ProfilePage() {
 
   if (!profile) return (
     <div className="p-6 text-zinc-400 text-sm">
-      尚未初始化账号，请运行：<br />
-      <code className="bg-zinc-100 px-2 py-0.5 rounded mt-1 inline-block text-zinc-600">
-        uv run python app/cli.py profile init --url "..."
-      </code>
+      当前账号暂时没有人设资料。请先在顶部激活运营账号，再从本页编辑人设信息。
     </div>
   );
 

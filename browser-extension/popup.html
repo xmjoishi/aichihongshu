@@ -2,57 +2,148 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <title>爱吃红薯数据抓取</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>爱吃红薯 · 剪藏</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <header>
-      <strong id="popup-title">爱吃红薯数据抓取</strong>
+    <header class="popup-header">
+      <strong id="popup-title">爱吃红薯 · 剪藏</strong>
       <span id="connection-status" class="connection-status checking" role="status" aria-live="polite">
         <span class="connection-dot" aria-hidden="true"></span>
         <span id="connection-status-label">正在检测</span>
       </span>
       <span id="extension-version" class="version">v-</span>
     </header>
-    <div class="wrap">
 
-    <section id="preview" class="card">
-      <div class="row">
-        <label for="page-type">页面类型</label>
-        <select id="page-type">
-          <option value="note">笔记</option>
-          <option value="profile">主页 / 账号</option>
-          <option value="web">网页素材</option>
-        </select>
+    <section class="connection-bar" aria-label="剪藏目标">
+      <div class="connection-primary">
+        <div class="account-select-row" id="target-account-row">
+          <label for="target-account">保存到</label>
+          <select id="target-account" disabled aria-label="保存到本地账号"><option value="">读取账号中…</option></select>
+        </div>
+        <p id="account-status" class="inline-state" role="status" aria-live="polite">正在读取本地账号…</p>
       </div>
-      <p id="preview-meta" class="meta">解析当前页中…</p>
-      <div id="preview-fields" class="fields"></div>
+      <button id="expand-preview" type="button" class="text-action" disabled>展开预览 ↗</button>
     </section>
 
-    <nav class="mode-tabs" role="tablist" aria-label="本次操作">
-      <button id="tab-collect" type="button" role="tab" aria-selected="true">收藏内容</button>
-      <button id="tab-data" type="button" role="tab" aria-selected="false">更新数据</button>
-    </nav>
-    <p id="context-hint" class="context-hint"></p>
+    <details id="advanced-connection" class="advanced-connection">
+      <summary>连接诊断与高级设置</summary>
+      <div class="connection-detail">
+        <span id="connection-detail" aria-live="polite">当前通道桌面连接检测中…</span>
+        <button id="launch-desktop" type="button" class="text-action" hidden>启动桌面端</button>
+        <button id="retry-connection" type="button" class="text-action" hidden>重试连接</button>
+      </div>
+      <p id="connection-remedy" class="connection-remedy" role="status" aria-live="polite"></p>
+      <label class="check"><input id="dev-mode-toggle" type="checkbox" /> 开发通道（DEV）</label>
+      <p class="muted">默认连接正式版。DEV 只访问所选工作区；目标离线时不会切换数据库。</p>
+      <div id="instance-picker-row" class="instance-picker" hidden>
+        <label for="instance-picker">桌面实例</label>
+        <select id="instance-picker" aria-label="桌面实例"></select>
+        <button id="connect-instance" type="button" class="secondary-action">连接所选实例</button>
+      </div>
+      <p id="instance-picker-status" class="muted" role="status" aria-live="polite"></p>
+    </details>
 
-    <section id="collect-panel" class="card mode-panel" role="tabpanel">
-      <p class="group-title">收藏到素材库 · 网页收藏</p>
-      <label class="check"><input type="checkbox" id="m-titleBody" checked /> 标题 + 正文摘要</label>
-      <label class="check"><input type="checkbox" id="m-authorSource" checked /> 作者 / 来源链接</label>
-      <label class="check disabled"><input type="checkbox" disabled /> 图片清单（待支持）</label>
-      <label class="check disabled"><input type="checkbox" disabled /> 评论摘录（待支持）</label>
-    </section>
+    <div class="layout">
+      <section class="type-and-context">
+        <div class="detected-row">
+          <span id="clip-type-label">正在识别页面…</span>
+          <details id="type-adjustments" class="type-adjustments">
+            <summary>调整</summary>
+            <div class="type-adjustment-fields">
+              <label class="row" id="page-type-row">
+                <span>页面</span>
+                <select id="page-type" aria-label="页面类型">
+                  <option value="note">笔记 / 文章</option>
+                  <option value="profile">作者主页</option>
+                  <option value="web">普通网页</option>
+                </select>
+              </label>
+              <label class="row" id="clip-kind-row">
+                <span>剪藏类型</span>
+                <select id="clip-kind" aria-label="剪藏类型">
+                  <option value="auto">自动识别</option>
+                  <option value="note">笔记剪藏</option>
+                  <option value="account">账号剪藏</option>
+                  <option value="material">素材剪藏</option>
+                </select>
+              </label>
+            </div>
+          </details>
+        </div>
+        <div id="existing-actions" class="existing-actions" hidden>
+          <span id="existing-content-label"></span>
+          <button id="update-content" type="button" class="inline-action" aria-pressed="true">更新剪藏内容</button>
+          <button id="refresh-data" type="button" class="inline-action" aria-pressed="false">刷新数据</button>
+        </div>
+        <p id="context-hint" class="context-hint" aria-live="polite"></p>
+      </section>
 
-    <section id="data-panel" class="card mode-panel" role="tabpanel" hidden>
-      <p class="group-title">记录一条表现数据快照</p>
-      <label class="check" id="wrap-metrics"><input type="checkbox" id="m-metrics" /> 赞 / 藏 / 评（或粉丝）</label>
-      <label class="check" id="wrap-published"><input type="checkbox" id="m-published" /> 发布时间（识别到才存）</label>
-    </section>
+      <section id="preview" class="preview-pane" aria-label="当前页面剪藏预览">
+        <p id="preview-meta" class="meta" role="status" aria-live="polite">解析当前页中…</p>
+        <div id="preview-fields" class="preview-content" tabindex="0"></div>
+      </section>
 
-    <p id="destination" class="dest"></p>
-    <button id="capture" type="button" disabled>收藏到素材库</button>
-    <p id="status" class="status"></p>
+      <section id="creator-fill-panel" class="creator-fill-panel" hidden>
+        <p class="group-title">单条文字填充</p>
+        <p id="creator-fill-meta" class="muted">仅在当前创作页填入；不会发布。</p>
+        <button id="creator-claim" type="button" class="secondary-action">领取一条待填充任务</button>
+        <div id="creator-task-preview" hidden>
+          <p id="creator-task-title" class="fill-preview"></p>
+          <p id="creator-task-body" class="fill-preview"></p>
+          <div class="fill-diff">
+            <strong>当前页面标题</strong><p id="creator-current-title"></p>
+            <strong>当前页面正文</strong><p id="creator-current-body"></p>
+          </div>
+          <div id="creator-image-list" class="creator-image-list" aria-label="按发布快照顺序排列的图片"></div>
+          <label class="check"><input id="creator-confirm-fill" type="checkbox" /> 我确认把预览文字和按序图片填入当前页面（可能替换现有内容）</label>
+          <button id="creator-fill" type="button" disabled>确认填入，不发布</button>
+          <button id="creator-retry" type="button" class="secondary-action" hidden>重试失败字段和图片</button>
+          <button id="creator-cancel" type="button" class="secondary-action">取消此填充任务</button>
+        </div>
+        <p id="creator-fill-result" class="status" role="status" aria-live="polite"></p>
+      </section>
     </div>
+
+    <footer class="fixed-actions">
+      <p id="destination" class="dest"></p>
+      <div class="action-row">
+        <button id="capture" type="button" disabled>保存到剪藏 · 笔记</button>
+        <button id="stage-capture" type="button" class="secondary-action" hidden>暂存到浏览器</button>
+        <button id="save-staged-capture" type="button" class="secondary-action" hidden>核对账号后保存</button>
+        <button id="cancel-staged-capture" type="button" class="secondary-action" hidden>放弃暂存</button>
+        <button id="verify-capture" type="button" class="secondary-action" hidden>核实保存结果</button>
+        <button id="retry-capture" type="button" class="secondary-action" hidden>使用相同请求重试</button>
+      </div>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </footer>
+
+    <div class="legacy-controls" hidden aria-hidden="true">
+      <nav class="mode-tabs" role="tablist" aria-label="剪藏与数据操作">
+        <button id="tab-collect" type="button" role="tab" aria-controls="collect-panel" aria-selected="true">剪藏内容</button>
+        <button id="tab-data" type="button" role="tab" aria-controls="data-panel" aria-selected="false">刷新数据</button>
+      </nav>
+      <section id="collect-panel" class="mode-panel" role="tabpanel">
+        <input type="checkbox" id="m-titleBody" checked />
+        <input type="checkbox" id="m-authorSource" checked />
+        <input type="checkbox" id="m-images" />
+        <input type="checkbox" id="m-comments" />
+      </section>
+      <section id="data-panel" class="mode-panel" role="tabpanel" hidden>
+        <label id="wrap-metrics"><input type="checkbox" id="m-metrics" /></label>
+        <label id="wrap-published"><input type="checkbox" id="m-published" /></label>
+      </section>
+      <span id="image-selection-count"></span>
+      <span id="comment-selection-count"></span>
+    </div>
+
+    <script src="native-bridge.js"></script>
+    <script src="capture-image-client.js"></script>
+    <script src="capture-recovery.js"></script>
+    <script src="connection-diagnostics.js"></script>
+    <script src="capture-preview.js"></script>
+    <script src="preview-session.js"></script>
+    <script src="popup.js"></script>
   </body>
-  <script src="popup.js"></script>
 </html>

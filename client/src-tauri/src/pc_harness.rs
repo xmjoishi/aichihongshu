@@ -2,8 +2,9 @@
 //! 仅处理手机任务有限端点，Bearer 配对令牌鉴权；不暴露 Tauri/shell/任意路径。
 
 use crate::db::{
-    CompanionTaskSummary, ExperiencePromptUpsert, LocalDb, LocalImageImport, MemoryEntryCreate,
-    MemoryEntryFilter, MemoryEntryTransition, MemoryEntryUpdate,
+    CompanionTaskProgress, CompanionTaskSummary, ExperiencePromptUpsert, LocalDb, LocalImageImport,
+    MemoryEntryCreate, MemoryEntryFilter, MemoryEntryTransition, MemoryEntryUpdate,
+    MobilePromptSnapshot,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -52,6 +53,7 @@ pub struct MobileMemoryCommandEnvelope {
 pub struct MobileMemoryCommandReceipt {
     pub cache_synced: bool,
     pub message: Option<String>,
+    pub system_rules: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +69,7 @@ struct MobileMemoryCommandResultRequest {
     success: bool,
     cache_synced: bool,
     message: Option<String>,
+    system_rules: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +77,7 @@ struct MobileMemoryCommandResult {
     success: bool,
     cache_synced: bool,
     message: Option<String>,
+    system_rules: Option<Value>,
 }
 
 struct PendingMobileMemoryCommand {
@@ -127,8 +131,6 @@ struct HarnessShared {
     db: Arc<LocalDb>,
     token: Arc<Mutex<String>>,
     running: Arc<AtomicBool>,
-    bind_address: Arc<Mutex<Option<String>>>,
-    port: u16,
     memory_commands: Arc<MobileMemoryCommandBroker>,
 }
 
@@ -244,8 +246,6 @@ impl PcHarnessRuntime {
             db: db.clone(),
             token: active_token.clone(),
             running: self.running.clone(),
-            bind_address: self.bind_address.clone(),
-            port: local.port(),
             memory_commands: self.memory_commands.clone(),
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -305,6 +305,7 @@ impl MobileMemoryCommandBroker {
                     success: false,
                     cache_synced: false,
                     message: Some("PC Harness 已停止".to_string()),
+                    system_rules: None,
                 });
             }
             self.changed.notify_all();
@@ -344,6 +345,11 @@ impl MobileMemoryCommandBroker {
             success: request.success,
             cache_synced: request.cache_synced,
             message: request.message,
+            system_rules: if pending.envelope.operation == "readSystemRules" {
+                request.system_rules
+            } else {
+                None
+            },
         });
         self.changed.notify_all();
         Ok(())
@@ -355,7 +361,7 @@ impl MobileMemoryCommandBroker {
         operation: String,
         payload: Value,
     ) -> Result<MobileMemoryCommandReceipt, String> {
-        const ALLOWED_OPERATIONS: [&str; 9] = [
+        const ALLOWED_OPERATIONS: [&str; 10] = [
             "createEntry",
             "updateEntry",
             "setEntryEnabled",
@@ -365,6 +371,7 @@ impl MobileMemoryCommandBroker {
             "setPromptEnabled",
             "deletePrompt",
             "seedExamples",
+            "readSystemRules",
         ];
         if !ALLOWED_OPERATIONS.contains(&operation.as_str()) {
             return Err("不支持的手机记忆操作".to_string());
@@ -374,9 +381,9 @@ impl MobileMemoryCommandBroker {
             .lock()
             .map_err(|_| "手机命令状态锁不可用".to_string())?;
         if state.last_account_id != Some(account_id)
-            || !state
+            || state
                 .last_seen
-                .is_some_and(|last_seen| last_seen.elapsed() <= MOBILE_PRESENCE_TTL)
+                .is_none_or(|last_seen| last_seen.elapsed() > MOBILE_PRESENCE_TTL)
         {
             return Err("手机未连接。请在手机前台打开记忆页并保持 Harness 连接".to_string());
         }
@@ -412,6 +419,7 @@ impl MobileMemoryCommandBroker {
                 return Ok(MobileMemoryCommandReceipt {
                     cache_synced: result.cache_synced,
                     message: result.message,
+                    system_rules: result.system_rules,
                 });
             }
             let remaining = MOBILE_COMMAND_TIMEOUT.saturating_sub(started.elapsed());
@@ -585,6 +593,7 @@ fn route(shared: &HarnessShared, method: &str, path: &str, body: &[u8]) -> (u16,
                     "service": "pc-harness",
                     "protocolVersion": PROTOCOL_VERSION,
                     "accountId": account_id,
+                    "capabilities": ["mobilePromptSnapshot"],
                 }),
             )
         }
@@ -605,6 +614,16 @@ fn route(shared: &HarnessShared, method: &str, path: &str, body: &[u8]) -> (u16,
                 .trim_start_matches("/api/mobile/v1/companion/tasks/")
                 .trim_end_matches("/publish-receipt");
             publish_receipt(shared, task_id, body)
+        }
+        ("POST", "/api/mobile/v1/memory/prompts/snapshot") => {
+            let snapshot: MobilePromptSnapshot = match serde_json::from_slice(body) {
+                Ok(value) => value,
+                Err(error) => return (400, json!({ "message": format!("请求体无效: {error}") })),
+            };
+            match shared.db.replace_mobile_prompt_snapshot(snapshot) {
+                Ok(result) => (200, json!(result)),
+                Err(error) => (400, json!({ "message": error })),
+            }
         }
         ("POST", "/api/mobile/v1/memory/reconcile") => reconcile_mobile_memory(shared, body),
         ("POST", "/api/mobile/v1/memory/commands/next") => next_mobile_memory_command(shared, body),
@@ -734,17 +753,19 @@ fn create_task(shared: &HarnessShared, body: &[u8]) -> (u16, Value) {
         Ok(value) => value,
         Err(error) => return (500, json!({ "message": error })),
     };
-    let _ = shared.db.update_companion_task_progress(
-        &created.task_id,
-        "processing",
-        &[],
-        None,
-        None,
-        None,
-        &[],
-        None,
-        None,
-    );
+    let _ = shared
+        .db
+        .update_companion_task_progress(CompanionTaskProgress {
+            task_id: &created.task_id,
+            status: "processing",
+            item_ids: &[],
+            note_id: None,
+            title: None,
+            body: None,
+            tags: &[],
+            content_version: None,
+            error: None,
+        });
 
     match process_task(
         shared,
@@ -754,17 +775,19 @@ fn create_task(shared: &HarnessShared, body: &[u8]) -> (u16, Value) {
         &photos,
     ) {
         Ok(summary) => (200, task_json(&summary)),
-        Err(error) => match shared.db.update_companion_task_progress(
-            &created.task_id,
-            "failed",
-            &[],
-            None,
-            None,
-            None,
-            &[],
-            None,
-            Some(&error),
-        ) {
+        Err(error) => match shared
+            .db
+            .update_companion_task_progress(CompanionTaskProgress {
+                task_id: &created.task_id,
+                status: "failed",
+                item_ids: &[],
+                note_id: None,
+                title: None,
+                body: None,
+                tags: &[],
+                content_version: None,
+                error: Some(&error),
+            }) {
             Ok(summary) => (200, task_json(&summary)),
             Err(update_error) => (
                 500,
@@ -871,17 +894,19 @@ fn process_task(
         )
         .map_err(|error| format!("写入草稿内容失败: {error}"))?;
 
-    shared.db.update_companion_task_progress(
-        task_id,
-        "ready",
-        &item_ids,
-        Some(note.id),
-        note.title.as_deref(),
-        note.body.as_deref(),
-        &note.tags,
-        Some(note.content_version),
-        None,
-    )
+    shared
+        .db
+        .update_companion_task_progress(CompanionTaskProgress {
+            task_id,
+            status: "ready",
+            item_ids: &item_ids,
+            note_id: Some(note.id),
+            title: note.title.as_deref(),
+            body: note.body.as_deref(),
+            tags: &note.tags,
+            content_version: Some(note.content_version),
+            error: None,
+        })
 }
 
 fn get_task(shared: &HarnessShared, task_id: &str) -> (u16, Value) {
@@ -1307,6 +1332,85 @@ fn write_json(stream: &mut TcpStream, status: u16, value: &Value) -> std::io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mobile_prompt_snapshot_route_requires_explicit_account_and_full_payload() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("harness-snapshot-{}-{nonce}", std::process::id()));
+        let shared = HarnessShared {
+            db: Arc::new(LocalDb::open(dir.join("app.db")).unwrap()),
+            token: Arc::new(Mutex::new("test-token".into())),
+            running: Arc::new(AtomicBool::new(true)),
+            memory_commands: Arc::new(MobileMemoryCommandBroker::default()),
+        };
+        let health = route(&shared, "GET", "/api/mobile/v1/health", b"");
+        assert_eq!(health.1["capabilities"][0], "mobilePromptSnapshot");
+        let path = "/api/mobile/v1/memory/prompts/snapshot";
+        for body in [
+            b"{}".as_slice(),
+            br#"{"accountId":1}"#,
+            br#"{"accountId":9999,"prompts":[]}"#,
+        ] {
+            assert_eq!(route(&shared, "POST", path, body).0, 400);
+        }
+        let response = route(&shared, "POST", path, br#"{"accountId":1,"prompts":[]}"#);
+        assert_eq!(response.0, 200);
+        assert_eq!(response.1, json!({"mappings":[],"deletedPrompts":0}));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn mobile_rule_read_is_account_scoped_and_returns_phone_payload() {
+        let broker = Arc::new(MobileMemoryCommandBroker::default());
+        assert!(broker
+            .execute(7, "readSystemRules".into(), json!({}))
+            .is_err());
+        broker.poll(7);
+        let worker = broker.clone();
+        let task =
+            std::thread::spawn(move || worker.execute(7, "readSystemRules".into(), json!({})));
+        let started = Instant::now();
+        let command = loop {
+            if let Some(command) = broker.poll(7) {
+                break command;
+            }
+            assert!(started.elapsed() < Duration::from_secs(2));
+            std::thread::yield_now();
+        };
+        let phone_rules =
+            json!({"origin": "mobile", "version": "fixture", "defaultExperience": "phone-only"});
+        assert!(broker
+            .complete(
+                &command.id,
+                MobileMemoryCommandResultRequest {
+                    account_id: 8,
+                    success: true,
+                    cache_synced: false,
+                    message: None,
+                    system_rules: Some(phone_rules.clone()),
+                }
+            )
+            .is_err());
+        broker
+            .complete(
+                &command.id,
+                MobileMemoryCommandResultRequest {
+                    account_id: 7,
+                    success: true,
+                    cache_synced: false,
+                    message: None,
+                    system_rules: Some(phone_rules.clone()),
+                },
+            )
+            .unwrap();
+        let receipt = task.join().unwrap().unwrap();
+        assert_eq!(receipt.system_rules, Some(phone_rules));
+        assert!(!receipt.cache_synced);
+    }
 
     #[test]
     fn header_end_is_detected() {

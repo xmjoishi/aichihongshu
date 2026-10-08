@@ -1,23 +1,62 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────
-# stop.sh — 停止 RedNote Home Assistant
-# ─────────────────────────────────────────────
+# Stop only processes recorded by scripts/start.sh and still matching their executable.
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PID_FILE="/tmp/rn-home-pids"
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
-if [ -f "$PID_FILE" ]; then
-  read -r SERVER_PID VITE_PID < "$PID_FILE"
-  for PID in $SERVER_PID $VITE_PID; do
-    if kill -0 "$PID" 2>/dev/null; then
-      kill "$PID" && echo -e "${GREEN}[OK]${NC}   已停止进程 $PID"
-    fi
-  done
-  rm -f "$PID_FILE"
-else
-  echo -e "${YELLOW}[WARN]${NC} 未找到 PID 文件，尝试按端口杀进程..."
-  for PORT in 8765 1420; do
-    PID=$(lsof -i ":$PORT" -t 2>/dev/null | head -1)
-    [ -n "$PID" ] && kill "$PID" && echo -e "${GREEN}[OK]${NC}   已停止端口 $PORT (PID $PID)"
-  done
+if [ ! -f "$PID_FILE" ]; then
+  echo -e "${YELLOW}[WARN]${NC} 没有本脚本的启动记录；不会按端口终止未知进程。"
+  exit 0
 fi
-echo "已停止所有服务"
+
+SERVER_PID=none
+SERVER_BIN=none
+VITE_PID=none
+VITE_ENTRY=none
+{
+  read -r SERVER_PID || true
+  read -r SERVER_BIN || true
+  read -r VITE_PID || true
+  read -r VITE_ENTRY || true
+} < "$PID_FILE"
+
+stop_owned() {
+  local label="$1" pid="$2" expected="$3" command
+  case "$pid" in
+    ''|none|*[!0-9]*) return 0 ;;
+  esac
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  case "$command" in
+    *"$expected"*) ;;
+    *)
+      echo -e "${YELLOW}[WARN]${NC} PID $pid 已不再匹配 $label，保留该进程"
+      return 0
+      ;;
+  esac
+
+  if kill -TERM "$pid" 2>/dev/null; then
+    echo -e "${GREEN}[OK]${NC}   已请求停止 $label (PID $pid)"
+  fi
+  for _ in $(seq 1 50); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  case "$command" in
+    *"$expected"*)
+      kill -KILL "$pid" 2>/dev/null || true
+      echo -e "${YELLOW}[WARN]${NC} $label 未及时退出，已强制结束 PID $pid"
+      ;;
+  esac
+}
+
+stop_owned "Rust API" "$SERVER_PID" "$SERVER_BIN"
+stop_owned "Vite" "$VITE_PID" "$VITE_ENTRY"
+rm -f "$PID_FILE"
+echo "已停止本脚本启动且身份匹配的服务"

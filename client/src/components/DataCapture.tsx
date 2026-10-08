@@ -5,7 +5,7 @@ import { useToast } from "./Toast";
 /**
  * 统一「数据抓取」入口：只在浏览器打开目标链接，由用户点扩展按钮完成当前页解析。
  * 覆盖笔记 / 主页 / 榜样等一切需要抓取的 URL；禁止在此做批量或定时。
- * 必须用系统浏览器 opener（openInBrowser 走旧爬虫接口，Rust 本地态下会静默失败）。
+ * 该动作依赖用户在系统浏览器中的既有会话，因此显式走系统 opener。
  */
 export function DataCaptureButton({
   url,

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>采集预览 · 爱吃红薯</title>
+    <link rel="stylesheet" href="preview.css" />
+  </head>
+  <body>
+    <header>
+      <div>
+        <strong>采集预览</strong>
+        <span id="preview-identity" class="muted">正在验证来源标签页…</span>
+      </div>
+      <button id="close-preview" type="button">关闭预览</button>
+    </header>
+    <p id="preview-status" role="status" aria-live="polite">正在读取一次性临时预览…</p>
+    <main id="preview-content" class="preview-content" tabindex="0" aria-label="采集预览内容"></main>
+    <script src="preview-session.js"></script>
+    <script src="capture-preview.js"></script>
+    <script src="preview-page.js"></script>
+  </body>
+</html>

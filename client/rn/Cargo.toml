@@ -1,0 +1,24 @@
+[package]
+name = "rn"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aichihongshu-db = { path = "../core" }
+aichihongshu-services = { path = "../services" }
+base64 = "0.22"
+chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
+futures-util = "0.3.33"
+getrandom = "0.2"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

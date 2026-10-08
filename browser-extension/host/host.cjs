@@ -9,7 +9,7 @@ const net = require("node:net");
 const path = require("node:path");
 
 const MAX_MESSAGE_BYTES = 256 * 1024;
-const MAX_RESPONSE_BYTES = 64 * 1024;
+const MAX_RESPONSE_BYTES = 160 * 1024;
 const SOCKET_TIMEOUT_MS = 3000;
 
 function socketPath() {

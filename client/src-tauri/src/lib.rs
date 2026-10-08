@@ -1,8 +1,11 @@
 mod ai_settings;
 mod browser_capture;
+mod browser_worker;
 mod cli_models;
-mod db;
+mod collection_images;
+pub use aichihongshu_db as db;
 mod model_api;
+mod native_host;
 mod pc_harness;
 
 use serde::Serialize;
@@ -17,9 +20,37 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 pub(crate) struct AppState {
     pub(crate) db: Arc<db::LocalDb>,
+    browser_worker: browser_worker::BrowserWorkerManager,
     ai_processes: Arc<Mutex<HashMap<String, Child>>>,
     pc_harness: Mutex<pc_harness::PcHarnessRuntime>,
     model_api: model_api::ModelApiRuntime,
+}
+
+#[cfg(test)]
+pub(crate) fn mock_app_for_browser_capture(
+    db: Arc<db::LocalDb>,
+) -> tauri::App<tauri::test::MockRuntime> {
+    use tauri::Manager;
+
+    let app = tauri::test::mock_app();
+    let browser_worker = browser_worker::BrowserWorkerManager::new(
+        aichihongshu_services::browser_worker::BrowserWorkerConfig {
+            node: aichihongshu_services::browser_worker::WorkerCommand::ExactPath(PathBuf::from(
+                "/tmp/aichihongshu-test-node-not-used",
+            )),
+            worker_dir: PathBuf::from("/tmp/aichihongshu-test-worker-not-used"),
+            data_root: std::env::temp_dir().join("aichihongshu-test-worker-data-not-used"),
+        },
+    )
+    .expect("mock browser worker configuration should be valid");
+    app.manage(AppState {
+        db,
+        browser_worker,
+        ai_processes: Arc::new(Mutex::new(HashMap::new())),
+        pc_harness: Mutex::new(pc_harness::PcHarnessRuntime::new()),
+        model_api: model_api::ModelApiRuntime::default(),
+    });
+    app
 }
 
 async fn run_blocking_task<T, F>(operation: F) -> Result<T, String>
@@ -436,7 +467,7 @@ fn start_local_ai(
                         .find(|byte| !byte.is_ascii_whitespace())
                         .is_some_and(|byte| byte == b'{' || byte == b'[');
                     if pending.len() >= 8192 && !starts_like_json {
-                        let chunk: Vec<u8> = pending.drain(..).collect();
+                        let chunk = std::mem::take(&mut pending);
                         process_cli_output(
                             &provider,
                             &chunk,
@@ -672,11 +703,8 @@ async fn test_model_api_provider(
     provider_id: String,
 ) -> Result<String, String> {
     let db = Arc::clone(&state.db);
-    run_blocking_task(move || {
-        let settings = model_api::read_settings(&db)?;
-        model_api::test_provider(&settings, &provider_id)
-    })
-    .await
+    let settings = run_blocking_task(move || model_api::read_settings(&db)).await?;
+    model_api::test_provider(&settings, &provider_id).await
 }
 
 /// 读取 AI 运行时设置（默认目标 + 本地 CLI 配置）。
@@ -704,11 +732,8 @@ async fn list_model_api_models(
     provider_id: String,
 ) -> Result<Vec<String>, String> {
     let db = Arc::clone(&state.db);
-    run_blocking_task(move || {
-        let settings = model_api::read_settings(&db)?;
-        model_api::list_models(&settings, &provider_id)
-    })
-    .await
+    let settings = run_blocking_task(move || model_api::read_settings(&db)).await?;
+    model_api::list_models(&settings, &provider_id).await
 }
 
 /// 扫描本地 CLI 可用模型（预置 + 发现/配置项）。
@@ -812,18 +837,16 @@ fn cancel_model_api_run(state: State<'_, AppState>, run_id: String) -> Result<()
 #[serde(rename_all = "camelCase")]
 struct RuntimeStatus {
     runtime: &'static str,
-    python_backend: bool,
     database: &'static str,
     database_path: String,
 }
 
 /// 返回桌面宿主自身的运行时边界，供前端启动自检和后续本地 command 迁移使用。
-/// 这里不探测、更不拉起 Python；旧 Python CLI/MCP 仍作为独立入口保留。
+/// 桌面业务由 Rust commands 与共享服务承载。
 #[tauri::command]
 fn runtime_status(state: State<'_, AppState>) -> RuntimeStatus {
     RuntimeStatus {
         runtime: "tauri-rust",
-        python_backend: false,
         database: "ready",
         database_path: state.db.path().display().to_string(),
     }
@@ -859,6 +882,38 @@ async fn read_local_image(
             item_id,
             account_pool_id,
             variant.as_deref().unwrap_or("original"),
+        )
+    })
+    .await
+}
+
+/// 使用本地 MiniMax VLM 分析当前账号素材，并以图片版本作为写回保护。
+#[tauri::command]
+async fn analyze_local_item(
+    state: State<'_, AppState>,
+    item_id: i64,
+    account_pool_id: Option<i64>,
+) -> Result<db::ItemSummary, String> {
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || {
+        let snapshot = db
+            .snapshot_section_for_account(account_pool_id, "library")
+            .map_err(|error| format!("读取待分析素材失败: {error}"))?;
+        let item = snapshot
+            .items
+            .iter()
+            .find(|item| item.id == item_id)
+            .ok_or_else(|| format!("素材 {item_id} 不存在或不属于当前账号"))?;
+        let image = db
+            .image_data_url_for_account(item_id, Some(snapshot.active_account.id), "original")?
+            .ok_or_else(|| format!("素材 {item_id} 的图片不可用"))?;
+        let analysis = aichihongshu_services::analysis::analyze_data_url(&db, &image)?;
+        db.update_local_item_analysis(
+            item_id,
+            snapshot.active_account.id,
+            item.image_version,
+            &analysis,
+            db::LocalItemAnalysisTitlePolicy::IfDefault,
         )
     })
     .await
@@ -923,6 +978,18 @@ fn read_local_publish_outbox(
     state.db.local_publish_outbox(account_pool_id, note_id)
 }
 
+/// 用户明确创建一条短期浏览器文字填充任务；不会操作发布页或提交平台。
+#[tauri::command]
+fn request_local_publish_fill(
+    state: State<'_, AppState>,
+    attempt_id: String,
+    account_pool_id: i64,
+) -> Result<db::PublishOutboxSummary, String> {
+    state
+        .db
+        .request_local_publish_fill(&attempt_id, account_pool_id)
+}
+
 /// 把笔记关联素材按上传顺序复制到本地暂存目录，返回带序号的文件清单。
 #[tauri::command]
 fn stage_local_note_images(
@@ -931,6 +998,25 @@ fn stage_local_note_images(
     account_pool_id: Option<i64>,
 ) -> Result<db::StagedImagesSummary, String> {
     state.db.stage_local_note_images(note_id, account_pool_id)
+}
+
+#[tauri::command]
+fn import_local_video_chunk(
+    state: State<'_, AppState>,
+    request: db::LocalVideoImportChunk,
+) -> Result<db::LocalVideoImportResult, String> {
+    state.db.import_local_video_chunk(request)
+}
+
+#[tauri::command]
+fn abort_local_video_upload(
+    state: State<'_, AppState>,
+    upload_id: String,
+    account_pool_id: i64,
+) -> Result<(), String> {
+    state
+        .db
+        .abort_local_video_upload(&upload_id, account_pool_id)
 }
 
 /// 在系统文件管理器中打开笔记暂存目录；目录路径由宿主根据账号归属计算。
@@ -1061,6 +1147,68 @@ fn create_local_draft_from_items(
         .create_local_draft_from_items(&item_ids, account_pool_id)
 }
 
+/// Create a local composition draft with the same reusable prompt and knowledge context as CLI/MCP.
+#[tauri::command]
+fn create_local_prompt_draft_from_items(
+    state: State<'_, AppState>,
+    item_ids: Vec<i64>,
+    account_pool_id: Option<i64>,
+    account_ref: Option<String>,
+) -> Result<db::NoteSummary, String> {
+    if item_ids.is_empty() || item_ids.len() > 9 {
+        return Err("草稿需要关联 1 到 9 张素材".to_string());
+    }
+    let snapshot = state
+        .db
+        .snapshot_section_for_account(account_pool_id, "workspace")
+        .map_err(|error| format!("读取本地创作上下文失败: {error}"))?;
+    let mut items = Vec::with_capacity(item_ids.len());
+    for item_id in &item_ids {
+        let item = snapshot
+            .items
+            .iter()
+            .find(|item| item.id == *item_id)
+            .ok_or_else(|| format!("素材 {item_id} 不存在或不属于当前账号"))?;
+        items.push(item.clone());
+    }
+    let reference = account_ref
+        .as_deref()
+        .map(|reference_id| {
+            snapshot
+                .reference_accounts
+                .iter()
+                .find(|reference| reference.account_id == reference_id)
+                .ok_or_else(|| "榜样账号不存在或不属于当前运营账号".to_string())
+        })
+        .transpose()?;
+    let knowledge = state
+        .db
+        .local_content_knowledge_context(Some(snapshot.active_account.id))?;
+    let prompt = if items.len() == 1 {
+        aichihongshu_services::prompt::build_draft_prompt_with_knowledge(
+            &items[0],
+            snapshot.profile.as_ref(),
+            reference,
+            "",
+            Some(&knowledge),
+        )
+    } else {
+        aichihongshu_services::prompt::build_multi_draft_prompt(
+            &items,
+            snapshot.profile.as_ref(),
+            reference,
+            "",
+            Some(&knowledge),
+        )
+    };
+    state.db.create_local_prompt_draft_from_items(
+        &item_ids,
+        snapshot.active_account.id,
+        reference.map(|value| value.account_id.as_str()),
+        &prompt,
+    )
+}
+
 /// 读取本地账号池，供桌面端顶栏切换运营账号，不回退到 HTTP。
 #[tauri::command]
 fn read_account_pool(state: State<'_, AppState>) -> Result<db::AccountPoolSnapshot, String> {
@@ -1088,7 +1236,7 @@ fn create_local_account(
     state: State<'_, AppState>,
     account: db::LocalAccountCreate,
 ) -> Result<(), String> {
-    state.db.create_local_account(account)
+    state.db.create_local_account(account).map(|_| ())
 }
 
 /// 更新本地账号池展示字段和状态。
@@ -1125,6 +1273,122 @@ async fn read_local_inspirations(
     run_blocking_task(move || db.local_inspirations(account_pool_id)).await
 }
 
+#[tauri::command]
+async fn read_browser_collection_image(
+    state: State<'_, AppState>,
+    id: String,
+    account_pool_id: i64,
+    position: i64,
+    thumbnail: bool,
+) -> Result<String, String> {
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || {
+        db.read_browser_collection_image(&id, account_pool_id, position, thumbnail)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn download_browser_collection_image(
+    state: State<'_, AppState>,
+    id: String,
+    account_pool_id: i64,
+    position: i64,
+) -> Result<collection_images::CollectionImageDownloadOutcome, String> {
+    let identity_db = Arc::clone(&state.db);
+    let active = run_blocking_task(move || identity_db.current_active_account()).await?;
+    if active.id != account_pool_id {
+        return Err("当前账号已变化，拒绝重试其他账号的收藏图片".to_string());
+    }
+    collection_images::download_browser_collection_image(
+        Arc::clone(&state.db),
+        id,
+        account_pool_id,
+        position,
+    )
+    .await
+}
+
+#[tauri::command]
+fn update_local_inspiration_details(
+    state: State<'_, AppState>,
+    id: String,
+    account_pool_id: i64,
+    note: String,
+    tags: Vec<String>,
+) -> Result<(), String> {
+    state
+        .db
+        .update_local_inspiration_details(&id, account_pool_id, &note, &tags)
+}
+
+#[tauri::command]
+fn remove_local_inspiration(
+    state: State<'_, AppState>,
+    id: String,
+    account_pool_id: i64,
+) -> Result<(), String> {
+    state.db.remove_local_inspiration(&id, account_pool_id)
+}
+
+#[tauri::command]
+fn link_local_inspiration_to_target(
+    state: State<'_, AppState>,
+    id: String,
+    account_pool_id: i64,
+    target_kind: String,
+    target_id: String,
+) -> Result<db::LocalInspirationReferenceSummary, String> {
+    state
+        .db
+        .link_local_inspiration_to_target(&id, account_pool_id, &target_kind, &target_id)
+}
+
+#[tauri::command]
+fn unlink_local_inspiration_from_target(
+    state: State<'_, AppState>,
+    id: String,
+    account_pool_id: i64,
+    target_kind: String,
+    target_id: String,
+) -> Result<bool, String> {
+    state
+        .db
+        .unlink_local_inspiration_from_target(&id, account_pool_id, &target_kind, &target_id)
+}
+
+#[tauri::command]
+fn read_local_inspiration_references(
+    state: State<'_, AppState>,
+    id: String,
+    account_pool_id: i64,
+) -> Result<Vec<db::LocalInspirationReferenceSummary>, String> {
+    state.db.local_inspiration_references(&id, account_pool_id)
+}
+
+#[tauri::command]
+fn promote_local_inspiration_to_reference_account(
+    state: State<'_, AppState>,
+    id: String,
+    account_pool_id: i64,
+) -> Result<db::LocalInspirationReferenceAccountResult, String> {
+    state
+        .db
+        .promote_local_inspiration_to_reference_account(&id, account_pool_id)
+}
+
+#[tauri::command]
+fn add_browser_collection_image_to_library(
+    state: State<'_, AppState>,
+    id: String,
+    account_pool_id: i64,
+    position: i64,
+) -> Result<db::ItemSummary, String> {
+    state
+        .db
+        .add_browser_collection_image_to_library(&id, account_pool_id, position)
+}
+
 /// 保存当前账号的本地灵感/浏览器剪藏。
 #[tauri::command]
 fn save_local_inspiration(
@@ -1132,6 +1396,19 @@ fn save_local_inspiration(
     inspiration: db::LocalInspirationCreate,
 ) -> Result<(), String> {
     state.db.save_local_inspiration(inspiration)
+}
+
+/// Persist the selected images/comments detail payload for a browser collection.
+#[tauri::command]
+fn save_browser_capture_payload(
+    state: State<'_, AppState>,
+    id: String,
+    account_pool_id: i64,
+    payload_json: String,
+) -> Result<(), String> {
+    state
+        .db
+        .save_browser_capture_payload(&id, account_pool_id, &payload_json)
 }
 
 /// 将当前账号的本地灵感显式关联到一条草稿。
@@ -1145,6 +1422,31 @@ fn convert_local_inspiration(
     state
         .db
         .convert_local_inspiration(&id, account_pool_id, note_id)
+}
+
+/// Create a populated draft from a note/web clipping and preserve the source relationship.
+#[tauri::command]
+fn create_draft_from_local_inspiration(
+    state: State<'_, AppState>,
+    id: String,
+    account_pool_id: i64,
+) -> Result<db::LocalInspirationDraftResult, String> {
+    state
+        .db
+        .create_draft_from_local_inspiration(&id, account_pool_id)
+}
+
+/// Link imported local images back to a browser collection record in the active account.
+#[tauri::command]
+fn attach_browser_capture_assets(
+    state: State<'_, AppState>,
+    id: String,
+    account_pool_id: i64,
+    item_ids: Vec<i64>,
+) -> Result<(), String> {
+    state
+        .db
+        .attach_browser_capture_assets(&id, account_pool_id, &item_ids)
 }
 
 /// 在当前账号下保存手工榜样账号信息。
@@ -1254,6 +1556,80 @@ async fn read_local_knowledge_preferences(
 ) -> Result<db::LocalKnowledgePreferences, String> {
     let db = Arc::clone(&state.db);
     run_blocking_task(move || db.local_knowledge_preferences(account_pool_id)).await
+}
+
+/// 读取当前账号已发布笔记，并返回经验库逐篇样本选择状态。
+#[tauri::command]
+async fn read_local_knowledge_my_samples(
+    state: State<'_, AppState>,
+    account_pool_id: Option<i64>,
+) -> Result<Vec<db::KnowledgeMySample>, String> {
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || db.local_knowledge_my_samples(account_pool_id)).await
+}
+
+/// 读取当前账号下榜样账号已保存的经验库样本。
+#[tauri::command]
+async fn read_local_knowledge_reference_samples(
+    state: State<'_, AppState>,
+    account_pool_id: Option<i64>,
+) -> Result<Vec<db::KnowledgeReferenceGroup>, String> {
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || db.local_knowledge_reference_samples(account_pool_id)).await
+}
+
+/// 将榜样笔记加入当前账号的经验库。
+#[tauri::command]
+async fn add_local_knowledge_reference_sample(
+    state: State<'_, AppState>,
+    account_id: String,
+    account_pool_id: i64,
+    title: String,
+    body: Option<String>,
+    likes: i64,
+    note_url: Option<String>,
+) -> Result<db::KnowledgeReferenceSampleSaveResult, String> {
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || {
+        db.add_local_knowledge_reference_sample(
+            &account_id,
+            account_pool_id,
+            &title,
+            body.as_deref(),
+            likes,
+            note_url.as_deref(),
+        )
+        .map(|(duplicate, count)| db::KnowledgeReferenceSampleSaveResult { duplicate, count })
+    })
+    .await
+}
+
+/// 删除当前账号经验库中的一条榜样笔记样本。
+#[tauri::command]
+async fn delete_local_knowledge_reference_sample(
+    state: State<'_, AppState>,
+    account_id: String,
+    account_pool_id: i64,
+    index: i64,
+) -> Result<usize, String> {
+    let db = Arc::clone(&state.db);
+    run_blocking_task(move || {
+        db.delete_local_knowledge_reference_sample(&account_id, account_pool_id, index)
+    })
+    .await
+}
+
+/// 设置当前账号已发布笔记是否作为生成参考样本。
+#[tauri::command]
+fn set_local_knowledge_sample_enabled(
+    state: State<'_, AppState>,
+    note_id: i64,
+    account_pool_id: i64,
+    enabled: bool,
+) -> Result<(), String> {
+    state
+        .db
+        .set_local_note_reference_usage(note_id, account_pool_id, enabled)
 }
 
 /// 保存当前账号的经验库注入开关。
@@ -1470,11 +1846,246 @@ fn read_local_ai_artifacts(
         .local_ai_artifacts(account_pool_id, note_id, item_id)
 }
 
+#[tauri::command]
+async fn browser_worker_status(
+    state: State<'_, AppState>,
+    account_id: i64,
+) -> Result<Value, String> {
+    let worker = state.browser_worker.clone();
+    run_blocking_task(move || worker.status(account_id)).await
+}
+
+#[tauri::command]
+async fn open_browser_worker_session(
+    state: State<'_, AppState>,
+    account_id: i64,
+) -> Result<Value, String> {
+    let worker = state.browser_worker.clone();
+    run_blocking_task(move || worker.open_session(account_id)).await
+}
+
+#[tauri::command]
+async fn open_browser_worker_url(
+    state: State<'_, AppState>,
+    account_id: i64,
+    url: String,
+) -> Result<Value, String> {
+    let worker = state.browser_worker.clone();
+    run_blocking_task(move || worker.open_url(account_id, url)).await
+}
+
+#[tauri::command]
+async fn refresh_local_profile(
+    state: State<'_, AppState>,
+    account_pool_id: i64,
+    xhs_account_id: String,
+) -> Result<Value, String> {
+    let profile_id = xhs_account_id.trim().to_string();
+    if profile_id.is_empty()
+        || profile_id.len() > 128
+        || !profile_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err("请先在人设资料中填写有效的小红书账号 ID".to_string());
+    }
+    let url = format!("https://www.xiaohongshu.com/user/profile/{profile_id}");
+    let db = Arc::clone(&state.db);
+    let worker = state.browser_worker.clone();
+    run_blocking_task(move || {
+        let captured = worker.collect_profile(account_pool_id, url)?;
+        let capture_state = captured
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("partial");
+        match capture_state {
+            "login-required" => {
+                return Err(
+                    "独立浏览器尚未登录小红书。请在新打开的浏览器中完成登录，再点击同步。".into(),
+                );
+            }
+            "verification-required" => {
+                return Err(
+                    "小红书要求安全验证。请在独立浏览器中手动完成验证，再点击同步。".into(),
+                );
+            }
+            "not-profile" => return Err("当前页面不是小红书主页，请检查账号 ID 后重试。".into()),
+            "complete" | "partial" => {}
+            _ => return Err("主页采集返回了未知状态，未写入资料。".into()),
+        }
+        let profile = captured
+            .get("profile")
+            .filter(|value| !value.is_null())
+            .ok_or_else(|| "主页未返回可用资料，未写入数据库。".to_string())?;
+        if profile.get("profileId").and_then(Value::as_str) != Some(profile_id.as_str()) {
+            return Err("采集到的主页 ID 与当前账号不一致，未写入数据库。".into());
+        }
+        let tags = profile
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let profile_updated =
+            db.update_profile_from_browser_snapshot(db::BrowserProfileSnapshot {
+                account_pool_id,
+                profile_account_id: &profile_id,
+                display_name: profile.get("displayName").and_then(Value::as_str),
+                followers: profile.get("followers").and_then(Value::as_i64),
+                total_notes: profile.get("totalNotes").and_then(Value::as_i64),
+                avatar_url: profile.get("avatarUrl").and_then(Value::as_str),
+                xhs_bio: profile.get("bio").and_then(Value::as_str),
+                xhs_follows: profile.get("follows").and_then(Value::as_i64),
+                ip_location: profile.get("ipLocation").and_then(Value::as_str),
+                xhs_tags: (!tags.is_empty()).then_some(tags.as_slice()),
+            })?;
+        if !profile_updated {
+            return Err("该主页 ID 尚未绑定到当前运营账号；为避免写错账号，资料没有更新。".into());
+        }
+        let notes = captured
+            .get("notes")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let notes = serde_json::from_value::<Vec<db::BrowserProfileNote>>(notes)
+            .map_err(|error| format!("主页笔记格式无效，资料已更新但笔记未同步: {error}"))?;
+        let note_sync = db.sync_profile_notes_from_browser_snapshot(
+            account_pool_id,
+            &profile_id,
+            None,
+            capture_state == "complete",
+            &notes,
+        )?;
+        Ok(serde_json::json!({
+            "state": capture_state,
+            "profileRefreshed": true,
+            "profileNotesImported": note_sync.imported,
+            "profileNotesUpdated": note_sync.updated,
+            "profileNotesComplete": capture_state == "complete",
+        }))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn refresh_local_reference_profile(
+    state: State<'_, AppState>,
+    account_pool_id: i64,
+    xhs_account_id: String,
+) -> Result<Value, String> {
+    let profile_id = xhs_account_id.trim().to_string();
+    if profile_id.is_empty()
+        || profile_id.len() > 128
+        || !profile_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err("榜样账号 ID 无效".to_string());
+    }
+    let url = format!("https://www.xiaohongshu.com/user/profile/{profile_id}");
+    let db = Arc::clone(&state.db);
+    let worker = state.browser_worker.clone();
+    run_blocking_task(move || {
+        let reference_id = db
+            .local_reference_account_id_for_capture(account_pool_id, &profile_id)?
+            .ok_or_else(|| "请先将此账号添加到当前运营账号的榜样库。".to_string())?;
+        let captured = worker.collect_profile(account_pool_id, url)?;
+        let capture_state = captured
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("partial");
+        match capture_state {
+            "login-required" => {
+                return Err(
+                    "独立浏览器尚未登录小红书。请在新打开的浏览器中完成登录，再点击同步。".into(),
+                );
+            }
+            "verification-required" => {
+                return Err(
+                    "小红书要求安全验证。请在独立浏览器中手动完成验证，再点击同步。".into(),
+                );
+            }
+            "not-profile" => return Err("当前页面不是小红书主页，请检查账号 ID 后重试。".into()),
+            "complete" | "partial" => {}
+            _ => return Err("主页采集返回了未知状态，未写入资料。".into()),
+        }
+        let profile = captured
+            .get("profile")
+            .filter(|value| !value.is_null())
+            .ok_or_else(|| "主页未返回可用资料，未写入数据库。".to_string())?;
+        if profile.get("profileId").and_then(Value::as_str) != Some(profile_id.as_str()) {
+            return Err("采集到的主页 ID 与请求目标不一致，未写入数据库。".into());
+        }
+        let profile_updated = db.update_reference_account_from_browser_snapshot(
+            account_pool_id,
+            reference_id,
+            &profile_id,
+            profile.get("displayName").and_then(Value::as_str),
+            profile.get("followers").and_then(Value::as_i64),
+            profile.get("totalNotes").and_then(Value::as_i64),
+        )?;
+        if !profile_updated {
+            return Err("榜样主页 ID 与本地记录不一致，为避免写错账号已停止同步。".into());
+        }
+        let notes = captured
+            .get("notes")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let notes = serde_json::from_value::<Vec<db::BrowserProfileNote>>(notes)
+            .map_err(|error| format!("主页笔记格式无效，主页资料已更新: {error}"))?;
+        let note_sync = db.sync_profile_notes_from_browser_snapshot(
+            account_pool_id,
+            &profile_id,
+            Some(reference_id),
+            capture_state == "complete",
+            &notes,
+        )?;
+        Ok(serde_json::json!({
+            "state": capture_state,
+            "displayName": profile.get("displayName").and_then(Value::as_str),
+            "profileRefreshed": true,
+            "profileNotesImported": note_sync.imported,
+            "profileNotesUpdated": note_sync.updated,
+            "profileNotesComplete": capture_state == "complete",
+        }))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn close_browser_worker_session(
+    state: State<'_, AppState>,
+    account_id: i64,
+) -> Result<Value, String> {
+    let worker = state.browser_worker.clone();
+    run_blocking_task(move || worker.close_session(account_id)).await
+}
+
+#[tauri::command]
+async fn clear_browser_worker_session(
+    state: State<'_, AppState>,
+    account_id: i64,
+) -> Result<Value, String> {
+    let worker = state.browser_worker.clone();
+    run_blocking_task(move || worker.clear_session(account_id)).await
+}
+
+#[tauri::command]
+async fn cancel_browser_worker_task(
+    state: State<'_, AppState>,
+    account_id: i64,
+    target_request_id: String,
+) -> Result<Value, String> {
+    let worker = state.browser_worker.clone();
+    run_blocking_task(move || worker.cancel_task(account_id, target_request_id)).await
+}
+
 fn setup_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
-    Box::new(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        message.into(),
-    ))
+    Box::new(std::io::Error::other(message.into()))
 }
 
 fn resolve_database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -1485,6 +2096,7 @@ fn resolve_database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std:
 
     #[cfg(debug_assertions)]
     {
+        let is_qa_bundle = app.config().identifier.starts_with("com.aichihongshu.qa.");
         if let Ok(qa_workspace) = std::env::var("AICHIHONGSHU_QA_WORKSPACE") {
             let qa_root = PathBuf::from(qa_workspace);
             if !qa_root.is_absolute() {
@@ -1498,6 +2110,12 @@ fn resolve_database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std:
                 )));
             }
             return Ok(qa_root.join("data").join("app.db"));
+        }
+
+        if is_qa_bundle {
+            return Err(setup_error(
+                "QA bundle 必须设置指向带 marker 的 AICHIHONGSHU_QA_WORKSPACE",
+            ));
         }
 
         let project_db = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/app.db");
@@ -1517,6 +2135,9 @@ pub fn run() {
             let db = db::LocalDb::open(db_path)
                 .map_err(|error| setup_error(format!("初始化本地数据库失败: {error}")))?;
             let db = Arc::new(db);
+            let browser_worker = browser_worker::create_for_app(app.handle()).map_err(|error| {
+                setup_error(format!("初始化浏览器 worker supervisor 失败: {error}"))
+            })?;
             // 恢复 PC Harness：上次配对令牌 + 用户显式开启意图；默认仍不自动启动。
             let mut harness_runtime = pc_harness::PcHarnessRuntime::new();
             match db.get_app_setting(PC_HARNESS_TOKEN_KEY) {
@@ -1534,6 +2155,7 @@ pub fn run() {
             );
             app.manage(AppState {
                 db,
+                browser_worker,
                 ai_processes: Arc::new(Mutex::new(HashMap::new())),
                 pc_harness: Mutex::new(harness_runtime),
                 model_api: model_api::ModelApiRuntime::default(),
@@ -1554,13 +2176,17 @@ pub fn run() {
             runtime_status,
             read_status,
             read_local_image,
+            analyze_local_item,
             create_local_draft,
             update_local_note,
             update_local_note_status,
             prepare_local_publish,
             update_local_publish,
             read_local_publish_outbox,
+            request_local_publish_fill,
             stage_local_note_images,
+            import_local_video_chunk,
+            abort_local_video_upload,
             open_local_stage_dir,
             clear_local_note_stage,
             update_local_note_items,
@@ -1573,6 +2199,7 @@ pub fn run() {
             purge_local_items,
             update_local_item_metadata,
             create_local_draft_from_items,
+            create_local_prompt_draft_from_items,
             read_account_pool,
             activate_local_account,
             create_local_account,
@@ -1580,8 +2207,20 @@ pub fn run() {
             retire_local_account,
             update_local_profile,
             read_local_inspirations,
+            read_browser_collection_image,
+            download_browser_collection_image,
+            update_local_inspiration_details,
+            remove_local_inspiration,
+            link_local_inspiration_to_target,
+            unlink_local_inspiration_from_target,
+            read_local_inspiration_references,
+            promote_local_inspiration_to_reference_account,
+            add_browser_collection_image_to_library,
             save_local_inspiration,
+            save_browser_capture_payload,
             convert_local_inspiration,
+            create_draft_from_local_inspiration,
+            attach_browser_capture_assets,
             create_local_reference_account,
             update_local_reference_account,
             delete_local_reference_account,
@@ -1595,7 +2234,20 @@ pub fn run() {
             test_browser_capture_link,
             detect_capture_browsers,
             browser_capture_status,
+            browser_worker_status,
+            open_browser_worker_session,
+            open_browser_worker_url,
+            refresh_local_profile,
+            refresh_local_reference_profile,
+            close_browser_worker_session,
+            clear_browser_worker_session,
+            cancel_browser_worker_task,
             read_local_knowledge_preferences,
+            read_local_knowledge_my_samples,
+            read_local_knowledge_reference_samples,
+            add_local_knowledge_reference_sample,
+            delete_local_knowledge_reference_sample,
+            set_local_knowledge_sample_enabled,
             save_local_knowledge_preferences,
             list_prompt_configs,
             upsert_prompt_config,
@@ -1641,7 +2293,23 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_, _| {});
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<AppState>().browser_worker.shutdown();
+            }
+        });
+}
+
+/// Entry used by Chrome/Edge to launch this executable as the Native Messaging host.
+pub fn run_native_messaging_host() -> i32 {
+    native_host::run()
+}
+
+#[cfg(debug_assertions)]
+pub fn write_native_host_test_fixture(
+    root: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    browser_capture::write_native_host_test_fixture(root)
 }
 
 #[cfg(test)]

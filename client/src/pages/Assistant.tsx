@@ -75,7 +75,7 @@ export default function Assistant() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[var(--color-canvas)]">
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[var(--color-canvas)]">
       <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2">
         <Link to="/" className="rounded-md p-1 text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]" aria-label="返回概览">
           <ArrowLeft size={15} />

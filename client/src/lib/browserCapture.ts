@@ -1,6 +1,7 @@
 export type BrowserCaptureTransport = "manual" | "extension";
 export type BrowserCaptureKind = "clip" | "note_snapshot" | "ref_snapshot";
-export type BrowserCaptureMaterialType = "note_material" | "profile_material" | "web_material";
+export type BrowserCaptureMaterialType = "note_material" | "profile_material" | "web_material" | "image_material";
+export type BrowserCaptureClipKind = "account" | "note" | "material";
 export type BrowserCapturePageType = "note" | "profile" | "web";
 
 export interface BrowserCaptureMetrics {
@@ -9,11 +10,29 @@ export interface BrowserCaptureMetrics {
   comment?: number | null;
   followers?: number | null;
   noteCount?: number | null;
+  share?: number | null;
+}
+
+export interface BrowserCaptureProfile {
+  avatarUrl: string | null;
+  bio: string;
+  follows: number | null;
+  ipLocation: string;
+  tags: string[];
 }
 
 export interface BrowserCaptureModules {
   collect: { titleBody: boolean; authorSource: boolean; images: boolean; comments: boolean };
   data: { metrics: boolean; publishedAt: boolean };
+}
+
+export interface BrowserCaptureDetails {
+  images: Array<{ url: string; width?: number | null; height?: number | null; domIndex?: number; order?: number; source?: string }>;
+  comments: Array<{ author?: string; text: string; likes?: number | null; truncated?: boolean; source?: string }>;
+  evidence: Record<string, { source?: string | null; missingReason?: string | null }>;
+  publishedAt?: string | null;
+  publishedLocation?: string | null;
+  importedItemIds?: number[];
 }
 
 export interface BrowserCaptureMessage {
@@ -26,14 +45,24 @@ export interface BrowserCaptureMessage {
   transport: BrowserCaptureTransport;
   requestId?: string;
   kind?: BrowserCaptureKind;
+  clipKind?: BrowserCaptureClipKind;
   materialType?: BrowserCaptureMaterialType;
   pageType?: BrowserCapturePageType;
+  imageTransferProtocol?: boolean;
   author?: string;
   like?: number | null;
   collect?: number | null;
   comment?: number | null;
   followers?: number | null;
   noteCount?: number | null;
+  metrics?: Partial<BrowserCaptureMetrics>;
+  profile?: Partial<BrowserCaptureProfile> | null;
+  images?: Array<{ url: string; width?: number | null; height?: number | null; domIndex?: number; source?: string }>;
+  comments?: Array<{ author?: string; text: string; likes?: number | null; truncated?: boolean }>;
+  evidence?: Record<string, { source?: string | null; missingReason?: string | null }>;
+  publishedAt?: string | null;
+  publishedLocation?: string | null;
+  captureDetails?: Partial<BrowserCaptureDetails>;
   referenceAccountId?: number | null;
   modules?: Partial<BrowserCaptureModules>;
 }
@@ -46,17 +75,37 @@ export interface ValidatedBrowserCapture extends BrowserCaptureMessage {
   observedAt: string;
   dedupeKey: string;
   kind: BrowserCaptureKind;
+  clipKind: BrowserCaptureClipKind;
   materialType: BrowserCaptureMaterialType;
   pageType: BrowserCapturePageType;
+  imageTransferProtocol: boolean;
   author: string;
   metrics: BrowserCaptureMetrics;
+  profile: BrowserCaptureProfile;
   referenceAccountId: number | null;
   modules: BrowserCaptureModules;
+  images: NonNullable<BrowserCaptureMessage["images"]>;
+  comments: NonNullable<BrowserCaptureMessage["comments"]>;
+  evidence: NonNullable<BrowserCaptureMessage["evidence"]>;
+  captureDetails: BrowserCaptureDetails;
 }
 
 export type BrowserCaptureValidation =
   | { ok: true; value: ValidatedBrowserCapture }
   | { ok: false; code: "INVALID_MESSAGE" | "ACCOUNT_MISMATCH" | "INVALID_URL" | "TOO_LARGE"; message: string };
+
+export function serializeBrowserCapturePayload(capture: ValidatedBrowserCapture): string {
+  return JSON.stringify({
+    ...capture.captureDetails,
+    images: capture.captureDetails.images,
+    comments: capture.captureDetails.comments,
+    metrics: capture.metrics,
+    profile: capture.profile,
+    tags: capture.profile.tags,
+    publishedAt: capture.captureDetails.publishedAt ?? capture.publishedAt,
+    publishedLocation: capture.captureDetails.publishedLocation ?? capture.publishedLocation,
+  });
+}
 
 /** Legacy queue envelopes are retained only to migrate older pending captures into SQLite. */
 export type BrowserCaptureQueueStatus = "pending_confirmation" | "saving" | "saved" | "failed";
@@ -118,6 +167,14 @@ export function validateBrowserCapture(raw: unknown, activeAccountId: number): B
     input.kind === "note_snapshot" || input.kind === "ref_snapshot" || input.kind === "clip"
       ? input.kind
       : "clip";
+  const clipKind: BrowserCaptureClipKind =
+    input.clipKind === "account" || input.clipKind === "note" || input.clipKind === "material"
+      ? input.clipKind
+      : input.materialType === "profile_material" || kind === "ref_snapshot"
+        ? "account"
+        : input.materialType === "image_material"
+          ? "material"
+          : "note";
   const author = text(input.author, 200);
   const optionalMetric = (value: unknown): number | null => {
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) return Math.floor(value);
@@ -128,11 +185,39 @@ export function validateBrowserCapture(raw: unknown, activeAccountId: number): B
     return null;
   };
   const metrics: BrowserCaptureMetrics = {
-    like: optionalMetric(input.like),
-    collect: optionalMetric(input.collect),
-    comment: optionalMetric(input.comment),
-    followers: optionalMetric(input.followers),
-    noteCount: optionalMetric(input.noteCount),
+    like: optionalMetric(input.like ?? input.metrics?.like),
+    collect: optionalMetric(input.collect ?? input.metrics?.collect),
+    comment: optionalMetric(input.comment ?? input.metrics?.comment),
+    followers: optionalMetric(input.followers ?? input.metrics?.followers),
+    noteCount: optionalMetric(input.noteCount ?? input.metrics?.noteCount),
+    share: optionalMetric(input.metrics?.share),
+  };
+  const rawProfile = input.profile && typeof input.profile === "object" ? input.profile : {};
+  let avatarUrl: string | null = null;
+  if (typeof rawProfile.avatarUrl === "string") {
+    try {
+      const url = new URL(rawProfile.avatarUrl.trim());
+      const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+      if (url.protocol === "https:" && !url.username && !url.password && host && !host.includes(":")
+        && host !== "localhost" && !host.endsWith(".localhost") && !host.endsWith(".local")
+        && !/^(0\.|10\.|127\.|169\.254\.|192\.168\.)/.test(host)
+        && !/^172\.(1[6-9]|2\d|3[01])\./.test(host)
+        && !/^(?:22[4-9]|23\d|24\d|25[0-5])\./.test(host)) {
+        avatarUrl = url.href.slice(0, 2_000);
+      }
+    } catch { /* invalid avatar URL */ }
+  }
+  const profile: BrowserCaptureProfile = {
+    avatarUrl,
+    bio: text(rawProfile.bio, 2_000),
+    follows: optionalMetric(rawProfile.follows),
+    ipLocation: text(rawProfile.ipLocation, 100),
+    tags: Array.isArray(rawProfile.tags)
+      ? Array.from(new Set(rawProfile.tags.flatMap((tag) => {
+        const value = text(tag, 80).replace(/^#/, "");
+        return value ? [value] : [];
+      }))).slice(0, 30)
+      : [],
   };
   const referenceAccountId =
     typeof input.referenceAccountId === "number"
@@ -144,6 +229,7 @@ export function validateBrowserCapture(raw: unknown, activeAccountId: number): B
     input.materialType === "note_material"
       || input.materialType === "profile_material"
       || input.materialType === "web_material"
+      || input.materialType === "image_material"
       ? input.materialType
       : kind === "note_snapshot"
         ? "note_material"
@@ -162,13 +248,73 @@ export function validateBrowserCapture(raw: unknown, activeAccountId: number): B
     collect: {
       titleBody: Boolean(input.modules?.collect?.titleBody ?? true),
       authorSource: Boolean(input.modules?.collect?.authorSource ?? true),
-      images: false,
-      comments: false,
+      images: (pageType === "note" || materialType === "image_material") && Boolean(input.modules?.collect?.images),
+      comments: pageType === "note" && Boolean(input.modules?.collect?.comments),
     },
     data: {
       metrics: Boolean(input.modules?.data?.metrics ?? kind !== "clip"),
       publishedAt: Boolean(input.modules?.data?.publishedAt ?? false),
     },
+  };
+  const detailsInput = input.captureDetails ?? {};
+  const rawImages = input.images ?? detailsInput.images;
+  const rawComments = input.comments ?? detailsInput.comments;
+  const images = modules.collect.images && Array.isArray(rawImages)
+    ? rawImages.slice(0, 12).flatMap((image) => {
+      if (!image || typeof image.url !== "string") return [];
+      try {
+        const url = new URL(image.url);
+        const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+        if (url.protocol !== "https:" || url.username || url.password || host === "localhost" || host.endsWith(".local")) return [];
+        if (host.includes(":")) return [];
+        if (/^(0\.|127\.|10\.|192\.168\.|169\.254\.)/.test(host)
+          || /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+          || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)
+          || /^192\.(0\.(0|2)\.|0\.)/.test(host)
+          || /^198\.(18|19)\./.test(host)
+          || /^198\.51\.100\./.test(host)
+          || /^203\.0\.113\./.test(host)
+          || /^(?:22[4-9]|23\d|24\d|25[0-5])\./.test(host)) return [];
+        return [{
+          url: url.href.slice(0, 2_000),
+          width: optionalMetric(image.width),
+          height: optionalMetric(image.height),
+          domIndex: typeof image.domIndex === "number" && Number.isInteger(image.domIndex) ? Math.max(0, Math.min(image.domIndex, 1_000)) : 0,
+          source: text(image.source, 80) || (materialType === "image_material" ? "selected-image" : "visible-note-image"),
+        }];
+      } catch { return []; }
+    })
+    : [];
+  const comments = modules.collect.comments && Array.isArray(rawComments)
+    ? rawComments.slice(0, 20).flatMap((comment) => {
+      if (!comment || typeof comment.text !== "string" || !comment.text.trim()) return [];
+      return [{
+        author: text(comment.author, 80),
+        text: text(comment.text, 350),
+        likes: optionalMetric(comment.likes),
+        truncated: Boolean(comment.truncated) || comment.text.length > 350,
+      }];
+    })
+    : [];
+  const evidence: NonNullable<BrowserCaptureMessage["evidence"]> = {};
+  for (const key of ["like", "collect", "comment", "share", "followers", "noteCount"]) {
+    const entry = input.evidence?.[key];
+    if (entry && typeof entry === "object") evidence[key] = {
+      source: text(entry.source, 120) || null,
+      missingReason: text(entry.missingReason, 180) || null,
+    };
+  }
+  const publishedAt = text(input.publishedAt ?? detailsInput.publishedAt, 80) || null;
+  const publishedLocation = text(input.publishedLocation ?? detailsInput.publishedLocation, 100) || null;
+  const captureDetails: BrowserCaptureDetails = {
+    images: images.map((image, index) => ({ ...image, order: index })),
+    comments: comments.map((comment) => ({ ...comment, source: "currently-loaded-comment" })),
+    evidence: input.evidence ?? detailsInput.evidence ?? evidence,
+    publishedAt,
+    publishedLocation,
+    importedItemIds: Array.isArray(detailsInput.importedItemIds)
+      ? detailsInput.importedItemIds.filter((id) => Number.isSafeInteger(id) && id > 0).slice(0, 12)
+      : [],
   };
   const dedupeKey = `${activeAccountId}|${sourceUrl.toLocaleLowerCase()}|${title.toLocaleLowerCase()}`;
   return {
@@ -184,12 +330,21 @@ export function validateBrowserCapture(raw: unknown, activeAccountId: number): B
       requestId,
       dedupeKey,
       kind,
+      clipKind,
       materialType,
       pageType,
+      imageTransferProtocol: Boolean(input.imageTransferProtocol),
       author,
       metrics,
+      profile,
       referenceAccountId,
       modules,
+      images,
+      comments,
+      evidence,
+      captureDetails,
+      publishedAt,
+      publishedLocation,
     },
   };
 }

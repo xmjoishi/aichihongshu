@@ -139,22 +139,22 @@ export function computeRulesFromNotes(
 
   const titleRule = ruleTitleLength(pub);
   if (titleRule) {
-    results.push({ key: "title_length", ...titleRule });
+    results.push({ key: "rule_title_len", ...titleRule });
   }
 
   const hourRule = ruleBestHour(pub);
   if (hourRule) {
-    results.push({ key: "best_hour", ...hourRule });
+    results.push({ key: "rule_best_hour", ...hourRule });
   }
 
   const tagRule = ruleTopTag(pub);
   if (tagRule) {
-    results.push({ key: "top_tag", ...tagRule });
+    results.push({ key: "rule_tag_0", ...tagRule });
   }
 
   const collectRule = ruleCollectRatio(pub);
   if (collectRule) {
-    results.push({ key: "collect_ratio", ...collectRule });
+    results.push({ key: "rule_collect_ratio", ...collectRule });
   }
 
   return results;

@@ -1,0 +1,18 @@
+[package]
+name = "aichihongshu-services"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "aichihongshu_services"
+path = "src/lib.rs"
+
+[dependencies]
+aichihongshu-db = { path = "../core" }
+base64 = "0.22"
+libc = "0.2"
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "stream", "rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

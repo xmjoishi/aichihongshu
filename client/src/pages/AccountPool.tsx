@@ -18,7 +18,11 @@ import { useToast } from "../components/Toast";
 import {
   IS_TAURI_RUNTIME,
   activateLocalAccount,
+  browserWorkerSessionStatus,
+  clearBrowserWorkerSession,
+  closeBrowserWorkerSession,
   createLocalAccount,
+  openBrowserWorkerSession,
   readLocalAccountPool,
   retireLocalAccount,
   updateLocalAccount,
@@ -65,6 +69,7 @@ export default function AccountPool() {
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<PoolAccount | null>(null);
   const [deleting, setDeleting] = useState<PoolAccount | null>(null);
+  const [clearingBrowserSession, setClearingBrowserSession] = useState<PoolAccount | null>(null);
   const [browserStatusMap, setBrowserStatusMap] = useState<Record<number, BrowserStatus>>({});
   const [browserBusyMap, setBrowserBusyMap] = useState<Record<number, boolean>>({});
 
@@ -87,7 +92,15 @@ export default function AccountPool() {
           ban_count: 0,
           created_at: "",
         })));
-        setBrowserStatusMap({});
+        const statuses = await Promise.all(pool.items.map(async (account) => {
+          try {
+            const status = await browserWorkerSessionStatus(account.id);
+            return [account.id, { running: status.status === "running" }] as const;
+          } catch {
+            return [account.id, { running: false }] as const;
+          }
+        }));
+        setBrowserStatusMap(Object.fromEntries(statuses));
         qc.invalidateQueries({ queryKey: ["local-account-pool"] });
         return;
       }
@@ -132,6 +145,11 @@ export default function AccountPool() {
 
   const refreshBrowserStatus = async (accountId: number) => {
     try {
+      if (IS_TAURI_RUNTIME) {
+        const status = await browserWorkerSessionStatus(accountId);
+        setBrowserStatusMap((m) => ({ ...m, [accountId]: { running: status.status === "running" } }));
+        return;
+      }
       const st = await api.get(`/api/crawler/browser?account_id=${accountId}`);
       setBrowserStatusMap((m) => ({ ...m, [accountId]: st }));
     } catch {
@@ -140,14 +158,15 @@ export default function AccountPool() {
   };
 
   const handleOpenBrowser = async (acc: PoolAccount) => {
-    if (IS_TAURI_RUNTIME) {
-      toast("本地账号的浏览器控制仍在迁移中", "info");
-      return;
-    }
     await withBrowserBusy(acc.id, async () => {
       try {
-        await api.post(`/api/crawler/browser?account_id=${acc.id}`, {});
-        toast(`已打开「${acc.alias}」浏览器，请扫码登录`, "success");
+        if (IS_TAURI_RUNTIME) {
+          await openBrowserWorkerSession(acc.id);
+          toast(`已打开「${acc.alias}」独立浏览器；首次使用需重新扫码登录`, "success");
+        } else {
+          await api.post(`/api/crawler/browser?account_id=${acc.id}`, {});
+          toast(`已打开「${acc.alias}」浏览器，请扫码登录`, "success");
+        }
         await refreshBrowserStatus(acc.id);
       } catch (e) {
         toast(`打开失败：${(e as Error).message}`, "error");
@@ -156,17 +175,30 @@ export default function AccountPool() {
   };
 
   const handleCloseBrowser = async (acc: PoolAccount) => {
-    if (IS_TAURI_RUNTIME) {
-      toast("本地账号的浏览器控制仍在迁移中", "info");
-      return;
-    }
     await withBrowserBusy(acc.id, async () => {
       try {
-        await api.delete(`/api/crawler/browser?account_id=${acc.id}`);
+        if (IS_TAURI_RUNTIME) await closeBrowserWorkerSession(acc.id);
+        else await api.delete(`/api/crawler/browser?account_id=${acc.id}`);
         toast(`已关闭「${acc.alias}」浏览器`, "success");
         await refreshBrowserStatus(acc.id);
       } catch (e) {
         toast(`关闭失败：${(e as Error).message}`, "error");
+      }
+    });
+  };
+
+  const handleClearBrowserSession = async () => {
+    const account = clearingBrowserSession;
+    if (!account) return;
+    await withBrowserBusy(account.id, async () => {
+      try {
+        await clearBrowserWorkerSession(account.id);
+        toast(`已清除「${account.alias}」的独立浏览器登录态`, "success");
+        await refreshBrowserStatus(account.id);
+      } catch (e) {
+        toast(`清除失败：${(e as Error).message}`, "error");
+      } finally {
+        setClearingBrowserSession(null);
       }
     });
   };
@@ -249,7 +281,7 @@ export default function AccountPool() {
         </div>
         {IS_TAURI_RUNTIME && (
           <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-selected)] p-4 text-sm text-[var(--color-text-secondary)]">
-            当前显示本地账号池；新增、编辑和退休已保存到本地数据库。浏览器打开/关闭仍需后续接入，不会调用旧服务。
+            浏览器为每个账号使用新的独立登录态；首次使用需要重新扫码，不会复制旧爬虫或日常 Chrome 的 Cookie。
           </div>
         )}
 
@@ -309,12 +341,12 @@ export default function AccountPool() {
                         )}
                       </div>
 
-                      <p className="text-[11px] text-zinc-400 mt-2 truncate" title={acc.user_data_dir}>
+                      {acc.user_data_dir && <p className="text-[11px] text-zinc-400 mt-2 truncate" title={acc.user_data_dir}>
                         {acc.user_data_dir}
-                      </p>
+                      </p>}
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
                       {browserStatus.running ? (
                         <button
                           onClick={() => handleCloseBrowser(acc)}
@@ -332,6 +364,16 @@ export default function AccountPool() {
                         >
                           {browserBusy ? <RefreshCw size={13} className="animate-spin" /> : <Globe size={13} />}
                           打开浏览器
+                        </button>
+                      )}
+
+                      {IS_TAURI_RUNTIME && (
+                        <button
+                          onClick={() => setClearingBrowserSession(acc)}
+                          disabled={browserBusy}
+                          className="px-2.5 py-1.5 rounded-lg border border-zinc-200 text-xs text-zinc-600 hover:bg-zinc-50 disabled:opacity-50"
+                        >
+                          清除独立登录态
                         </button>
                       )}
 
@@ -396,6 +438,15 @@ export default function AccountPool() {
           description={IS_TAURI_RUNTIME ? "此操作只会标记为已退休，业务数据和登录态目录会保留。" : "此操作会删除账号。"}
           onClose={() => setDeleting(null)}
           footer={<><button type="button" className={secondaryButtonClass} onClick={() => setDeleting(null)}>取消</button><button type="button" className={primaryButtonClass} onClick={() => void confirmDelete()}>确认{IS_TAURI_RUNTIME ? "退休" : "删除"}</button></>}
+        />
+      )}
+
+      {clearingBrowserSession && (
+        <Dialog
+          title={`清除「${clearingBrowserSession.alias}」的独立登录态？`}
+          description="这会删除爱吃红薯为此账号单独保存的浏览器会话；之后需要重新扫码登录。"
+          onClose={() => setClearingBrowserSession(null)}
+          footer={<><button type="button" className={secondaryButtonClass} onClick={() => setClearingBrowserSession(null)}>取消</button><button type="button" className={primaryButtonClass} onClick={() => void handleClearBrowserSession()}>确认清除</button></>}
         />
       )}
     </div>
