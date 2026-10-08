@@ -11,6 +11,8 @@
  * 带图时要求所选模型支持视觉（如 MiniMax-M3），否则回退同供应商视觉模型。
  */
 import * as SecureStore from 'expo-secure-store';
+import { fetch as streamingFetch } from 'expo/fetch';
+import { DEFAULT_WRITING_EXPERIENCE, MOBILE_OUTPUT_RULES } from './writingRules';
 import { sniffImageMimeFromBase64 } from './media';
 
 // ── Provider / Model 目录 ────────────────────────────────────────
@@ -160,7 +162,7 @@ export async function analyzeImage(base64: string): Promise<string> {
       {
         role: 'user',
         content:
-          '请描述这张家居图片的内容，包括物品名称、颜色、风格、材质、使用场景等，用于后续创作小红书内容。50-100字。',
+          '请描述图片中明确可见的物品、颜色、布局和场景，用于后续创作小红书内容。不要推断材质、价格、安装方式、产品性能或使用体验；不确定的信息不要写成事实。50-100字。',
         images: [raw],
       },
     ],
@@ -262,85 +264,101 @@ export async function chat(
 export async function chatStream(
   messages: ChatMessage[],
   systemPrompt: string,
-  onDelta: (delta: string, fullText: string) => void
+  onDelta: (delta: string, fullText: string) => void,
+  options: { signal?: AbortSignal } = {},
 ): Promise<string> {
+  const checkCancelled = () => {
+    if (options.signal?.aborted) throw new Error('生成已取消');
+  };
+  const checkFinishReason = (reason: unknown) => {
+    if (reason && !['stop', 'end_turn', 'stop_sequence'].includes(String(reason))) {
+      throw new Error('AI 输出未完整结束，请重试；原稿已保留');
+    }
+  };
+  checkCancelled();
   const config = await getAiConfig();
-  if (config.providerId !== 'minimax') {
-    const full = await chat(messages, systemPrompt);
-    if (full) onDelta(full, full);
-    return full;
-  }
-
-  const key = (await getApiKey('minimax')) ?? (await legacyMiniMaxKey());
-  if (!key) throw new Error('请先在 AI 模型设置中配置 MiniMax API Key');
-
-  const provider = getProvider('minimax');
-  const endpoint = getEndpoint(provider, config);
-  const res = await fetch(endpoint, {
+  const anthropic = config.providerId === 'minimax';
+  const key = (await getApiKey(config.providerId)) ?? (anthropic ? await legacyMiniMaxKey() : null);
+  const provider = getProvider(config.providerId);
+  if (!key) throw new Error(`请先在 AI 模型设置中配置 ${provider.label} API Key`);
+  checkCancelled();
+  const res = await streamingFetch(getEndpoint(provider, config), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-    },
+    signal: options.signal,
+    headers: anthropic
+      ? { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' }
+      : { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({
       model: resolveModelId(provider, config, messages),
-      max_tokens: 2000,
       stream: true,
-      system: systemPrompt,
-      messages: messages.map((message) => ({
-        role: message.role,
-        content: buildChatContent(message, 'anthropic'),
-      })),
+      ...(anthropic ? { max_tokens: 4000, system: systemPrompt } : {}),
+      messages: [
+        ...(!anthropic ? [{ role: 'system', content: systemPrompt }] : []),
+        ...messages.map((message) => ({
+          role: message.role,
+          content: buildChatContent(message, anthropic ? 'anthropic' : 'openai'),
+        })),
+      ],
     }),
   });
-
   if (!res.ok) throw new Error(`AI 对话失败: ${await res.text()}`);
-  if (!res.body) {
-    const fallback = await chat(messages, systemPrompt);
-    if (fallback) onDelta(fallback, fallback);
-    return fallback;
+  // Some compatible providers ignore stream. Consume this response rather than issuing a second request.
+  if (res.headers.get('content-type')?.includes('application/json')) {
+    const data = await res.json();
+    checkCancelled();
+    if (data.error) throw new Error(data.error.message || 'AI 生成失败');
+    checkFinishReason(anthropic ? data.stop_reason : data.choices?.[0]?.finish_reason);
+    const full = anthropic
+      ? (data.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text ?? '').join('\n')
+      : data.choices?.[0]?.message?.content ?? '';
+    if (typeof full !== 'string' || !full.trim()) throw new Error('AI 未返回正文内容，请重试');
+    onDelta(full, full);
+    return full;
   }
-
+  if (!res.body) throw new Error('当前模型未返回可读取的生成内容，请重试或更换模型');
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
   let fullText = '';
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line.startsWith('data:')) continue;
-
-      const payload = line.slice(5).trim();
-      if (!payload || payload === '[DONE]') continue;
-
-      try {
-        const event = JSON.parse(payload);
-        const delta =
-          event?.delta?.text
-          ?? event?.delta?.partial_json
-          ?? event?.content_block?.text
-          ?? event?.content?.[0]?.text
-          ?? '';
-
-        if (delta) {
-          fullText += delta;
-          onDelta(delta, fullText);
-        }
-      } catch {
-        // ignore malformed SSE chunks and keep reading
-      }
+  let completed = false;
+  const consumeLine = (rawLine: string) => {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) return;
+    const payload = line.slice(5).trim();
+    if (!payload) return;
+    if (payload === '[DONE]') { completed = true; return; }
+    let event: any;
+    try { event = JSON.parse(payload); } catch { throw new Error('AI 返回了损坏的数据，请重试'); }
+    if (event.error || event.type === 'error') throw new Error(event.error?.message || 'AI 流式生成失败');
+    const finishReason = anthropic ? event.delta?.stop_reason : event.choices?.[0]?.finish_reason;
+    checkFinishReason(finishReason);
+    if (finishReason || event.type === 'message_stop') completed = true;
+    const delta = anthropic
+      ? (event.delta?.text ?? event.content_block?.text ?? '')
+      : (event.choices?.[0]?.delta?.content ?? '');
+    if (typeof delta === 'string' && delta) {
+      fullText += delta;
+      onDelta(delta, fullText);
     }
+  };
+  try {
+    while (true) {
+      checkCancelled();
+      const { value, done } = await reader.read();
+      checkCancelled();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) consumeLine(line);
+      if (done) { if (buffer) consumeLine(buffer); break; }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
-
+  checkCancelled();
+  if (!completed) throw new Error('AI 连接中断，内容未完成，请重试；原稿已保留');
+  if (!fullText.trim()) throw new Error('AI 未返回正文内容，请重试');
   return fullText.trim();
 }
 
@@ -351,28 +369,18 @@ export function buildSystemPrompt(profile: {
   personaTone?: string | null;
   taboos?: string | null;
 }, itemAnalyses: string[]): string {
-  const tabooList = profile.taboos ? JSON.parse(profile.taboos).join('、') : '';
-  const analysisText = itemAnalyses.length
-    ? `\n\n【图片内容】\n${itemAnalyses.map((a, i) => `图${i + 1}：${a}`).join('\n')}`
-    : '';
-
-  return `你是一个小红书内容创作助手，专注于${profile.niche ?? '家居软装'}垂类。
-人设名称：${profile.personaName ?? '博主'}
-内容语气：${profile.personaTone ?? '真实、接地气，短句换行，先痛点后解法'}
-禁忌词：${tabooList || '无'}
-
-请根据用户诉求，生成可直接发布到小红书的标题和正文（不是聊天回复）。
-
-标题：吸引眼球，包含数字或痛点，20字以内。
-正文：就是发布出去的文案本体，分段清晰，用 emoji，结尾加 5-8 个话题标签，200-500字。
-
-硬性输出格式（小红书编辑器不识别 Markdown，必须纯文本）：
-1. 禁止任何 Markdown 标记：**加粗**、# 标题、- 或 1. 列表、\`代码\`、> 引用、表格、[链接](url)、分隔线 ---
-2. 禁止会话/元信息，不要出现：「谁懂啊」「今天给大家分享」「希望对你有帮助」「标题：」「正文：」「废话不多说」等任何解说或过场
-3. 不要在正文里重复写一遍标题
-4. 格式固定为两行块：
-   第一行：标题本身
-   空一行
-   然后：正文内容（直接开始写要点/体验/避坑，不要开场白）
-${analysisText}`;
+  let tabooList = '';
+  if (profile.taboos) {
+    try {
+      const parsed = JSON.parse(profile.taboos);
+      tabooList = Array.isArray(parsed) ? parsed.join('、') : profile.taboos;
+    } catch { tabooList = profile.taboos; }
+  }
+  return [
+    `你是小红书内容创作助手。领域：${profile.niche || '按用户素材判断'}。人设名称：${profile.personaName || '博主'}。`,
+    `账号语气偏好：${profile.personaTone || '真实、自然、具体'}。禁忌词：${tabooList || '无'}。`,
+    `【默认写作经验】\n${DEFAULT_WRITING_EXPERIENCE}`,
+    `【输出规则与优先级】\n${MOBILE_OUTPUT_RULES}`,
+    ...(itemAnalyses.length ? [`【图片描述（辅助素材，不代表已确认的使用体验）】\n${itemAnalyses.map((a, i) => `图${i + 1}：${a}`).join('\n')}`] : []),
+  ].join('\n\n');
 }

@@ -34,6 +34,7 @@ export default function PcHarnessScreen() {
   const [scannerVisible, setScannerVisible] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
   const [scanError, setScanError] = useState('');
+  const [manualOpen, setManualOpen] = useState(false);
   const scanClaimed = useRef(false);
 
   useEffect(() => {
@@ -75,15 +76,16 @@ export default function PcHarnessScreen() {
     try {
       const client = createPcHarnessClientFromConfig(config);
       const health = await client.health();
+      if (!health.ok || health.service !== 'pc-harness' || health.protocolVersion !== '1') {
+        throw new Error('PC Harness 协议校验失败，请确认电脑端已更新并开启服务');
+      }
       setConnection('connected');
       const message = `已连接 · 协议 ${health.protocolVersion}`;
       setConnectionMessage(message);
-      Alert.alert('连接成功', message);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setConnection('failed');
       setConnectionMessage(message);
-      Alert.alert('连接失败', message);
     } finally {
       setBusy(false);
     }
@@ -129,7 +131,6 @@ export default function PcHarnessScreen() {
       const message = `已连接 · 协议 ${health.protocolVersion}`;
       setConnectionMessage(message);
       setScannerVisible(false);
-      Alert.alert('配对成功', `${scanned.baseUrl}\n配对信息已安全保存在手机。`);
     } catch (error) {
       scanClaimed.current = false;
       setScanError(error instanceof Error ? error.message : String(error));
@@ -159,85 +160,107 @@ export default function PcHarnessScreen() {
   }
 
   const statusColor = connection === 'connected' ? '#15803d' : connection === 'failed' ? '#b91c1c' : TText.secondary;
+  const statusLabel = !configLoaded
+    ? '正在读取连接配置…'
+    : !saved
+      ? (config.baseUrl || config.pairingToken ? '配置未保存' : '尚未配对')
+      : connection === 'connected'
+        ? connectionMessage
+        : connection === 'failed'
+          ? `连接失败 · ${connectionMessage}`
+          : '已保存配对信息，尚未检测连接';
 
   return (
     <AuroraBackground style={{ flex: 1 }}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <LiquidCard style={styles.introCard}>
-          <Text style={styles.eyebrow}>手机 Companion</Text>
-          <Text style={styles.title}>连接同一 Wi-Fi 下的 PC 工作台</Text>
-          <Text style={styles.desc}>手机负责拍照、输入和发布回填，PC Harness 负责账号作用域、素材和笔记任务。手机记忆以手机为事实源；PC 在线修改由手机保存后回传缓存。手机 App 前台连接时才能实时维护。地址与配对令牌只保存在手机安全存储中。</Text>
+          <Text style={styles.eyebrow}>手机连接</Text>
+          <Text style={styles.title}>连接电脑工作台</Text>
+          <Text style={styles.desc}>手机与电脑接入同一 Wi-Fi 后，扫描电脑端二维码即可配对。连接后可在两端接续处理素材、文案与记忆。</Text>
         </LiquidCard>
 
+        <View style={styles.statusCard}>
+          <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+          <View style={styles.statusCopy}>
+            <Text style={styles.statusTitle}>连接状态</Text>
+            <Text style={[styles.statusText, { color: statusColor }]}>{statusLabel}</Text>
+          </View>
+          {saved && connection !== 'connected' ? (
+            <Pressable onPress={() => void handleTest()} disabled={busy} style={styles.statusAction}>
+              {busy ? <ActivityIndicator size="small" color={Brand.red} /> : <Text style={styles.statusActionText}>测试</Text>}
+            </Pressable>
+          ) : null}
+        </View>
+
         <LiquidButton
-          label="扫码快速配对 PC Harness"
+          label={saved ? '重新扫码配对' : '扫描电脑端二维码'}
           onPress={() => void openScanner()}
           disabled={busy || !configLoaded}
           style={{ alignSelf: 'stretch' }}
         />
+        <Text style={styles.qrHint}>推荐方式 · 在电脑端打开 PC Harness 配对码</Text>
 
-        <Text style={styles.groupLabel}>连接配置</Text>
-        <LiquidCard style={styles.card}>
-          <Text style={styles.label}>PC Harness 地址</Text>
-          <TextInput
-            value={config.baseUrl}
-            onChangeText={(baseUrl) => { setConfig((current) => ({ ...current, baseUrl })); setSaved(false); }}
-            placeholder="http://100.73.191.113:18765"
-            placeholderTextColor={TText.tertiary}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            style={styles.input}
-          />
-          <Text style={styles.hint}>也可扫描 PC 设置页显示的二维码；扫描后会先验证连接，再安全保存配置。</Text>
-
-          <Text style={styles.label}>配对令牌</Text>
-          <TextInput
-            value={config.pairingToken}
-            onChangeText={(pairingToken) => { setConfig((current) => ({ ...current, pairingToken })); setSaved(false); }}
-            placeholder="从 PC Harness 配对页面复制"
-            placeholderTextColor={TText.tertiary}
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-            style={styles.input}
-          />
-
-          <Text style={styles.label}>手机名称（可选）</Text>
-          <TextInput
-            value={config.deviceName ?? ''}
-            onChangeText={(deviceName) => setConfig((current) => ({ ...current, deviceName }))}
-            placeholder="我的手机"
-            placeholderTextColor={TText.tertiary}
-            style={styles.input}
-          />
-        </LiquidCard>
-
-        <LiquidButton label={busy ? '处理中…' : '保存配置'} onPress={handleSave} disabled={busy} />
-        <LiquidButton
-          label={busy ? '测试中…' : saved ? '测试 PC Harness 连接' : '请先保存配置'}
-          variant="glass"
-          onPress={() => void handleTest()}
-          disabled={busy || !saved}
-          style={{ alignSelf: 'stretch' }}
-        />
-
-        <View style={styles.statusCard}>
-          <Text style={styles.statusTitle}>连接状态</Text>
-          <Text style={[styles.statusText, { color: statusColor }]}>{connectionMessage}</Text>
-        </View>
-
-        <Text style={styles.groupLabel}>当前契约能力</Text>
-        <LiquidCard style={styles.card}>
-          <Capability label="拍照 / 文字上传到 PC" />
-          <Capability label="从 PC 拉取生成稿" />
-          <Capability label="发布后回填链接和结果" />
-          <Text style={styles.hint}>这些操作会在“创作 → PC Companion”中使用同一配对连接；桌面端需先开启手机连接。</Text>
-        </LiquidCard>
-
-        <Pressable onPress={handleClear} style={styles.clearButton}>
-          <Text style={styles.clearText}>解除配对并清除本机配置</Text>
+        <Pressable onPress={() => setManualOpen((open) => !open)} style={styles.manualDisclosure}>
+          <Text style={styles.manualDisclosureText}>{manualOpen ? '收起手动配置' : '手动配置地址和令牌（高级）'}</Text>
+          <Text style={styles.disclosureChevron}>{manualOpen ? '⌃' : '⌄'}</Text>
         </Pressable>
+
+        {manualOpen ? (
+          <>
+            <LiquidCard style={styles.card}>
+              <Text style={styles.hint}>扫码不可用时再手动填写。配对令牌会安全保存在手机。</Text>
+              <Text style={styles.label}>电脑地址</Text>
+              <TextInput
+                value={config.baseUrl}
+                onChangeText={(baseUrl) => { setConfig((current) => ({ ...current, baseUrl })); setSaved(false); setConnection('unknown'); setConnectionMessage('配置已修改，请保存并测试'); }}
+                placeholder="http://电脑局域网地址:18765"
+                placeholderTextColor={TText.tertiary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                style={styles.input}
+              />
+
+              <Text style={styles.label}>配对令牌</Text>
+              <TextInput
+                value={config.pairingToken}
+                onChangeText={(pairingToken) => { setConfig((current) => ({ ...current, pairingToken })); setSaved(false); setConnection('unknown'); setConnectionMessage('配置已修改，请保存并测试'); }}
+                placeholder="从电脑端复制配对令牌"
+                placeholderTextColor={TText.tertiary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+                style={styles.input}
+              />
+
+              <Text style={styles.label}>手机名称（可选）</Text>
+              <TextInput
+                value={config.deviceName ?? ''}
+                onChangeText={(deviceName) => { setConfig((current) => ({ ...current, deviceName })); setSaved(false); }}
+                placeholder="我的手机"
+                placeholderTextColor={TText.tertiary}
+                style={styles.input}
+              />
+            </LiquidCard>
+
+            <LiquidButton label={busy ? '处理中…' : '保存手动配置'} onPress={handleSave} disabled={busy} />
+            <LiquidButton
+              label={busy ? '测试中…' : saved ? '测试连接' : '保存后可测试连接'}
+              variant="glass"
+              onPress={() => void handleTest()}
+              disabled={busy || !saved}
+              style={{ alignSelf: 'stretch' }}
+            />
+          </>
+        ) : null}
+
+        <Text style={styles.capabilityHint}>配对后可用手机上传素材、接收电脑生成稿，并回填发布结果。实时修改手机记忆需要手机 App 保持前台。</Text>
+
+        {saved ? (
+          <Pressable onPress={handleClear} style={styles.clearButton}>
+            <Text style={styles.clearText}>解除配对并清除本机配置</Text>
+          </Pressable>
+        ) : null}
       </ScrollView>
       <Modal
         visible={scannerVisible}
@@ -278,36 +301,28 @@ export default function PcHarnessScreen() {
   );
 }
 
-function Capability({ label }: { label: string }) {
-  return (
-    <View style={styles.capabilityRow}>
-      <Text style={styles.capabilityIcon}>✓</Text>
-      <Text style={styles.capabilityText}>{label}</Text>
-      <Text style={styles.pending}>可用</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 48, gap: 12, paddingTop: 8 },
   introCard: { gap: 6 },
   eyebrow: { color: Brand.red, fontSize: Font.caption, fontWeight: Font.semibold, letterSpacing: 0.6 },
   title: { color: TText.primary, fontSize: Font.callout, fontWeight: Font.semibold },
   desc: { color: TText.secondary, fontSize: Font.footnote, lineHeight: 19 },
-  groupLabel: { color: TText.secondary, fontSize: Font.caption, fontWeight: Font.semibold, marginTop: 8 },
   card: { gap: 12 },
   label: { color: TText.secondary, fontSize: Font.caption, marginBottom: 8, marginTop: 4 },
   input: { borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(0,0,0,0.14)', borderRadius: Radius.md, paddingHorizontal: 12, paddingVertical: 10, color: TText.primary, fontSize: Font.body, backgroundColor: '#fff' },
   hint: { color: TText.tertiary, fontSize: Font.caption, lineHeight: 17 },
-  testButton: { minHeight: 44, borderRadius: Radius.md, borderWidth: 1, borderColor: Brand.redMid, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
-  testButtonText: { color: Brand.red, fontSize: Font.body, fontWeight: Font.semibold },
-  statusCard: { borderRadius: Radius.md, backgroundColor: '#fff', padding: 14, gap: 5 },
+  statusCard: { borderRadius: Radius.md, backgroundColor: '#fff', padding: 12, gap: 10, flexDirection: 'row', alignItems: 'center' },
+  statusDot: { width: 9, height: 9, borderRadius: 99 },
+  statusCopy: { flex: 1, gap: 4 },
   statusTitle: { color: TText.secondary, fontSize: Font.caption, fontWeight: Font.semibold },
   statusText: { fontSize: Font.footnote },
-  capabilityRow: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 28 },
-  capabilityIcon: { color: Brand.red, fontWeight: Font.bold, fontSize: Font.body },
-  capabilityText: { flex: 1, color: TText.primary, fontSize: Font.footnote },
-  pending: { color: TText.tertiary, fontSize: Font.caption },
+  statusAction: { minHeight: 34, minWidth: 46, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff5f6' },
+  statusActionText: { color: Brand.red, fontSize: Font.caption, fontWeight: Font.semibold },
+  qrHint: { textAlign: 'center', color: TText.tertiary, fontSize: Font.caption, marginTop: -6 },
+  manualDisclosure: { minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 },
+  manualDisclosureText: { color: TText.secondary, fontSize: Font.footnote },
+  disclosureChevron: { color: TText.secondary, fontSize: Font.title3 },
+  capabilityHint: { color: TText.tertiary, fontSize: Font.caption, lineHeight: 17, paddingHorizontal: 4 },
   clearButton: { alignItems: 'center', paddingVertical: 12 },
   clearText: { color: '#b91c1c', fontSize: Font.caption },
   scannerRoot: { flex: 1, backgroundColor: '#000' },

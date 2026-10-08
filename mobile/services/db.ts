@@ -56,6 +56,7 @@ export async function initDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT,
       body TEXT,
+      generation_prompt TEXT NOT NULL DEFAULT '',
       tags TEXT NOT NULL DEFAULT '[]',
       item_ids TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT 'draft',
@@ -124,6 +125,7 @@ export async function initDb() {
 
   // 为已有手机数据库补充字段；重复初始化/并发初始化时允许另一调用先完成迁移。
   for (const [table, column, definition] of [
+    ['notes', 'generation_prompt', "TEXT NOT NULL DEFAULT ''"],
     ['items', 'source_asset_id', 'TEXT'],
     ['items', 'used_at', 'TEXT'],
     ['items', 'usage_sources', "TEXT NOT NULL DEFAULT '[]'"],

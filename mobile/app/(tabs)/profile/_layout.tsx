@@ -17,6 +17,7 @@ export default function ProfileLayout() {
       {/* 二级页：统一由各页面自身设定 title */}
       <Stack.Screen name="persona" options={{ title: '账号人设' }} />
       <Stack.Screen name="memory" options={{ title: '记忆' }} />
+      <Stack.Screen name="pc-harness" options={{ title: '连接电脑' }} />
       <Stack.Screen name="ai-config" options={{ title: 'AI 模型' }} />
       <Stack.Screen name="diagnostics" options={{ title: '运行诊断' }} />
       <Stack.Screen name="danger" options={{ title: '数据管理' }} />

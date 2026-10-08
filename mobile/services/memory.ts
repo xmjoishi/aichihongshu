@@ -3,6 +3,7 @@
  * 手机只维护自己的记忆池；PC 记忆池不下发到手机。
  * 手机是唯一事实源；PC 在线修改也由手机落本地库后再同步更新 PC 缓存。
  */
+import { EXPERIENCE_CONTENT_LIMIT, countPromptCharacters } from './writingRules';
 import { initDb, sqlAll, sqlRun } from './db';
 import {
   createPcHarnessClientFromConfig,
@@ -224,7 +225,7 @@ export async function upsertExperiencePrompt(
   if (!title) throw new Error('标题不能为空');
   if (title.length > 40) throw new Error('标题最多 40 字');
   if (!content) throw new Error('内容不能为空');
-  if (content.length > 300) throw new Error('内容最多 300 字');
+  if (countPromptCharacters(content) > EXPERIENCE_CONTENT_LIMIT) throw new Error(`内容最多 ${EXPERIENCE_CONTENT_LIMIT} 字`);
   const enabled = input.enabled !== false ? 1 : 0;
   if (enabled) {
     const rows = sqlAll(
@@ -284,10 +285,11 @@ export async function buildMobileMemoryPrompt(target: 'compose' | 'chat'): Promi
     (e) => e.enabled && e.confirmStatus === 'confirmed' && e.validStatus === 'valid',
   ).slice(0, 20);
   if (!prompts.length && !entries.length) return '';
-  const lines = ['## 有效记忆与经验提示词（遵守，不要照抄原文）'];
+  const lines = ['【已启用用户经验（优先于默认写作风格，本次明确要求优先）】'];
   for (const prompt of prompts) {
     lines.push(`- [${prompt.title}] ${prompt.content}`);
   }
+  if (entries.length) lines.push('【已确认事实记忆（仅在与本次主题相关时使用，不得强塞无关经历）】');
   for (const entry of entries) {
     lines.push(`- ${entry.subject ? `（${entry.subject}）` : ''}${entry.content}`);
   }
@@ -317,6 +319,9 @@ async function performMemorySyncWithPc(): Promise<MemorySyncResult> {
   const serverUrl = config.baseUrl;
   const health = await client.health();
   if (health.accountId == null) throw new Error('PC Harness 当前没有可同步的账号');
+  if (!health.capabilities?.includes('mobilePromptSnapshot')) {
+    throw new Error('请更新并重启电脑端后重试；手机内容已保存在本机');
+  }
   if (config.accountId != null && health.accountId !== config.accountId) {
     throw new Error('PC 当前账号与手机配对账号不一致，请切换到配对账号后再同步');
   }
@@ -356,12 +361,12 @@ async function performMemorySyncWithPc(): Promise<MemorySyncResult> {
     [serverUrl],
   );
   for (const deletion of deletions) {
+    // Prompt removals are part of the atomic full snapshot below. Do not
+    // partially delete the previous cache before the replacement validates.
+    if (deletion.entity_type === 'prompt') continue;
     if (deletion.entity_type === 'entry') {
       await client.deleteMobileMemoryEntry(deletion.remote_id);
       deletedEntries += 1;
-    } else {
-      await client.deleteMobileExperiencePrompt(deletion.remote_id);
-      deletedPrompts += 1;
     }
     await ready();
     sqlRun(`DELETE FROM memory_sync_deletions WHERE id = ?`, [deletion.id]);
@@ -389,24 +394,35 @@ async function performMemorySyncWithPc(): Promise<MemorySyncResult> {
     currentRemoteEntryIds.add(remote.id);
     pushedEntries += 1;
   }
-  for (const prompt of prompts) {
-    const body = {
+  const promptSnapshot = await client.replaceMobilePromptSnapshot({
+    accountId: health.accountId,
+    prompts: prompts.map((prompt) => ({
+      localId: prompt.id,
+      remoteId: prompt.remoteId,
       title: prompt.title,
       content: prompt.content,
       enabled: prompt.enabled,
       applyScope: prompt.applyScope,
       applyTarget: prompt.applyTarget,
       sortOrder: prompt.sortOrder,
-    };
-    const remote = prompt.remoteId
-      ? await pushWithRecovery(
-          () => client.updateMobileExperiencePrompt(prompt.remoteId!, body),
-          () => client.createMobileExperiencePrompt(body),
-        )
-      : await client.createMobileExperiencePrompt(body);
-    await setPromptRemoteId(prompt.id, remote.id, serverUrl);
-    currentRemotePromptIds.add(remote.id);
+    })),
+  });
+  const mappedLocalIds = new Set(promptSnapshot.mappings.map((mapping) => mapping.localId));
+  if (mappedLocalIds.size !== prompts.length
+    || promptSnapshot.mappings.length !== prompts.length
+    || prompts.some((prompt) => !mappedLocalIds.has(prompt.id))
+    || promptSnapshot.mappings.some((mapping) => !Number.isSafeInteger(mapping.remoteId) || mapping.remoteId <= 0)) {
+    throw new Error('电脑返回的经验保存回执不完整，请重试');
+  }
+  for (const mapping of promptSnapshot.mappings) {
+    await setPromptRemoteId(mapping.localId, mapping.remoteId, serverUrl);
+    currentRemotePromptIds.add(mapping.remoteId);
     pushedPrompts += 1;
+  }
+  deletedPrompts += promptSnapshot.deletedPrompts;
+  await ready();
+  for (const deletion of deletions.filter((item) => item.entity_type === 'prompt')) {
+    sqlRun(`DELETE FROM memory_sync_deletions WHERE id = ?`, [deletion.id]);
   }
 
   // 本手机是该 PC 账号手机池的唯一来源。成功推送完整本地快照后，要求

@@ -8,6 +8,9 @@ export type PublishProgress = {
   copiedFull: boolean;
   exported: boolean;
   exportedAt?: string;
+  shareAttemptAt?: string;
+  /** System share UI outcome only; the note's published status requires an explicit user action. */
+  lastShareResult?: 'preparing' | 'shared' | 'dismissed' | 'failed';
 };
 
 export const EMPTY_PROGRESS: PublishProgress = {
@@ -43,7 +46,7 @@ export async function clearPublishProgress(noteId: number) {
 }
 
 export function getPublishProgressStage(progress: PublishProgress): 'none' | 'copied' | 'exported' {
-  const copied = progress.copiedTitle && (progress.copiedBody || progress.copiedFull);
+  const copied = progress.copiedFull || (progress.copiedTitle && progress.copiedBody);
   if (progress.exported) return 'exported';
   if (copied) return 'copied';
   return 'none';

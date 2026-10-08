@@ -52,11 +52,12 @@ export function stripMarkdownForXhs(text: string): string {
   return t.trim();
 }
 
-/** 标题只保留一行纯文本（去掉 emoji/「标题：」前缀、#、加粗、引号） */
+/** 标题只保留一行纯文本（保留 emoji，去掉「标题：」前缀、Markdown 和外层引号） */
 export function stripMarkdownForXhsTitle(text: string): string {
   const oneLine = (text ?? '').split('\n').map((l) => l.trim()).find((l) => l) ?? '';
   return oneLine
-    .replace(/^[^\p{L}\p{N}]+/u, '') // 去掉行首 emoji/符号
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/\*\*|__|~~|`/g, '')
     .replace(/^(标题|title)\s*[:：]\s*/i, '')
     .replace(/^["「『]|["」』]$/g, '')
     .replace(/^#{1,6}\s+/, '')
@@ -66,7 +67,7 @@ export function stripMarkdownForXhsTitle(text: string): string {
 
 /** 会话式开头/结尾废话（不是发帖内容） */
 const FILLER_LINE_RE =
-  /^(谁懂啊[!!！]*|救命[!!！]*|啊啊啊[!!！]*|今天(给大家)?(分享|推荐)|下面(是|分享)|希望(对)?(你|大家)(有)?(帮助|参考)|如果(你)?(喜欢|觉得有用)|快去试试(吧)?|赶紧收藏|码住[!!！]*|点赞收藏|记得(点赞|收藏|关注)|写在前面|正文如下|以下是(正文|内容)|综上(所述)?|总结一下[：:]?|好了[，,](今天)?(就|先)(到这|分享)|让我们(一起)?(开始|看看)|废话不多说[，,]?|话不多说[，,]?|ok[，,]|好的[，,]|首先[，,]?我们|接下来[，,]?我们|下面是正文|附上正文|草稿如下|内容如下|output[:：]?|title[:：]?|body[:：]?|正文[:：])\s*$/i;
+  /^(正文如下|以下是(正文|内容)|下面是正文|附上正文|草稿如下|内容如下|output[:：]?|title[:：]?|body[:：]?|正文[:：])\s*$/i;
 
 function dropFillerLines(text: string): string {
   return text
@@ -102,7 +103,7 @@ export function extractTitleAndBody(raw: string): { title: string; body: string 
     if (!title) {
       const cand = stripMarkdownForXhsTitle(t);
       if (cand) {
-        title = cand.slice(0, 20);
+        title = Array.from(cand).slice(0, 20).join('');
         continue;
       }
     }

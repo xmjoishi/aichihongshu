@@ -4,7 +4,7 @@ import {
   StyleSheet, KeyboardAvoidingView, Platform, Alert, ActivityIndicator, Modal,
   Dimensions, Image,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -14,8 +14,8 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 import { useStore } from '../../../../store';
-import { chat, buildSystemPrompt, getApiKey, getAiConfig } from '../../../../services/ai';
-import { buildMobileMemoryPrompt } from '../../../../services/memory';
+import { chatStream, getApiKey, getAiConfig } from '../../../../services/ai';
+import { buildComposePromptSnapshot, type ComposePromptSnapshot } from '../../../../services/composePrompt';
 import { getImageAssetReference, readBase64FromUri } from '../../../../services/media';
 import { AuroraBackground } from '../../../../components/ui';
 import { Glass, Brand, Text as TText, Font, Radius } from '../../../../utils/theme';
@@ -24,6 +24,16 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 
 const TITLE_MAX = 20;
 const BODY_MAX = 1000;
+const PROMPT_MAX = 5000;
+const AI_IDLE_TIMEOUT_MS = 120_000;
+const AI_ACTION_LABELS: Record<AiGenerationAction, string> = {
+  title: '标题',
+  body: '正文',
+  tags: '话题',
+  all: '整篇笔记',
+};
+const titleChars = (value: string) => Array.from(value);
+const limitTitle = (value: string) => titleChars(value).slice(0, TITLE_MAX).join('');
 const THUMB = 120;
 const THUMB_GAP = 8;
 const SCREEN_W = Dimensions.get('window').width;
@@ -33,6 +43,14 @@ type DraftPhoto = {
   imagePath: string;
   itemId?: number;
   assetId?: string | null;
+};
+type AiGenerationAction = 'title' | 'body' | 'tags' | 'all';
+type GeneratedValues = { title: string; body: string; tags: string[] };
+type GenerationChange = {
+  status: 'pending' | 'adopted';
+  action: AiGenerationAction;
+  before: GeneratedValues;
+  after: GeneratedValues;
 };
 
 /** 幽灵 AI 小钮 */
@@ -166,7 +184,57 @@ export default function EditNoteScreen() {
   const [npIndex, setNpIndex] = useState(0);
   const [loadingAll, setLoadingAll] = useState(false);
   const [aiPromptVisible, setAiPromptVisible] = useState(false);
-  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiRulesVisible, setAiRulesVisible] = useState(false);
+  const [aiRulesLoading, setAiRulesLoading] = useState(false);
+  const [aiRulesError, setAiRulesError] = useState('');
+  const [aiRulesSnapshot, setAiRulesSnapshot] = useState<ComposePromptSnapshot | null>(null);
+  const [aiFailure, setAiFailure] = useState('');
+  const [lastAiAction, setLastAiAction] = useState<AiGenerationAction | null>(null);
+  const [generationChange, setGenerationChange] = useState<GenerationChange | null>(null);
+  const [generationCompareVisible, setGenerationCompareVisible] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState(note?.generationPrompt ?? '');
+  const [aiPromptSaveState, setAiPromptSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [aiPromptSaveError, setAiPromptSaveError] = useState('');
+  const [aiPhase, setAiPhase] = useState('');
+  const [aiPreview, setAiPreview] = useState('');
+  const [aiElapsed, setAiElapsed] = useState(0);
+  const aiRunning = useRef(false);
+  const aiAbort = useRef<AbortController | null>(null);
+  const aiTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const aiAbortReason = useRef<'user' | 'timeout' | null>(null);
+  const aiPromptSaveQueue = useRef<Promise<void>>(Promise.resolve());
+  const aiPromptSaveVersion = useRef(0);
+  const savedAiPrompt = useRef(note?.generationPrompt ?? '');
+  const mounted = useRef(false);
+  const lifecycle = useRef(0);
+  const activeNoteId = useRef(noteId);
+  activeNoteId.current = noteId;
+  useFocusEffect(useCallback(() => {
+    mounted.current = true;
+    lifecycle.current += 1;
+    aiRunning.current = false;
+    setLoadingTitle(false);
+    setLoadingBody(false);
+    setLoadingTags(false);
+    setLoadingAll(false);
+    setAiPhase('');
+    setAiPreview('');
+    return () => {
+      aiAbort.current?.abort();
+      aiAbort.current = null;
+      if (aiTimeout.current) clearTimeout(aiTimeout.current);
+      aiTimeout.current = null;
+      mounted.current = false;
+      lifecycle.current += 1;
+      aiRunning.current = false;
+    };
+  }, [noteId]));
+
+  function requestGuard() {
+    const owner = lifecycle.current;
+    return () => mounted.current && activeNoteId.current === noteId && lifecycle.current === owner;
+  }
+  const aiBusy = loadingAll || loadingTitle || loadingBody || loadingTags;
   const [aiDrawerExpanded, setAiDrawerExpanded] = useState(false);
   const aiPromptInputRef = useRef<TextInput>(null);
   // 拖动排序共享值：让其他图实时让位
@@ -195,7 +263,22 @@ export default function EditNoteScreen() {
     if (note) {
       setTitle(note.title ?? '');
       setBody(note.body ?? '');
+      setAiPrompt(note.generationPrompt ?? '');
+      savedAiPrompt.current = note.generationPrompt ?? '';
+      aiPromptSaveVersion.current += 1;
+      setAiPromptSaveState('saved');
+      setAiPromptSaveError('');
       setTags(JSON.parse(note.tags ?? '[]'));
+      setAiFailure('');
+      setLastAiAction(null);
+      aiAbortReason.current = null;
+      setAiPromptVisible(false);
+      setAiRulesVisible(false);
+      setAiRulesLoading(false);
+      setAiRulesError('');
+      setAiRulesSnapshot(null);
+      setGenerationChange(null);
+      setGenerationCompareVisible(false);
       draftTouchedRef.current = false;
       hydratedNoteRef.current = null;
     }
@@ -214,7 +297,50 @@ export default function EditNoteScreen() {
     hydratedNoteRef.current = note.id;
   }, [note?.id, items]);
 
-  async function ensureDraftPhotosHydrated(): Promise<DraftPhoto[]> {
+  useEffect(() => {
+    if (!aiBusy) return;
+    setAiElapsed(0);
+    const timer = setInterval(() => setAiElapsed((seconds) => seconds + 1), 1000);
+    return () => clearInterval(timer);
+  }, [aiBusy]);
+
+  async function saveAiPrompt(value: string) {
+    const noteIdForSave = noteId;
+    const version = ++aiPromptSaveVersion.current;
+    setAiPromptSaveState('saving');
+    setAiPromptSaveError('');
+    const write = aiPromptSaveQueue.current
+      .catch(() => {})
+      .then(() => updateNote(noteIdForSave, { generationPrompt: value }));
+    aiPromptSaveQueue.current = write;
+    try {
+      await write;
+      if (version === aiPromptSaveVersion.current) {
+        savedAiPrompt.current = value;
+        setAiPromptSaveState('saved');
+      }
+    } catch (error: any) {
+      if (version === aiPromptSaveVersion.current) {
+        setAiPromptSaveState('error');
+        setAiPromptSaveError(error?.message ?? '请重试保存');
+      }
+      throw error;
+    }
+  }
+
+  async function flushAiPrompt() {
+    await aiPromptSaveQueue.current;
+    if (savedAiPrompt.current !== aiPrompt) await saveAiPrompt(aiPrompt);
+  }
+
+  function changeAiPrompt(value: string) {
+    const next = Array.from(value).slice(0, PROMPT_MAX).join('');
+    setAiPrompt(next);
+    // Persist each edit in order so quickly typed later text cannot be overwritten by an older save.
+    void saveAiPrompt(next).catch(() => {});
+  }
+
+  async function ensureDraftPhotosHydrated(isCurrent = () => true): Promise<DraftPhoto[]> {
     if (!note || hydratedNoteRef.current === note.id) return draftPhotos;
     const ids: number[] = JSON.parse(note.itemIds ?? '[]');
     if (ids.length === 0) {
@@ -222,6 +348,7 @@ export default function EditNoteScreen() {
       return draftPhotos;
     }
     await loadItems();
+    if (!isCurrent()) throw new Error('生成已离开当前笔记');
     const currentItems = useStore.getState().items;
     const existingPhotos = ids.flatMap((itemId) => {
       const item = currentItems.find((candidate) => candidate.id === itemId);
@@ -237,13 +364,14 @@ export default function EditNoteScreen() {
     return next;
   }
 
-  async function commitDraftPhotos(source: 'ai_creation' | 'note_attachment'): Promise<DraftPhoto[]> {
-    const currentPhotos = await ensureDraftPhotosHydrated();
+  async function commitDraftPhotos(source: 'ai_creation' | 'note_attachment', isCurrent = () => true): Promise<DraftPhoto[]> {
+    const currentPhotos = await ensureDraftPhotosHydrated(isCurrent);
     const references = await Promise.all(currentPhotos.map((photo) =>
       photo.itemId
         ? Promise.resolve({ uri: photo.imagePath, sourceAssetId: photo.assetId ?? null })
         : getImageAssetReference(photo.assetId, photo.imagePath)
     ));
+    if (!isCurrent()) throw new Error('生成已离开当前笔记');
     const rows = await recordAssetUse(
       references.map((reference) => ({
         imagePath: reference.uri,
@@ -252,6 +380,7 @@ export default function EditNoteScreen() {
       })),
       source,
     );
+    if (!isCurrent()) throw new Error('生成已离开当前笔记');
     const next = currentPhotos.map((photo, index) => ({
       ...photo,
       key: `item-${rows[index].id}`,
@@ -264,40 +393,102 @@ export default function EditNoteScreen() {
     return next;
   }
 
+  function armAiTimeout(controller: AbortController) {
+    if (aiTimeout.current) clearTimeout(aiTimeout.current);
+    aiTimeout.current = setTimeout(() => {
+      if (aiAbort.current !== controller) return;
+      aiAbortReason.current = 'timeout';
+      controller.abort();
+    }, AI_IDLE_TIMEOUT_MS);
+  }
+
+  function cancelAiGeneration() {
+    const controller = aiAbort.current;
+    if (!controller) return;
+    aiAbortReason.current = 'user';
+    if (aiTimeout.current) clearTimeout(aiTimeout.current);
+    aiTimeout.current = null;
+    controller.abort();
+  }
+
   async function callAi(userMsg: string): Promise<string | null> {
-    const config = await getAiConfig();
-    const key = await getApiKey(config.providerId);
-    if (!key) {
-      Alert.alert('未配置 API Key', '请先在「设置 → AI 模型配置」中填写 API Key', [
-        { text: '去配置', onPress: () => router.push('/(tabs)/profile/ai-config') },
-        { text: '取消', style: 'cancel' },
-      ]);
-      return null;
-    }
+    if (aiRunning.current) return null;
+    aiRunning.current = true;
+    const controller = new AbortController();
+    aiAbort.current = controller;
+    aiAbortReason.current = null;
+    setAiFailure('');
+    armAiTimeout(controller);
+    const isCurrent = requestGuard();
+    setAiPreview('');
+    setAiPhase('正在读取配置与主题');
     try {
-      const usedPhotos = await commitDraftPhotos('ai_creation');
+      await flushAiPrompt();
+      if (controller.signal.aborted) throw new Error('AI 请求已停止');
+      const config = await getAiConfig();
+      const key = await getApiKey(config.providerId);
+      if (controller.signal.aborted) throw new Error('AI 请求已停止');
+      if (!isCurrent()) return null;
+      if (!key) {
+        Alert.alert('未配置 API Key', '请先在「设置 → AI 模型配置」中填写 API Key', [
+          { text: '去配置', onPress: () => router.push('/(tabs)/profile/ai-config') },
+          { text: '取消', style: 'cancel' },
+        ]);
+        return null;
+      }
+      if (!isCurrent()) return null;
+      setAiPhase('正在准备图片与写作经验');
+      const usedPhotos = await commitDraftPhotos('ai_creation', isCurrent);
+      if (controller.signal.aborted) throw new Error('AI 请求已停止');
       const analyses = usedPhotos
         .map((photo) => items.find((item) => item.id === photo.itemId)?.analysis ?? '')
         .filter(Boolean);
-      const memoryBlock = await buildMobileMemoryPrompt('compose').catch(() => '');
-      const systemPrompt = [buildSystemPrompt(profile ?? {}, analyses), memoryBlock]
-        .filter(Boolean)
-        .join('\n\n');
       // 关联图片进多模态请求，让出稿真正结合画面
       const images: string[] = [];
       for (const photo of usedPhotos.slice(0, 6)) {
+        if (controller.signal.aborted) throw new Error('AI 请求已停止');
         if (!photo.imagePath) continue;
         try {
           const raw = await readBase64FromUri(photo.imagePath);
+          if (controller.signal.aborted) throw new Error('AI 请求已停止');
           if (raw) images.push(raw.replace(/^data:image\/\w+;base64,/, ''));
         } catch {}
       }
-      return await chat(
-        [{ role: 'user', content: userMsg, ...(images.length > 0 ? { images } : {}) }],
-        systemPrompt,
+      if (controller.signal.aborted) throw new Error('AI 请求已停止');
+      if (!isCurrent()) return null;
+      const promptSnapshot = await buildComposePromptSnapshot({
+        profile,
+        analyses,
+        theme: aiPrompt,
+        taskPrompt: userMsg,
+        hasImages: images.length > 0,
+      });
+      if (controller.signal.aborted) throw new Error('AI 请求已停止');
+      if (!isCurrent()) return null;
+      setAiPhase('已发送，等待 AI 输出');
+      armAiTimeout(controller);
+      const result = await chatStream(
+        [{ role: 'user', content: promptSnapshot.userPrompt, ...(images.length > 0 ? { images } : {}) }],
+        promptSnapshot.systemPrompt,
+        (_delta, fullText) => {
+          if (!isCurrent()) return;
+          armAiTimeout(controller);
+          setAiPhase('正在生成');
+          setAiPreview(fullText);
+        },
+        { signal: controller.signal },
       );
+      return isCurrent() ? result : null;
     } catch (e: any) {
-      const msg: string = e.message ?? '未知错误';
+      if (!isCurrent()) return null;
+      const reason = aiAbortReason.current;
+      const msg: string = reason === 'timeout'
+        ? '长时间没有收到生成响应，已自动停止。可以重试，原稿已保留。'
+        : reason === 'user'
+          ? '已取消生成，原稿已保留。'
+          : e.message ?? '未知错误';
+      setAiFailure(msg);
+      if (reason) return null;
       if (msg.includes('401') || msg.includes('403') || msg.includes('Key')) {
         Alert.alert('Key 无效', msg, [
           { text: '去配置', onPress: () => router.push('/(tabs)/profile/ai-config') },
@@ -307,6 +498,16 @@ export default function EditNoteScreen() {
         Alert.alert('AI 生成失败', msg);
       }
       return null;
+    } finally {
+      if (aiAbort.current === controller) {
+        if (aiTimeout.current) clearTimeout(aiTimeout.current);
+        aiTimeout.current = null;
+        aiAbort.current = null;
+      }
+      if (isCurrent()) {
+        aiRunning.current = false;
+        setAiPhase('');
+      }
     }
   }
 
@@ -319,76 +520,162 @@ export default function EditNoteScreen() {
       : '';
   }
 
+  function fullNoteTaskPrompt(): string {
+    return (
+      `${imageHint() || '结合本篇主题与已有素材。'}一次写出完整小红书笔记（发布文案本体，不是聊天），严格按下面格式纯文本输出：\n` +
+      `第一行：标题（尽量18–20字且不超过20字，信息不足时不凑字）\n\n` +
+      `空一行后写正文：根据素材决定篇幅，不超过1000字，保留关键细节，分段清晰，适量 emoji，不要 Markdown，不要「标题：」前缀，不要重复标题或额外套话。\n` +
+      `正文最后另起一行，用空格分隔 5-8 个 #话题标签`
+    );
+  }
+
+  async function openComposeRules() {
+    setAiPromptVisible(false);
+    setAiRulesSnapshot(null);
+    setAiRulesError('');
+    setAiRulesVisible(true);
+    setAiRulesLoading(true);
+    const isCurrent = requestGuard();
+    try {
+      const currentPhotos = await ensureDraftPhotosHydrated(isCurrent);
+      const analyses = currentPhotos
+        .map((photo) => items.find((item) => item.id === photo.itemId)?.analysis ?? '')
+        .filter(Boolean);
+      const snapshot = await buildComposePromptSnapshot({
+        profile,
+        analyses,
+        theme: aiPrompt,
+        taskPrompt: fullNoteTaskPrompt(),
+        hasImages: currentPhotos.length > 0,
+      });
+      if (!isCurrent()) return;
+      setAiRulesSnapshot(snapshot);
+    } catch (error: any) {
+      if (isCurrent()) setAiRulesError(error?.message ?? '读取本次规则失败，请重试');
+    } finally {
+      if (isCurrent()) setAiRulesLoading(false);
+    }
+  }
+
+  function stageGeneratedChange(action: AiGenerationAction, updates: Partial<GeneratedValues>) {
+    const before: GeneratedValues = { title, body, tags: [...tags] };
+    const after: GeneratedValues = { ...before, ...updates, tags: updates.tags ? [...updates.tags] : before.tags };
+    setGenerationChange({ status: 'pending', action, before, after });
+    setGenerationCompareVisible(true);
+  }
+
+  function adoptGeneratedChange() {
+    if (!generationChange) return;
+    setTitle(generationChange.after.title);
+    setBody(generationChange.after.body);
+    setTags([...generationChange.after.tags]);
+    setGenerationChange({ ...generationChange, status: 'adopted' });
+    setGenerationCompareVisible(false);
+  }
+
+  function undoGeneratedChange() {
+    if (!generationChange) return;
+    if (generationChange.status === 'adopted') {
+      setTitle(generationChange.before.title);
+      setBody(generationChange.before.body);
+      setTags([...generationChange.before.tags]);
+    }
+    setGenerationChange(null);
+    setGenerationCompareVisible(false);
+  }
+
+  function clearGenerationChange() {
+    if (!generationChange) return;
+    setGenerationChange(null);
+    setGenerationCompareVisible(false);
+  }
+
   async function handleAiTitle() {
+    const isCurrent = requestGuard();
+    setLastAiAction('title');
+    setAiFailure('');
     setLoadingTitle(true);
     const userMsg = body
-      ? `${imageHint()}根据以下正文，写一个小红书标题，${TITLE_MAX}字以内，只输出标题本身这一行（不要 Markdown、不要「标题：」前缀）：\n${body}`
-      : `${imageHint() || '家居软装主题。'}写一个家居软装小红书标题，${TITLE_MAX}字以内，只输出标题本身这一行。`;
+      ? `${imageHint()}根据以下正文，写一个小红书标题，尽量18–20字且不超过${TITLE_MAX}字，信息不足时不凑字，只输出标题本身这一行（不要 Markdown、不要「标题：」前缀）：\n${body}`
+      : `${imageHint() || '结合本篇主题与已有素材。'}写一个小红书标题，尽量18–20字且不超过${TITLE_MAX}字，信息不足时不凑字，只输出标题本身这一行。`;
     const result = await callAi(userMsg);
-    if (result) setTitle(stripMarkdownForXhsTitle(result).slice(0, TITLE_MAX));
-    setLoadingTitle(false);
+    if (isCurrent() && result) stageGeneratedChange('title', { title: limitTitle(stripMarkdownForXhsTitle(result)) });
+    if (isCurrent()) setLoadingTitle(false);
   }
 
   async function handleAiBody() {
+    const isCurrent = requestGuard();
+    setLastAiAction('body');
+    setAiFailure('');
     setLoadingBody(true);
     const userMsg = title
-      ? `${imageHint()}根据标题「${title}」写小红书正文（发布文案本体，不是聊天）。200-500字，分段清晰，加 emoji，结尾 5-8 个话题标签。只输出正文纯文本：禁止 Markdown、禁止「标题：」、禁止「谁懂啊/今天给大家分享」这类会话或过场，不要重复标题。`
-      : `${imageHint() || '家居软装主题。'}写一篇家居软装小红书正文（发布文案本体，不是聊天）。200-500字，分段清晰，加 emoji，结尾 5-8 个话题标签。只输出正文纯文本：禁止 Markdown、禁止「标题：」、禁止「谁懂啊/今天给大家分享」这类会话或过场。`;
+      ? `${imageHint()}根据标题「${title}」写小红书正文（发布文案本体，不是聊天）。根据素材决定篇幅，不超过1000字，保留关键细节，分段清晰，适量 emoji。只输出正文纯文本：禁止 Markdown、禁止「标题：」、保留用户原有语气，避免额外套话，不要重复标题。`
+      : `${imageHint() || '结合本篇主题与已有素材。'}写一篇小红书正文（发布文案本体，不是聊天）。根据素材决定篇幅，不超过1000字，保留关键细节，分段清晰，适量 emoji。只输出正文纯文本：禁止 Markdown、禁止「标题：」、保留用户原有语气，避免额外套话。`;
     const result = await callAi(userMsg);
-    if (result) {
-      const { body: cleaned } = extractTitleAndBody(result);
-      setBody((cleaned || stripMarkdownForXhs(result)).slice(0, BODY_MAX));
+    if (isCurrent() && result) {
+      stageGeneratedChange('body', { body: stripMarkdownForXhs(result).slice(0, BODY_MAX) });
     }
-    setLoadingBody(false);
+    if (isCurrent()) setLoadingBody(false);
   }
 
   async function handleAiTags() {
+    const isCurrent = requestGuard();
+    setLastAiAction('tags');
+    setAiFailure('');
     setLoadingTags(true);
     const context = title || body
       ? `标题：${title}\n正文摘要：${body.slice(0, 100)}`
-      : '家居软装出租屋改造';
+      : aiPrompt || '根据本篇图片与用户资料';
     const userMsg = `${imageHint()}根据以下内容，生成 5-8 个适合小红书的话题标签，只输出不带#的标签词，用逗号分隔，不要其他内容：\n${context}`;
     const result = await callAi(userMsg);
-    if (result) {
+    if (isCurrent() && result) {
       const newTags = result
         .split(/[,，、\s]+/)
         .map((t) => t.trim().replace(/^#/, ''))
         .filter((t) => t.length > 0 && t.length < 20);
-      setTags(newTags);
+      stageGeneratedChange('tags', { tags: newTags });
     }
-    setLoadingTags(false);
+    if (isCurrent()) setLoadingTags(false);
   }
 
   /** 一键生成：标题 + 正文 + 话题，一次 AI 调用 */
-  async function handleAiAll(prompt?: string) {
+  async function handleAiAll() {
+    const isCurrent = requestGuard();
+    setLastAiAction('all');
+    setAiFailure('');
     setLoadingAll(true);
     try {
-      const focusHint = prompt?.trim()
-        ? `这次生成必须围绕用户主题/提示词：「${prompt.trim()}」，不要跑偏。\n`
-        : '';
-      const userMsg =
-        `${focusHint}${imageHint() || '家居软装主题。'}一次写出完整小红书笔记（发布文案本体，不是聊天），严格按下面格式纯文本输出：\n` +
-        `第一行：标题（20字以内）\n\n` +
-        `空一行后写正文：200-500字，分段清晰，用 emoji，不要 Markdown，不要「标题：」「谁懂啊/今天给大家分享」这类话，不要重复标题。\n` +
-        `正文最后另起一行，用空格分隔 5-8 个 #话题标签`;
+      const userMsg = fullNoteTaskPrompt();
       const result = await callAi(userMsg);
-      if (!result) return;
+      if (!isCurrent() || !result) return;
       const { title: t, body: b } = extractTitleAndBody(result);
-      const nextTitle = t || stripMarkdownForXhsTitle(result).slice(0, TITLE_MAX);
+      const nextTitle = t || limitTitle(stripMarkdownForXhsTitle(result));
       let nextBody = b || stripMarkdownForXhs(result);
+      let nextTags = [...tags];
 
       // 正文末尾的 #话题 抽到标签区（发布时会再拼回去）
       const tagMatches = [...nextBody.matchAll(/#([^\s#]{1,20})/g)].map((m) => m[1]);
       if (tagMatches.length > 0) {
         const uniq = Array.from(new Set(tagMatches)).slice(0, 12);
-        setTags(uniq);
+        nextTags = uniq;
         nextBody = nextBody.replace(/#([^\s#]{1,20})/g, '').replace(/\n{3,}/g, '\n\n').trim();
       }
-      setTitle(nextTitle.slice(0, TITLE_MAX));
-      setBody(nextBody.slice(0, BODY_MAX));
+      stageGeneratedChange('all', {
+        title: limitTitle(nextTitle),
+        body: nextBody.slice(0, BODY_MAX),
+        tags: nextTags,
+      });
     } finally {
-      setLoadingAll(false);
+      if (isCurrent()) setLoadingAll(false);
     }
+  }
+
+  function retryLastAiAction() {
+    setAiFailure('');
+    if (lastAiAction === 'title') void handleAiTitle();
+    else if (lastAiAction === 'body') void handleAiBody();
+    else if (lastAiAction === 'tags') void handleAiTags();
+    else if (lastAiAction === 'all') void handleAiAll();
   }
 
   function openAiAllDrawer() {
@@ -397,10 +684,12 @@ export default function EditNoteScreen() {
 
   async function handleSave(silent = true) {
     try {
+      await flushAiPrompt();
       const trackedPhotos = await commitDraftPhotos('note_attachment');
       await updateNote(noteId, {
-        title: stripMarkdownForXhsTitle(title).slice(0, TITLE_MAX),
+        title: limitTitle(stripMarkdownForXhsTitle(title)),
         body: stripMarkdownForXhs(body).slice(0, BODY_MAX),
+        generationPrompt: aiPrompt,
         tags: JSON.stringify(tags),
         itemIds: JSON.stringify(trackedPhotos.map((photo) => photo.itemId)),
       } as any);
@@ -412,7 +701,10 @@ export default function EditNoteScreen() {
 
   /** 返回：不自动存草稿；空白草稿直接丢掉 */
   async function handleBack() {
+    try { await flushAiPrompt(); }
+    catch (error: any) { Alert.alert('主题保存失败', error?.message ?? '请重试'); return; }
     const hasContent =
+      aiPrompt.trim().length > 0 ||
       title.trim().length > 0 ||
       body.trim().length > 0 ||
       tags.length > 0 ||
@@ -433,13 +725,17 @@ export default function EditNoteScreen() {
   }, [frequentTags, tagInput, tags, notes]);
 
   function addTag() {
+    if (aiBusy) return;
     const raw = tagInput.trim();
     if (!raw) return;
     const newOnes = raw
       .split(/[,，、\s]+/)
       .map((t) => t.trim().replace(/^#/, ''))
       .filter((t) => t.length > 0 && t.length < 20 && !tags.includes(t));
-    if (newOnes.length > 0) setTags([...tags, ...newOnes]);
+    if (newOnes.length > 0) {
+      clearGenerationChange();
+      setTags([...tags, ...newOnes]);
+    }
     setTagInput('');
   }
 
@@ -517,6 +813,16 @@ export default function EditNoteScreen() {
     id: photo.itemId ?? photo.key,
     imagePath: photo.imagePath,
   }));
+  const generationComparisonRows = generationChange
+    ? (generationChange.action === 'all'
+        ? ['title', 'body', 'tags'] as const
+        : [generationChange.action] as const)
+        .map((field) => ({
+          label: field === 'title' ? '标题' : field === 'body' ? '正文' : '话题',
+          before: field === 'tags' ? generationChange.before.tags.map((tag) => `#${tag}`).join(' ') : generationChange.before[field],
+          after: field === 'tags' ? generationChange.after.tags.map((tag) => `#${tag}`).join(' ') : generationChange.after[field],
+        }))
+    : [];
 
   return (
     <AuroraBackground style={{ flex: 1 }}>
@@ -561,22 +867,72 @@ export default function EditNoteScreen() {
             </View>
           </ScrollView>
 
+          {aiBusy && (
+            <View style={styles.generationPanel} accessibilityLiveRegion="polite">
+              <View style={styles.aiGenerationHeader}>
+                <View style={styles.fieldRight}>
+                  <ActivityIndicator size="small" color={Brand.red} />
+                  <Text style={styles.aiDrawerHint}>{aiPhase || '准备生成'} · {aiElapsed} 秒</Text>
+                </View>
+                <TouchableOpacity style={styles.aiCancelButton} onPress={cancelAiGeneration} accessibilityRole="button">
+                  <Text style={styles.aiCancelText}>取消生成</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.aiDrawerVoiceHint}>无响应超过 120 秒会自动停止；完成后填入笔记，生成期间保留原稿。</Text>
+              {aiPreview ? <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled>
+                <Text selectable style={styles.aiDrawerHint}>{aiPreview}</Text>
+              </ScrollView> : null}
+            </View>
+          )}
+          {!!aiFailure && !aiBusy && (
+            <View style={styles.aiFailurePanel} accessibilityLiveRegion="polite">
+              <Text style={styles.aiFailureText}>{aiFailure}</Text>
+              {lastAiAction && (
+                <TouchableOpacity style={styles.aiRetryButton} onPress={retryLastAiAction} accessibilityRole="button">
+                  <Ionicons name="refresh" size={14} color={Brand.red} />
+                  <Text style={styles.aiRetryText}>重试</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+          {generationChange && !aiBusy && (
+            <View style={styles.generationReviewPanel} accessibilityLiveRegion="polite">
+              <View style={{ flex: 1 }}>
+                <Text style={styles.generationReviewTitle}>
+                  {generationChange.status === 'pending' ? 'AI 结果待采用' : `已采用${AI_ACTION_LABELS[generationChange.action]}生成结果`}
+                </Text>
+                <Text style={styles.aiDrawerVoiceHint}>可对照生成前内容；采用后仍可撤销。</Text>
+              </View>
+              <TouchableOpacity onPress={() => setGenerationCompareVisible(true)} style={styles.aiRetryButton} accessibilityRole="button">
+                <Text style={styles.aiRetryText}>对比</Text>
+              </TouchableOpacity>
+              {generationChange.status === 'adopted' && (
+                <TouchableOpacity onPress={undoGeneratedChange} style={styles.aiRetryButton} accessibilityRole="button">
+                  <Text style={styles.aiRetryText}>撤销</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+
           {/* 标题 */}
           <View style={styles.field}>
             <View style={styles.fieldHeader}>
               <Text style={styles.fieldLabel}>标题</Text>
               <View style={styles.fieldRight}>
-                <Text style={styles.count}>{title.length}/{TITLE_MAX}</Text>
-                <AiGhost onPress={() => void handleAiTitle()} loading={loadingTitle} />
+                <Text style={styles.count}>{titleChars(title).length}/{TITLE_MAX}</Text>
+                <AiGhost onPress={() => void handleAiTitle()} loading={aiBusy} />
               </View>
             </View>
             <TextInput
               style={styles.titleInput}
               value={title}
-              onChangeText={(v) => setTitle(v.slice(0, TITLE_MAX))}
+              editable={!aiBusy}
+              onChangeText={(v) => {
+                clearGenerationChange();
+                setTitle(limitTitle(v));
+              }}
               placeholder="填写标题会有更多赞哦～"
               placeholderTextColor={TText.quaternary}
-              maxLength={TITLE_MAX}
             />
           </View>
 
@@ -586,13 +942,17 @@ export default function EditNoteScreen() {
               <Text style={styles.fieldLabel}>正文</Text>
               <View style={styles.fieldRight}>
                 <Text style={styles.count}>{body.length}/{BODY_MAX}</Text>
-                <AiGhost onPress={() => void handleAiBody()} loading={loadingBody} />
+                <AiGhost onPress={() => void handleAiBody()} loading={aiBusy} />
               </View>
             </View>
             <TextInput
               style={styles.bodyInput}
               value={body}
-              onChangeText={(v) => setBody(v.slice(0, BODY_MAX))}
+              editable={!aiBusy}
+              onChangeText={(v) => {
+                clearGenerationChange();
+                setBody(v.slice(0, BODY_MAX));
+              }}
               placeholder="写下笔记内容，分段清晰更容易被收藏～"
               placeholderTextColor={TText.quaternary}
               multiline
@@ -605,11 +965,11 @@ export default function EditNoteScreen() {
           <View style={styles.field}>
             <View style={styles.fieldHeader}>
               <Text style={styles.fieldLabel}>话题</Text>
-              <AiGhost onPress={() => void handleAiTags()} loading={loadingTags} />
+              <AiGhost onPress={() => void handleAiTags()} loading={aiBusy} />
             </View>
             <View style={styles.tagRow}>
               {tags.map((t) => (
-                <TouchableOpacity key={t} onPress={() => setTags(tags.filter((x) => x !== t))} style={styles.tagChip}>
+                <TouchableOpacity disabled={aiBusy} key={t} onPress={() => { clearGenerationChange(); setTags(tags.filter((x) => x !== t)); }} style={styles.tagChip}>
                   <Text style={styles.tagChipText}>#{t}</Text>
                   <Ionicons name="close" size={11} color={Brand.red} />
                 </TouchableOpacity>
@@ -621,12 +981,13 @@ export default function EditNoteScreen() {
                 style={styles.tagInput}
                 value={tagInput}
                 onChangeText={setTagInput}
+                editable={!aiBusy}
                 onSubmitEditing={addTag}
                 placeholder="添加话题"
                 placeholderTextColor={TText.quaternary}
                 returnKeyType="done"
               />
-              <TouchableOpacity onPress={addTag} style={styles.tagAddBtn}>
+              <TouchableOpacity disabled={aiBusy} onPress={addTag} style={styles.tagAddBtn}>
                 <Text style={styles.tagAddText}>添加</Text>
               </TouchableOpacity>
             </View>
@@ -635,7 +996,9 @@ export default function EditNoteScreen() {
                 {tagSuggestions.map((t) => (
                   <TouchableOpacity
                     key={t}
+                    disabled={aiBusy}
                     onPress={() => {
+                      clearGenerationChange();
                       setTags([...tags, t]);
                       setTagInput('');
                     }}
@@ -656,7 +1019,7 @@ export default function EditNoteScreen() {
           <TouchableOpacity
             style={styles.aiChatBtn}
             onPress={openAiAllDrawer}
-            disabled={loadingAll}
+            disabled={aiBusy}
           >
             {loadingAll
               ? <ActivityIndicator size="small" color={Brand.red} />
@@ -937,24 +1300,44 @@ export default function EditNoteScreen() {
                 <Text style={styles.aiDrawerHint}>
                   可补充这次要围绕的主题或提示词（图多时防跑偏）。不填也可以直接生成。点上方横杠可展开。
                 </Text>
+                <View style={styles.aiRulesEntry}>
+                  <Text style={styles.aiRulesEntryLabel}>查看本次实际使用的规则与组合提示词</Text>
+                  <TouchableOpacity
+                    style={styles.aiRulesEntryButton}
+                    onPress={() => void openComposeRules()}
+                    accessibilityRole="button"
+                  >
+                    <Ionicons name="reader-outline" size={15} color={Brand.red} />
+                    <Text style={styles.aiRulesEntryButtonText}>本次规则</Text>
+                  </TouchableOpacity>
+                </View>
                 <Pressable onPress={() => aiPromptInputRef.current?.focus()}>
                   <TextInput
                     ref={aiPromptInputRef}
                     style={[styles.aiDrawerInput, aiDrawerExpanded && { minHeight: 180 }]}
                     value={aiPrompt}
-                    onChangeText={setAiPrompt}
+                    onChangeText={changeAiPrompt}
                     placeholder="例如：突出出租屋改造的预算和收纳细节"
                     placeholderTextColor={TText.quaternary}
                     multiline
-                    maxLength={300}
                     autoFocus
                     textAlignVertical="top"
                     blurOnSubmit={false}
                   />
                 </Pressable>
                 <Text style={styles.aiDrawerVoiceHint}>
-                  语音：点输入框后用键盘上的 🎤 系统听写即可
+                  {Array.from(aiPrompt).length}/{PROMPT_MAX} · {
+                    aiPromptSaveState === 'saving' ? '主题保存中…' : aiPromptSaveState === 'error' ? '主题保存失败' : '主题已保存'
+                  }，重新生成时继续使用。语音可使用键盘上的 🎤 系统听写
                 </Text>
+                {aiPromptSaveState === 'error' && (
+                  <View style={styles.aiRulesEntry}>
+                    <Text style={styles.aiPromptSaveError}>{aiPromptSaveError}</Text>
+                    <TouchableOpacity onPress={() => void saveAiPrompt(aiPrompt).catch(() => {})} accessibilityRole="button">
+                      <Text style={styles.aiPromptRetryText}>重试保存</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
                 <View style={styles.aiDrawerActions}>
                   <TouchableOpacity
                     style={styles.aiDrawerCancel}
@@ -967,11 +1350,11 @@ export default function EditNoteScreen() {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.aiDrawerGo, loadingAll && { opacity: 0.6 }]}
-                    disabled={loadingAll}
+                    disabled={aiBusy}
                     onPress={() => {
                       setAiDrawerExpanded(false);
                       setAiPromptVisible(false);
-                      void handleAiAll(aiPrompt);
+                      void handleAiAll();
                     }}
                   >
                     {loadingAll
@@ -984,12 +1367,166 @@ export default function EditNoteScreen() {
             </KeyboardAvoidingView>
           </View>
         </Modal>
+
+        <Modal
+          visible={aiRulesVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => {
+            setAiRulesVisible(false);
+            setAiPromptVisible(true);
+          }}
+        >
+          <View style={styles.aiRulesOverlay}>
+            <View style={styles.aiRulesCard}>
+              <View style={styles.aiRulesHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.aiRulesTitle}>本次规则</Text>
+                  <Text style={styles.aiRulesSubtitle}>读取手机当前配置与本篇主题</Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => {
+                    setAiRulesVisible(false);
+                    setAiPromptVisible(true);
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel="返回主题编辑"
+                  hitSlop={8}
+                >
+                  <Ionicons name="close" size={22} color={TText.secondary} />
+                </TouchableOpacity>
+              </View>
+              {aiRulesLoading ? (
+                <View style={styles.aiRulesLoading}>
+                  <ActivityIndicator color={Brand.red} />
+                  <Text style={styles.aiRulesLoadingText}>正在读取当前人设与启用经验…</Text>
+                </View>
+              ) : aiRulesError ? (
+                <View style={styles.aiRulesErrorBox}>
+                  <Text style={styles.aiRulesErrorText}>读取失败：{aiRulesError}</Text>
+                  <Text style={styles.aiRulesErrorHint}>生成也会检查经验读取状态，不会静默跳过。</Text>
+                </View>
+              ) : aiRulesSnapshot ? (
+                <ScrollView style={styles.aiRulesScroll} contentContainerStyle={styles.aiRulesContent}>
+                  <Text style={styles.aiRulesSectionTitle}>生成端</Text>
+                  <Text style={styles.aiRulesText}>
+                    {aiRulesSnapshot.clientLabel} · {aiRulesSnapshot.providerLabel} · {aiRulesSnapshot.modelLabel}\n接口主机：{aiRulesSnapshot.endpointLabel}
+                  </Text>
+
+                  <Text style={styles.aiRulesSectionTitle}>账号人设</Text>
+                  <Text style={styles.aiRulesText}>{aiRulesSnapshot.personaPrompt}</Text>
+
+                  <Text style={styles.aiRulesSectionTitle}>当前主题</Text>
+                  <Text style={styles.aiRulesText}>{aiRulesSnapshot.theme || '未填写主题'}</Text>
+
+                  <Text style={styles.aiRulesSectionTitle}>本次启用经验与已确认记忆</Text>
+                  <Text style={styles.aiRulesText}>{aiRulesSnapshot.experiencePrompt || '当前没有适用于出稿的用户经验或已确认事实记忆'}</Text>
+
+                  <Text style={styles.aiRulesSectionTitle}>完整组合提示词</Text>
+                  <Text selectable style={styles.aiRulesPromptText}>{aiRulesSnapshot.combinedPrompt}</Text>
+                  <Text style={styles.aiRulesPrivacyHint}>API Key 不会显示在此处。</Text>
+                </ScrollView>
+              ) : null}
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={generationCompareVisible && !!generationChange}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setGenerationCompareVisible(false)}
+        >
+          <View style={styles.generationCompareOverlay}>
+            <View style={styles.generationCompareCard}>
+              <View style={styles.aiRulesHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.aiRulesTitle}>对比 AI {generationChange ? AI_ACTION_LABELS[generationChange.action] : ''}</Text>
+                  <Text style={styles.aiRulesSubtitle}>
+                    {generationChange?.status === 'pending' ? '原稿未改动，选择是否采用新结果' : '可以保留当前结果或撤销恢复原稿'}
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => setGenerationCompareVisible(false)} hitSlop={8} accessibilityRole="button" accessibilityLabel="关闭对比">
+                  <Ionicons name="close" size={22} color={TText.secondary} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.generationCompareScroll} contentContainerStyle={styles.generationCompareContent}>
+                {generationComparisonRows.map((row) => (
+                  <View key={row.label} style={styles.generationCompareRow}>
+                    <Text style={styles.aiRulesSectionTitle}>{row.label}</Text>
+                    <Text style={styles.generationCompareLabel}>生成前</Text>
+                    <Text selectable style={styles.generationCompareValue}>{row.before || '（空）'}</Text>
+                    <Text style={styles.generationCompareLabel}>AI 结果</Text>
+                    <Text selectable style={styles.generationCompareValue}>{row.after || '（空）'}</Text>
+                  </View>
+                ))}
+              </ScrollView>
+              <View style={styles.generationCompareActions}>
+                {generationChange?.status === 'pending' ? (
+                  <>
+                    <TouchableOpacity style={styles.aiDrawerCancel} onPress={undoGeneratedChange}>
+                      <Text style={styles.aiDrawerCancelText}>撤销这次生成</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.aiDrawerGo} onPress={adoptGeneratedChange}>
+                      <Text style={styles.aiDrawerGoText}>采用生成结果</Text>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <>
+                    <TouchableOpacity style={styles.aiDrawerCancel} onPress={() => setGenerationCompareVisible(false)}>
+                      <Text style={styles.aiDrawerCancelText}>保留当前结果</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.aiDrawerGo, styles.generationUndoButton]} onPress={undoGeneratedChange}>
+                      <Text style={styles.aiDrawerGoText}>撤销并恢复原稿</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </View>
+            </View>
+          </View>
+        </Modal>
       </KeyboardAvoidingView>
     </AuroraBackground>
   );
 }
 
 const styles = StyleSheet.create({
+  generationPanel: { padding: 14, marginBottom: 18, gap: 8, borderRadius: 12, backgroundColor: Brand.redSoft },
+  aiGenerationHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  aiCancelButton: { paddingHorizontal: 11, paddingVertical: 7, borderRadius: Radius.pill, backgroundColor: '#fff' },
+  aiCancelText: { fontSize: Font.caption, color: TText.secondary, fontWeight: Font.medium },
+  aiFailurePanel: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+    padding: 12, marginBottom: 16, borderRadius: 12,
+    backgroundColor: '#FFF1F0', borderWidth: StyleSheet.hairlineWidth, borderColor: '#FECACA',
+  },
+  aiFailureText: { flex: 1, fontSize: Font.caption, lineHeight: 18, color: Brand.red },
+  aiRetryButton: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 7 },
+  aiRetryText: { fontSize: Font.caption, color: Brand.red, fontWeight: Font.semibold },
+  generationReviewPanel: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    padding: 12, marginBottom: 14, borderRadius: 12,
+    backgroundColor: '#FFF8E8', borderWidth: StyleSheet.hairlineWidth, borderColor: '#FDE68A',
+  },
+  generationReviewTitle: { fontSize: Font.footnote, fontWeight: Font.semibold, color: TText.primary },
+  generationCompareOverlay: {
+    flex: 1, justifyContent: 'center', alignItems: 'center',
+    paddingHorizontal: 18, backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  generationCompareCard: {
+    width: '100%', maxHeight: '88%', backgroundColor: '#fff',
+    borderRadius: 18, overflow: 'hidden', paddingTop: 18,
+  },
+  generationCompareScroll: { flexShrink: 1 },
+  generationCompareContent: { padding: 18, gap: 16 },
+  generationCompareRow: { gap: 6 },
+  generationCompareLabel: { marginTop: 5, fontSize: Font.caption, color: TText.tertiary },
+  generationCompareValue: {
+    fontSize: Font.footnote, color: TText.secondary, lineHeight: 20,
+    padding: 10, borderRadius: 9, backgroundColor: '#F7F7F8',
+  },
+  generationCompareActions: { flexDirection: 'row', gap: 10, paddingHorizontal: 18, paddingBottom: 16, paddingTop: 8 },
+  generationUndoButton: { backgroundColor: Brand.red },
   content: { padding: 16, paddingBottom: 32 },
   imgRow: { flexDirection: 'row', gap: THUMB_GAP, paddingHorizontal: 2 },
   thumbWrap: {
@@ -1194,6 +1731,14 @@ const styles = StyleSheet.create({
   },
   aiDrawerTitle: { fontSize: Font.title3, fontWeight: Font.bold, color: TText.primary },
   aiDrawerHint: { fontSize: Font.footnote, color: TText.secondary, lineHeight: 18 },
+  aiRulesEntry: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  aiRulesEntryLabel: { flex: 1, fontSize: Font.caption, color: TText.secondary },
+  aiRulesEntryButton: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 10, paddingVertical: 7, borderRadius: Radius.pill,
+    backgroundColor: Brand.redSoft,
+  },
+  aiRulesEntryButtonText: { fontSize: Font.caption, color: Brand.red, fontWeight: Font.semibold },
   aiDrawerInput: {
     minHeight: 88, maxHeight: 140,
     borderWidth: StyleSheet.hairlineWidth, borderColor: '#E4E4E7',
@@ -1202,6 +1747,8 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top', backgroundColor: '#FAFAFA',
   },
   aiDrawerVoiceHint: { fontSize: Font.caption, color: TText.tertiary },
+  aiPromptSaveError: { flex: 1, fontSize: Font.caption, color: Brand.red },
+  aiPromptRetryText: { fontSize: Font.caption, color: Brand.red, fontWeight: Font.semibold },
   aiDrawerActions: { flexDirection: 'row', gap: 10, marginTop: 6 },
   aiDrawerCancel: {
     flex: 1, alignItems: 'center', paddingVertical: 13,
@@ -1213,6 +1760,35 @@ const styles = StyleSheet.create({
     borderRadius: 12, backgroundColor: Brand.red,
   },
   aiDrawerGoText: { fontSize: Font.body, fontWeight: Font.semibold, color: '#fff' },
+  aiRulesOverlay: {
+    flex: 1, justifyContent: 'center', alignItems: 'center',
+    paddingHorizontal: 18, backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  aiRulesCard: {
+    width: '100%', maxHeight: '88%', backgroundColor: '#fff',
+    borderRadius: 18, overflow: 'hidden', paddingTop: 18,
+  },
+  aiRulesHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingHorizontal: 18, paddingBottom: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Glass.border,
+  },
+  aiRulesTitle: { fontSize: Font.title3, fontWeight: Font.bold, color: TText.primary },
+  aiRulesSubtitle: { marginTop: 3, fontSize: Font.caption, color: TText.tertiary },
+  aiRulesScroll: { flexShrink: 1 },
+  aiRulesContent: { padding: 18, gap: 8 },
+  aiRulesSectionTitle: { marginTop: 8, fontSize: Font.footnote, fontWeight: Font.semibold, color: TText.primary },
+  aiRulesText: { fontSize: Font.caption, color: TText.secondary, lineHeight: 19 },
+  aiRulesPromptText: {
+    fontSize: 12, color: TText.secondary, lineHeight: 18,
+    padding: 12, borderRadius: 10, backgroundColor: '#F7F7F8',
+  },
+  aiRulesPrivacyHint: { marginTop: 8, fontSize: Font.caption, color: TText.tertiary, textAlign: 'center' },
+  aiRulesLoading: { minHeight: 160, justifyContent: 'center', alignItems: 'center', gap: 10 },
+  aiRulesLoadingText: { fontSize: Font.footnote, color: TText.secondary },
+  aiRulesErrorBox: { padding: 18, gap: 8 },
+  aiRulesErrorText: { fontSize: Font.footnote, color: Brand.red },
+  aiRulesErrorHint: { fontSize: Font.caption, color: TText.secondary },
 
   titleInput: {
     fontSize: Font.title3, fontWeight: Font.semibold, color: TText.primary,

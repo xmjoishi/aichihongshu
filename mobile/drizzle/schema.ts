@@ -18,6 +18,7 @@ export const notes = sqliteTable('notes', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   title: text('title'),
   body: text('body'),
+  generationPrompt: text('generation_prompt').notNull().default(''),
   tags: text('tags').notNull().default('[]'),
   itemIds: text('item_ids').notNull().default('[]'),
   status: text('status').notNull().default('draft'),

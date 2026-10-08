@@ -165,7 +165,7 @@ export default function ChatScreen() {
     setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 50);
     try {
       const analyses = linkedItems.map((i) => i.analysis ?? '').filter(Boolean);
-      const memoryBlock = await buildMobileMemoryPrompt('chat').catch(() => '');
+      const memoryBlock = await buildMobileMemoryPrompt('chat');
       const sys = [
         buildSystemPrompt(
           {

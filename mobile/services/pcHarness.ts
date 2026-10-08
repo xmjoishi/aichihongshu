@@ -1,3 +1,4 @@
+import type { readMobileSystemRulesSnapshot } from './writingRules';
 /**
  * PC Harness companion contract.
  *
@@ -27,6 +28,7 @@ export type PcHarnessHealth = {
   service: 'pc-harness';
   protocolVersion: string;
   accountId?: number;
+  capabilities?: string[];
 };
 
 export type PcHarnessMemoryCommand = {
@@ -39,6 +41,7 @@ export type PcHarnessMemoryCommand = {
 export type PcHarnessMemoryCommandResult = {
   success: boolean;
   cacheSynced: boolean;
+  systemRules?: ReturnType<typeof readMobileSystemRulesSnapshot>;
   message?: string;
 };
 
@@ -348,6 +351,27 @@ function makeClient(config: PcHarnessConfig) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...body, origin: 'mobile' }),
       }),
+
+    replaceMobilePromptSnapshot: (body: {
+      accountId: number;
+      prompts: Array<{
+        localId: number;
+        remoteId: number | null;
+        title: string;
+        content: string;
+        enabled: boolean;
+        applyScope: string;
+        applyTarget: string;
+        sortOrder: number;
+      }>;
+    }) => request<{
+      mappings: Array<{ localId: number; remoteId: number }>;
+      deletedPrompts: number;
+    }>(`${API_PREFIX}/memory/prompts/snapshot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
 
     createMobileExperiencePrompt: (body: {
       title: string;

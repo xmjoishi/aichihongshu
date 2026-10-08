@@ -1,5 +1,6 @@
 import { Share as RNShare, TurboModuleRegistry, NativeModules } from 'react-native';
 import { resolveLocalUri, exportToAlbum } from './media';
+import { withShareTitle } from '../utils/publishText';
 
 export type ShareOutcome = 'shared' | 'dismissed';
 
@@ -38,15 +39,16 @@ async function toFileUrls(uris: string[]): Promise<string[]> {
  * 唤起系统分享面板，尽量一次带出全部图片 + 文案。
  * - 有 react-native-share 原生模块（dev build）：多图一次带出
  * - Expo Go / 无原生模块：自动把图导出到相册（可多选），分享面板带文案+首图作预览
+ * `shared` 仅表示分享面板返回了分享动作，无法确认小红书笔记是否发布。
  */
 export async function shareImagesWithText(
   uris: string[],
-  options: { message?: string; title?: string; albumName?: string } = {},
+  options: { message?: string; title?: string; albumName?: string; skipFallbackExport?: boolean } = {},
 ): Promise<ShareOutcome> {
   const urls = await toFileUrls(uris);
   if (urls.length === 0) throw new Error('没有可分享的图片');
 
-  const message = options.message ?? '';
+  const message = withShareTitle(options.title ?? '', options.message ?? '');
   const title = options.title;
 
   // ── 主路径：react-native-share 多图 ──
@@ -64,17 +66,15 @@ export async function shareImagesWithText(
     } catch (e) {
       const msg = String((e as Error)?.message ?? e);
       if (/user did not share|cancelled|canceled|dismiss/i.test(msg)) return 'dismissed';
-      // 继续走 RN Share 兜底
+      // 原生多图入口已确认可用但启动失败时，不要静默退成首图分享。
+      // 调用方会给出错误提示；用户仍可通过“导出到相册”手动补齐图片。
+      throw e;
     }
   }
 
   // ── 兜底：RN Share（只能带 1 张）+ 多图进相册 ──
-  if (urls.length > 1 && options.albumName) {
-    try {
-      await exportToAlbum(uris, options.albumName);
-    } catch {
-      // 导出失败不阻断分享
-    }
+  if (urls.length > 1 && options.albumName && !options.skipFallbackExport) {
+    await exportToAlbum(uris, options.albumName);
   }
 
   const payload: { message?: string; url?: string; title?: string } = {};

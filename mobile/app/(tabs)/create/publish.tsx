@@ -5,84 +5,89 @@ import {
 
 const SCREEN_W = Dimensions.get('window').width;
 import * as Clipboard from 'expo-clipboard';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useStore } from '../../../store';
 import { exportToAlbum } from '../../../services/media';
 import { shareImagesWithText, supportsMultiImageShare } from '../../../services/share';
-import { stripMarkdownForXhs, stripMarkdownForXhsTitle } from '../../../utils/xhsText';
+import { stripMarkdownForXhsTitle } from '../../../utils/xhsText';
+import { buildPublishText } from '../../../utils/publishText';
 import {
   clearPublishProgress,
   EMPTY_PROGRESS,
   getPublishProgress,
-  getPublishProgressStage,
   setPublishProgress,
   type PublishProgress,
 } from '../../../services/publishProgress';
-import {
-  AuroraBackground, InlineNav, LiquidCard,
-  SectionLabel, Divider, PhImage, LiquidButton, GlassBackBar } from '../../../components/ui';
+import { AuroraBackground, LiquidCard, Divider, PhImage, GlassBackBar } from '../../../components/ui';
 import { Glass, Brand, Text as TText, Font, Radius, Sys } from '../../../utils/theme';
 import Ionicons from '@expo/vector-icons/Ionicons';
-
-// ─── 步骤行 ─────────────────────────────────────────────────────
-function Step({
-  num, label, done, children,
-}: {
-  num: number; label: string; done?: boolean; children?: React.ReactNode;
-}) {
-  return (
-    <View style={st.wrap}>
-      <View style={[st.numBadge, done && st.numBadgeDone]}>
-        {done
-          ? <Ionicons name="checkmark" size={14} color="#fff" />
-          : <Text style={st.numText}>{num}</Text>
-        }
-      </View>
-      <View style={st.body}>
-        <Text style={[st.label, done && st.labelDone]}>{label}</Text>
-        {children}
-      </View>
-    </View>
-  );
-}
-
-const st = StyleSheet.create({
-  wrap: { flexDirection: 'row', gap: 12, alignItems: 'flex-start', marginBottom: 4 },
-  numBadge: {
-    width: 24, height: 24, borderRadius: 12,
-    backgroundColor: '#e8e8e8',
-    alignItems: 'center', justifyContent: 'center', marginTop: 2,
-  },
-  numBadgeDone: { backgroundColor: Sys.success },
-  numText: { fontSize: 12, fontWeight: '700', color: TText.secondary },
-  body: { flex: 1 },
-  label: { fontSize: Font.body, color: TText.primary, fontWeight: Font.medium, marginBottom: 6 },
-  labelDone: { color: TText.tertiary, textDecorationLine: 'line-through' },
-});
 
 // ─── 主页面 ─────────────────────────────────────────────────────
 export default function PublishDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const noteId = Number(id);
   const notes = useStore((s) => s.notes);
   const items = useStore((s) => s.items);
   const updateNote = useStore((s) => s.updateNote);
   const note = notes.find((n) => n.id === noteId);
   const linkedItemIds: number[] = JSON.parse(note?.itemIds ?? '[]');
-  const linkedItems = items.filter((i) => linkedItemIds.includes(i.id));
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  const linkedItems = linkedItemIds.flatMap((itemId) => {
+    const item = itemById.get(itemId);
+    return item ? [item] : [];
+  });
 
-  const [copiedTitle, setCopiedTitle] = useState(false);
-  const [copiedBody, setCopiedBody] = useState(false);
-  const [copiedFull, setCopiedFull] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [exported, setExported] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [progress, setProgress] = useState<PublishProgress>(EMPTY_PROGRESS);
   // 预览：图片 / 笔记全文
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [notePreview, setNotePreview] = useState(false);
+  const [copyOptionsOpen, setCopyOptionsOpen] = useState(false);
+  const [otherActionsOpen, setOtherActionsOpen] = useState(false);
+  const progressNoteId = useRef<number | null>(null);
+
+  const nextReadyNote = useMemo(() => {
+    const ready = notes
+      .filter((n) => n.status === 'ready' && n.id !== noteId)
+      .sort((a, b) => new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime());
+    return ready[0] ?? null;
+  }, [notes, noteId]);
+
+  useFocusEffect(useCallback(() => {
+    let cancelled = false;
+    const isNewNote = progressNoteId.current !== noteId;
+    progressNoteId.current = noteId;
+    if (isNewNote) {
+      setProgress(EMPTY_PROGRESS);
+      (async () => {
+        const saved = await getPublishProgress(noteId);
+        if (!cancelled) setProgress(saved);
+      })();
+    } else {
+      // Returning from edit may mean the copied text is stale; clear only the copy/share result, keeping album export history.
+      setProgress((current) => ({
+        ...current,
+        copiedTitle: false,
+        copiedBody: false,
+        copiedFull: false,
+        lastShareResult: undefined,
+        shareAttemptAt: undefined,
+      }));
+      void setPublishProgress(noteId, {
+        copiedTitle: false,
+        copiedBody: false,
+        copiedFull: false,
+        lastShareResult: undefined,
+        shareAttemptAt: undefined,
+      }).then((saved) => { if (!cancelled) setProgress(saved); });
+    }
+    return () => { cancelled = true; };
+  }, [noteId]));
 
   if (!note) {
     return (
@@ -93,46 +98,23 @@ export default function PublishDetailScreen() {
   }
 
   const tags: string[] = JSON.parse(note?.tags ?? '[]');
-  // 话题格式：#话题 + 尾随空格（保留末尾空格，便于小红书编辑器识别话题）
-  const tagsText = tags.map((t) => `#${t} `).join('');
-  // 小红书标题是独立输入框：分享/粘贴进正文的内容不含标题
-  // 正文去 Markdown（小红书不识别 **/#/- 等标记）
-  const bodyWithTags = [stripMarkdownForXhs(note?.body ?? ''), tagsText].filter(Boolean).join('\n\n');
+  const { title: shareTitle, bodyWithTags, fullText } = buildPublishText(note.title ?? '', note.body ?? '', tags);
   const albumName = stripMarkdownForXhsTitle(note?.title || '') || '爱吃红薯导出';
   const multiShare = supportsMultiImageShare();
 
-  const nextReadyNote = useMemo(() => {
-    const ready = notes
-      .filter((n) => n.status === 'ready' && n.id !== noteId)
-      .sort((a, b) => new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime());
-    return ready[0] ?? null;
-  }, [notes, noteId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const saved = await getPublishProgress(noteId);
-      if (cancelled) return;
-      setProgress(saved);
-      // 进入本页不默认「已复制」：只有用户点了复制/分享才算
-      setExported(saved.exported);
-    })();
-    return () => { cancelled = true; };
-  }, [noteId]);
-
-  async function copyText(text: string, which: 'title' | 'body') {
+  async function copyText(text: string, which: 'title' | 'body' | 'full') {
     if (!text) { Alert.alert('内容为空', '请先在编辑页补充内容'); return; }
     await Clipboard.setStringAsync(text);
     if (which === 'title') {
-      setCopiedTitle(true);
       const next = await setPublishProgress(noteId, { copiedTitle: true });
       setProgress(next);
     }
     if (which === 'body') {
-      setCopiedBody(true);
-      setCopiedFull(true);
-      const next = await setPublishProgress(noteId, { copiedBody: true, copiedFull: true });
+      const next = await setPublishProgress(noteId, { copiedBody: true });
       setProgress(next);
+    }
+    if (which === 'full') {
+      setProgress(await setPublishProgress(noteId, { copiedFull: true }));
     }
   }
 
@@ -141,7 +123,6 @@ export default function PublishDetailScreen() {
     setExporting(true);
     try {
       await exportToAlbum(linkedItems.map((i) => i.imagePath), albumName);
-      setExported(true);
       const next = await setPublishProgress(noteId, { exported: true, exportedAt: new Date().toISOString() });
       setProgress(next);
       Alert.alert('导出成功 ✓', `${linkedItems.length} 张图片已保存到相册「${albumName}」`);
@@ -178,9 +159,8 @@ export default function PublishDetailScreen() {
   }
 
   /**
-   * 主链路：系统分享面板一次带出关联图片 + 正文文案（与相册「分享」同款）。
-   * 正文不含标题（小红书标题是独立输入框），话题跟在正文末尾。
-   * 分享前自动把正文+话题写入剪贴板，供小红书未接收文案时粘贴兜底。
+   * 主链路：关联图片 + 标题、正文、话题；分享前复制完整文案兜底。
+   * title 仅是系统元信息，接收端可能忽略，因此 message 内也包含标题。
    */
   async function handleShare() {
     if (linkedItems.length === 0) {
@@ -188,55 +168,128 @@ export default function PublishDetailScreen() {
       return;
     }
     setSharing(true);
+    const attemptedAt = new Date().toISOString();
     try {
-      if (bodyWithTags) {
-        await Clipboard.setStringAsync(bodyWithTags);
-        setCopiedBody(true);
-        setCopiedFull(true);
+      setProgress(await setPublishProgress(noteId, {
+        shareAttemptAt: attemptedAt,
+        lastShareResult: 'preparing',
+      }));
+      if (fullText) {
+        await Clipboard.setStringAsync(fullText);
         const next = await setPublishProgress(noteId, {
-          copiedBody: true,
           copiedFull: true,
         });
         setProgress(next);
       }
-      await shareImagesWithText(
+      // fallback 分享面板只接收首图；先明确保存整组图片，保存失败时不要继续给出误导性分享。
+      if (!multiShare && linkedItems.length > 1) {
+        await exportToAlbum(linkedItems.map((i) => i.imagePath), albumName);
+        const next = await setPublishProgress(noteId, {
+          exported: true,
+          exportedAt: attemptedAt,
+        });
+        setProgress(next);
+      }
+      const outcome = await shareImagesWithText(
         linkedItems.map((i) => i.imagePath),
         {
-          message: bodyWithTags || undefined,
-          title: note!.title || undefined,
+          message: fullText || undefined,
+          title: shareTitle || undefined,
           albumName: linkedItems.length > 1 ? albumName : undefined,
+          skipFallbackExport: true,
         },
       );
+      setProgress(await setPublishProgress(noteId, {
+        shareAttemptAt: attemptedAt,
+        lastShareResult: outcome,
+      }));
     } catch (e: any) {
-      Alert.alert('分享失败', e?.message ?? String(e));
+      setProgress(await setPublishProgress(noteId, {
+        shareAttemptAt: attemptedAt,
+        lastShareResult: 'failed',
+      }));
+      Alert.alert('分享未完成', `${e?.message ?? String(e)}\n\n可在“其他操作”中先导出图片，再单独打开小红书。`);
     } finally {
       setSharing(false);
     }
   }
 
   async function handleMarkDone() {
-    await updateNote(noteId, { status: 'published' });
-    await clearPublishProgress(noteId);
-    Alert.alert('已发布 ✓', '笔记已标记为发布完成', [{ text: '好', onPress: () => router.back() }]);
+    try {
+      // This explicit user action is the only path that records publication.
+      await updateNote(noteId, { status: 'published' });
+      await clearPublishProgress(noteId);
+      Alert.alert('发布结果已记录', '这篇笔记已标记为已发布。', [{ text: '好', onPress: () => router.back() }]);
+    } catch (e: any) {
+      Alert.alert('记录失败', e?.message ?? '请重试');
+    }
   }
-
-  // 判断步骤完成状态
-  const step1Done = copiedTitle && (copiedBody || copiedFull);
-  const step2Done = exported || linkedItems.length === 0;
 
   return (
     <AuroraBackground style={{ flex: 1 }}>
-      <GlassBackBar title="发布准备" backLabel="返回" onBack={() => router.back()} />
+      <GlassBackBar
+        title="发布准备"
+        backLabel="返回"
+        onBack={() => router.back()}
+        right={(
+          <TouchableOpacity onPress={() => router.push(`/(tabs)/create/edit/${noteId}`)} style={styles.editLink}>
+            <Ionicons name="create-outline" size={15} color={Brand.red} />
+            <Text style={styles.editLinkText}>返回编辑</Text>
+          </TouchableOpacity>
+        )}
+      />
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
-        {/* 关联图片横滚 */}
+      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        {/* 内容预览卡 */}
+        <LiquidCard style={{ gap: 10, marginBottom: 20 }}>
+          <Text style={styles.previewTitle} numberOfLines={2}>{shareTitle || '（无标题）'}</Text>
+          <Divider />
+          <Text style={styles.previewBody} numberOfLines={4}>
+            {bodyWithTags || '（无正文）'}
+          </Text>
+          <View style={styles.contentActionRow}>
+            <TouchableOpacity onPress={() => setNotePreview(true)} style={styles.previewLink}>
+              <Ionicons name="document-text-outline" size={14} color={Brand.red} />
+              <Text style={styles.previewLinkText}>查看完整文案</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.copyBtnFull, progress.copiedFull && styles.copyBtnFullDone]} onPress={() => copyText(fullText, 'full')}>
+              <Ionicons name={progress.copiedFull ? 'checkmark' : 'copy-outline'} size={15} color={progress.copiedFull ? '#fff' : Brand.red} />
+              <Text style={[styles.copyBtnFullText, progress.copiedFull && styles.copyBtnFullTextDone]}>{progress.copiedFull ? '已复制完整文案' : '复制完整文案'}</Text>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity onPress={() => setCopyOptionsOpen((open) => !open)} style={styles.secondaryToggle}>
+            <Text style={styles.secondaryToggleText}>{copyOptionsOpen ? '收起分项复制' : '分别复制标题或正文'}</Text>
+            <Ionicons name={copyOptionsOpen ? 'chevron-up' : 'chevron-down'} size={14} color={TText.tertiary} />
+          </TouchableOpacity>
+          {copyOptionsOpen && (
+            <View style={styles.copyOptions}>
+              <TouchableOpacity style={styles.copyOption} onPress={() => copyText(shareTitle, 'title')}>
+                <Text style={styles.copyOptionText}>{progress.copiedTitle ? '标题已复制' : '复制标题'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.copyOption} onPress={() => copyText(bodyWithTags, 'body')}>
+                <Text style={styles.copyOptionText}>{progress.copiedBody ? '正文已复制' : '复制正文和话题'}</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </LiquidCard>
+
+        {/* 先预览标题和正文，再按 note.itemIds 保存顺序核对图片/封面 */}
         {linkedItems.length > 0 && (
           <View style={{ marginBottom: 16 }}>
+            <View style={styles.imageHeader}>
+              <Text style={styles.imageHeaderText}>发布图片顺序</Text>
+              <Text style={styles.imageCount}>共 {linkedItems.length} 张</Text>
+            </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               <View style={styles.imgRow}>
                 {linkedItems.map((item, i) => (
                   <Pressable key={item.id} onPress={() => setPreviewIndex(i)}>
                     <PhImage uri={item.imagePath} style={styles.thumb} />
+                    {i === 0 && (
+                      <View style={styles.coverBadge}>
+                        <Text style={styles.coverBadgeText}>封面</Text>
+                      </View>
+                    )}
                     <View style={styles.thumbNum}>
                       <Text style={styles.thumbNumText}>{i + 1}</Text>
                     </View>
@@ -251,136 +304,23 @@ export default function PublishDetailScreen() {
           </View>
         )}
 
-        {/* 内容预览卡 */}
-        <LiquidCard style={{ gap: 10, marginBottom: 20 }}>
-          <View style={styles.previewTitleRow}>
-            <Text style={styles.previewTitle} numberOfLines={2}>{note.title || '（无标题）'}</Text>
-            <TouchableOpacity
-              style={[styles.copyBtn, copiedTitle && styles.copyBtnDone]}
-              onPress={() => copyText(note.title ?? '', 'title')}
-            >
-              <Ionicons name={copiedTitle ? 'checkmark' : 'copy-outline'} size={14} color={copiedTitle ? '#fff' : TText.secondary} />
-              <Text style={[styles.copyBtnText, copiedTitle && styles.copyBtnTextDone]}>
-                {copiedTitle ? '已复制' : '复制'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-          <Divider />
-          <View style={styles.previewBodyRow}>
-            <Text style={[styles.previewBody, { flex: 1 }]} numberOfLines={6}>
-              {stripMarkdownForXhs(note.body ?? '') || '（无正文）'}
-            </Text>
-            <TouchableOpacity
-              style={[styles.copyBtn, copiedBody && styles.copyBtnDone]}
-              onPress={() => copyText(bodyWithTags, 'body')}
-            >
-              <Ionicons name={copiedBody ? 'checkmark' : 'copy-outline'} size={14} color={copiedBody ? '#fff' : TText.secondary} />
-              <Text style={[styles.copyBtnText, copiedBody && styles.copyBtnTextDone]}>
-                {copiedBody ? '已复制' : '复制'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-          {tags.length > 0 && (
-            <View style={styles.tagRow}>
-              {tags.map((t) => (
-                <View key={t} style={styles.tag}>
-                  <Text style={styles.tagText}>#{t}</Text>
-                </View>
-              ))}
-            </View>
-          )}
-          <Text style={styles.copyHint}>标题贴到小红书标题栏；正文+话题贴到正文栏</Text>
-          <TouchableOpacity onPress={() => setNotePreview(true)} style={styles.previewLink}>
-            <Ionicons name="document-text-outline" size={14} color={Brand.red} />
-            <Text style={styles.previewLinkText}>预览笔记全文</Text>
-          </TouchableOpacity>
-        </LiquidCard>
-
-        {/* 主链路：系统分享面板带图+文案 */}
-        <SectionLabel style={{ marginBottom: 12 }}>一键分享</SectionLabel>
-        <TouchableOpacity
-          style={[styles.shareMainBtn, sharing && styles.shareMainBtnBusy]}
-          onPress={handleShare}
-          disabled={sharing}
-        >
-          {sharing
-            ? <ActivityIndicator size="small" color="#fff" />
-            : <Ionicons name="share-outline" size={18} color="#fff" />
-          }
-          <Text style={styles.shareMainBtnText}>
-            {sharing
-              ? '唤起分享中…'
-              : linkedItems.length > 0
-                ? `分享 ${linkedItems.length} 张图到小红书`
-                : '分享到小红书'}
-          </Text>
+        <TouchableOpacity onPress={() => setOtherActionsOpen((open) => !open)} style={styles.moreActionsToggle}>
+          <Text style={styles.moreActionsTitle}>其他操作</Text>
+          <Ionicons name={otherActionsOpen ? 'chevron-up' : 'chevron-down'} size={16} color={TText.tertiary} />
         </TouchableOpacity>
-        <Text style={styles.shareMainHint}>
-          {multiShare
-            ? '一次带出全部图片与正文（含话题），在面板中选小红书；标题是小红书独立输入框，点上方「复制」后粘贴'
-            : linkedItems.length > 1
-              ? `当前环境不支持一次分享多图：会把 ${linkedItems.length} 张图存入相册「${albumName}」，分享面板带文案+首图；到小红书选图时选该相册即可补齐多图`
-              : '图片与正文（含话题）进分享面板，在面板中选小红书；标题是小红书独立输入框，点上方「复制」后粘贴'}
-        </Text>
-
-        {/* 步骤引导 */}
-        <SectionLabel style={{ marginBottom: 12 }}>发布步骤</SectionLabel>
-
-        <LiquidCard style={{ marginBottom: 12 }}>
-          <View style={styles.progressRow}>
-            <Text style={styles.progressLabel}>当前进度</Text>
-            <Text style={styles.progressValue}>
-              {getPublishProgressStage(progress) === 'none'
-                ? '未开始'
-                : getPublishProgressStage(progress) === 'copied'
-                  ? '已复制文案'
-                  : '已导出图片'}
-            </Text>
-          </View>
-          {progress.exportedAt ? (
-            <Text style={styles.progressTime}>上次导图：{progress.exportedAt.slice(0, 16).replace('T', ' ')}</Text>
-          ) : null}
-        </LiquidCard>
-
-        <LiquidCard style={{ gap: 16, marginBottom: 12 }}>
-          <Step num={1} label="文案到剪贴板" done={step1Done}>
-            <Text style={styles.stepHint}>点「分享」会自动复制正文+话题（不含标题）；标题请点上方「复制」，贴到小红书标题栏</Text>
-          </Step>
-
-          <View style={styles.stepDivider} />
-
-          <Step num={2} label={linkedItems.length > 0 ? `备用：导出 ${linkedItems.length} 张图片到相册` : '无需导出图片'} done={step2Done}>
-            {linkedItems.length > 0 && (
-              <TouchableOpacity
-                style={[styles.stepBtn, exported && styles.stepBtnDone]}
-                onPress={handleExportAlbum}
-                disabled={exporting || exported}
-              >
-                {exporting
-                  ? <ActivityIndicator size="small" color={Brand.red} />
-                  : <Ionicons name={exported ? 'checkmark-circle' : 'download-outline'} size={16} color={exported ? Sys.success : Brand.red} />
-                }
-                <Text style={[styles.stepBtnText, exported && { color: Sys.success }]}>
-                  {exporting ? '导出中…' : exported ? '已导出到相册' : '导出图片到相册'}
-                </Text>
-              </TouchableOpacity>
-            )}
-          </Step>
-
-          <View style={styles.stepDivider} />
-
-          <Step num={3} label="打开小红书">
-            <TouchableOpacity style={[styles.stepBtn, styles.stepBtnRed]} onPress={handleOpenXHS}>
-              <Ionicons name="open-outline" size={16} color="#fff" />
-              <Text style={[styles.stepBtnText, { color: '#fff' }]}>打开小红书</Text>
+        {otherActionsOpen && (
+          <LiquidCard style={styles.otherActions}>
+            <TouchableOpacity style={styles.otherAction} onPress={handleExportAlbum} disabled={exporting || progress.exported}>
+              {exporting ? <ActivityIndicator size="small" color={Brand.red} /> : <Ionicons name={progress.exported ? 'checkmark-circle' : 'download-outline'} size={17} color={progress.exported ? Sys.success : Brand.red} />}
+              <Text style={[styles.otherActionText, progress.exported && { color: Sys.success }]}>{progress.exported ? '图片已保存到相册' : '单独导出图片到相册'}</Text>
             </TouchableOpacity>
-          </Step>
-        </LiquidCard>
-
-        {/* 发布完成 */}
-        <TouchableOpacity style={styles.archiveBtn} onPress={handleMarkDone}>
-          <Text style={styles.archiveBtnText}>发布完成</Text>
-        </TouchableOpacity>
+            <TouchableOpacity style={styles.otherAction} onPress={handleOpenXHS}>
+              <Ionicons name="open-outline" size={17} color={Brand.red} />
+              <Text style={styles.otherActionText}>单独打开小红书</Text>
+            </TouchableOpacity>
+            {progress.exportedAt && <Text style={styles.progressTime}>上次保存：{progress.exportedAt.slice(0, 16).replace('T', ' ')}</Text>}
+          </LiquidCard>
+        )}
 
         {nextReadyNote && (
           <TouchableOpacity
@@ -392,6 +332,56 @@ export default function PublishDetailScreen() {
           </TouchableOpacity>
         )}
       </ScrollView>
+
+      <View style={[styles.bottomDock, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+        {linkedItems.length === 0 ? (
+          <Text style={styles.shareMainHint}>这篇笔记还没有关联图片，请返回编辑添加图片后再分享。</Text>
+        ) : !multiShare && linkedItems.length > 1 ? (
+          <Text style={styles.shareMainHint}>
+            将先保存全部 {linkedItems.length} 张图片；分享面板只带封面和文案。进入小红书后，请从系统相册补选其余 {linkedItems.length - 1} 张。
+          </Text>
+        ) : (
+          <Text style={styles.shareMainHint}>
+            {multiShare && linkedItems.length > 1
+              ? `分享面板会带出全部 ${linkedItems.length} 张图片和文案；选择小红书后继续完成编辑与发布。`
+              : '分享面板会带出图片和完整文案；选择小红书后继续完成编辑与发布。'}
+          </Text>
+        )}
+        {progress.lastShareResult && (
+          <View style={styles.shareResult}>
+            <Text style={styles.shareResultText}>
+              {progress.lastShareResult === 'shared'
+                ? '已从系统分享面板返回；这不代表小红书已发布。发布成功后，可点击下方按钮记录。'
+                : progress.lastShareResult === 'dismissed'
+                  ? '已取消分享，文案仍在剪贴板，笔记保持待发布。'
+                  : progress.lastShareResult === 'preparing'
+                    ? '正在准备系统分享面板；笔记仍处于待发布。'
+                    : '分享未完成，笔记仍处于待发布。'}
+            </Text>
+          </View>
+        )}
+        <TouchableOpacity onPress={handleMarkDone} style={styles.publishConfirmLink}>
+          <Text style={styles.publishConfirmText}>我已在小红书完成发布</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.shareMainBtn, sharing && styles.shareMainBtnBusy]}
+          onPress={handleShare}
+          disabled={sharing || linkedItems.length === 0}
+        >
+          {sharing ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="share-outline" size={18} color="#fff" />}
+          <Text style={styles.shareMainBtnText}>
+            {sharing
+              ? '准备分享…'
+              : linkedItems.length === 0
+                ? '请先关联图片'
+              : multiShare
+                ? `分享 ${linkedItems.length} 张图和文案`
+                : linkedItems.length > 1
+                  ? `保存 ${linkedItems.length} 张，分享封面和文案`
+                  : '分享图片和文案'}
+          </Text>
+        </TouchableOpacity>
+      </View>
 
       {/* 图片预览：左右滑动切换 */}
       <Modal visible={previewIndex !== null} transparent animationType="fade">
@@ -447,13 +437,8 @@ export default function PublishDetailScreen() {
             </TouchableOpacity>
           </View>
           <ScrollView style={styles.previewModalNote}>
-            <Text style={styles.previewModalNoteTitle}>{note.title || '（无标题）'}</Text>
-            <Text style={styles.previewModalNoteBody}>{stripMarkdownForXhs(note.body ?? '') || '（无正文）'}</Text>
-            {tags.length > 0 && (
-              <Text style={[styles.previewModalNoteBody, { marginTop: 16, color: '#FF6B81' }]}>
-                {tags.map((t) => `#${t}`).join(' ')}
-              </Text>
-            )}
+            <Text style={styles.previewModalNoteTitle}>{shareTitle || '（无标题）'}</Text>
+            <Text style={styles.previewModalNoteBody}>{bodyWithTags || '（无正文）'}</Text>
           </ScrollView>
         </View>
       </Modal>
@@ -462,7 +447,12 @@ export default function PublishDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: 16, paddingBottom: 80 },
+  content: { padding: 16, paddingBottom: 24 },
+  editLink: { flexDirection: 'row', gap: 3, alignItems: 'center', paddingHorizontal: 8, paddingVertical: 8 },
+  editLinkText: { fontSize: Font.footnote, color: Brand.red, fontWeight: Font.medium },
+  imageHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, paddingHorizontal: 4 },
+  imageHeaderText: { fontSize: Font.footnote, color: TText.secondary, fontWeight: Font.medium },
+  imageCount: { fontSize: Font.caption, color: TText.tertiary },
   imgRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 4 },
   thumb: { width: 90, height: 90, borderRadius: Radius.lg } as any,
   thumbNum: {
@@ -471,21 +461,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5, paddingVertical: 1,
   },
   thumbNumText: { color: '#fff', fontSize: 10, fontWeight: '700' },
+  coverBadge: { position: 'absolute', left: 4, bottom: 4, backgroundColor: Brand.red, borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2 },
+  coverBadgeText: { color: '#fff', fontSize: 10, fontWeight: '700' },
 
-  previewTitleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   previewTitle: { flex: 1, fontSize: Font.title3, fontWeight: Font.bold, color: TText.primary },
-  copyBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 8, paddingVertical: 4, borderRadius: Radius.pill,
-    backgroundColor: '#f0f0f0',
-  },
-  copyBtnDone: { backgroundColor: Sys.success },
-  copyBtnText: { fontSize: Font.caption, color: TText.secondary },
-  copyBtnTextDone: { color: '#fff' },
-
   previewBody: { fontSize: Font.body, color: TText.secondary, lineHeight: 24 },
-  previewBodyRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  copyHint: { fontSize: Font.caption, color: TText.tertiary },
   tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
   tag: {
     backgroundColor: Brand.redSoft, borderRadius: Radius.pill,
@@ -494,18 +474,22 @@ const styles = StyleSheet.create({
   },
   tagText: { color: Brand.red, fontSize: Font.caption, fontWeight: Font.medium },
 
-  copyBtnRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
   copyBtnFull: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 5, paddingVertical: 9, borderRadius: Radius.md,
     borderWidth: 1, borderColor: Brand.red,
   },
-  copyBtnFullPrimary: { backgroundColor: Brand.red },
   copyBtnFullDone: { backgroundColor: Sys.success, borderColor: Sys.success },
   copyBtnFullText: { fontSize: Font.footnote, color: Brand.red, fontWeight: Font.medium },
+  copyBtnFullTextDone: { color: '#fff' },
+  contentActionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
+  tagCount: { fontSize: Font.caption, color: TText.tertiary, alignSelf: 'center' },
+  secondaryToggle: { flexDirection: 'row', gap: 4, alignItems: 'center', alignSelf: 'flex-start', paddingTop: 2 },
+  secondaryToggleText: { fontSize: Font.caption, color: TText.tertiary },
+  copyOptions: { flexDirection: 'row', gap: 8, marginTop: 2 },
+  copyOption: { borderRadius: Radius.pill, backgroundColor: '#f5f5f5', paddingHorizontal: 12, paddingVertical: 7 },
+  copyOptionText: { fontSize: Font.caption, color: TText.secondary },
 
-  stepDivider: { height: StyleSheet.hairlineWidth, backgroundColor: Glass.borderSubtle },
-  stepHint: { fontSize: Font.caption, color: TText.tertiary, lineHeight: 18 },
   shareMainBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     paddingVertical: 14, borderRadius: Radius.md,
@@ -513,31 +497,17 @@ const styles = StyleSheet.create({
   },
   shareMainBtnBusy: { opacity: 0.75 },
   shareMainBtnText: { fontSize: Font.body, color: '#fff', fontWeight: Font.semibold },
-  shareMainHint: {
-    marginTop: 8, marginBottom: 20,
-    fontSize: Font.caption, color: TText.tertiary, lineHeight: 18,
-  },
-  stepBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    alignSelf: 'flex-start',
-    paddingVertical: 7, paddingHorizontal: 12,
-    borderRadius: Radius.pill,
-    borderWidth: 1, borderColor: Brand.red,
-  },
-  stepBtnDone: { borderColor: Sys.success },
-  stepBtnRed: { backgroundColor: Brand.red, borderColor: Brand.red },
-  stepBtnText: { fontSize: Font.footnote, color: Brand.red, fontWeight: Font.medium },
-
-  archiveBtn: {
-    alignItems: 'center', paddingVertical: 14,
-    borderRadius: Radius.md,
-    borderWidth: 2, borderColor: '#F59E0B',
-    backgroundColor: '#FFFBEB',
-  },
-  archiveBtnText: {
-    fontSize: Font.body, fontWeight: Font.semibold,
-    color: '#B45309',
-  },
+  shareMainHint: { fontSize: Font.caption, color: TText.tertiary, lineHeight: 18 },
+  moreActionsToggle: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14 },
+  moreActionsTitle: { fontSize: Font.footnote, color: TText.secondary, fontWeight: Font.medium },
+  otherActions: { gap: 12, marginBottom: 14 },
+  otherAction: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
+  otherActionText: { fontSize: Font.footnote, color: Brand.red },
+  bottomDock: { gap: 10, paddingHorizontal: 16, paddingTop: 12, backgroundColor: 'rgba(255,255,255,0.94)', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Glass.borderSubtle },
+  shareResult: { gap: 6, padding: 10, borderRadius: Radius.md, backgroundColor: Brand.redSoft },
+  shareResultText: { fontSize: Font.caption, color: TText.secondary, lineHeight: 17 },
+  publishConfirmLink: { alignSelf: 'flex-start', paddingVertical: 2 },
+  publishConfirmText: { fontSize: Font.footnote, color: Brand.red, fontWeight: Font.semibold },
 
   previewLink: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
@@ -570,9 +540,6 @@ const styles = StyleSheet.create({
   },
   previewNavText: { color: '#fff', fontSize: Font.subheadline, fontWeight: Font.medium },
 
-  progressRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  progressLabel: { fontSize: Font.footnote, color: TText.tertiary },
-  progressValue: { fontSize: Font.subheadline, color: Brand.red, fontWeight: Font.semibold },
   progressTime: { marginTop: 6, fontSize: Font.caption, color: TText.tertiary },
 
   nextBtn: {

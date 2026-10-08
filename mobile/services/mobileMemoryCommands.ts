@@ -1,3 +1,4 @@
+import { readMobileSystemRulesSnapshot } from './writingRules';
 import { DeviceEventEmitter } from 'react-native';
 import {
   createMemoryEntry,
@@ -271,6 +272,9 @@ export async function processNextPcMemoryCommand(): Promise<void> {
   let result: PcHarnessMemoryCommandResult;
   if (command.accountId !== config.accountId) {
     result = { success: false, cacheSynced: false, message: '配对账号与命令账号不一致' };
+  } else if (command.operation === 'readSystemRules') {
+    // Read-only: no database writes, cache sync, or memory-changed event.
+    result = { success: true, cacheSynced: false, systemRules: readMobileSystemRulesSnapshot(command.accountId) };
   } else {
     try {
       const addedExampleCount = await applyCommand(command, config);
