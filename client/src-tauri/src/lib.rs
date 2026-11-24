@@ -1,10 +1,15 @@
 mod ai_settings;
+#[cfg(unix)]
+mod browser_capture;
+#[cfg(not(unix))]
+#[path = "browser_capture_unsupported.rs"]
 mod browser_capture;
 mod browser_worker;
 mod cli_models;
 mod collection_images;
 pub use aichihongshu_db as db;
 mod model_api;
+#[cfg(unix)]
 mod native_host;
 mod pc_harness;
 
@@ -1512,8 +1517,15 @@ fn test_browser_capture_link() -> Result<Vec<(String, bool, String)>, String> {
 
 /// 浏览器剪藏链路状态（扩展版本 / 协议版本 / 宿主安装情况）。
 #[tauri::command]
-fn browser_capture_status() -> browser_capture::BrowserCaptureStatus {
-    browser_capture::status()
+fn browser_capture_status() -> Result<browser_capture::BrowserCaptureStatus, String> {
+    #[cfg(unix)]
+    {
+        Ok(browser_capture::status())
+    }
+    #[cfg(not(unix))]
+    {
+        browser_capture::status()
+    }
 }
 
 /// 打开浏览器扩展管理页（Chrome / Edge 分流）。
@@ -2302,7 +2314,15 @@ pub fn run() {
 
 /// Entry used by Chrome/Edge to launch this executable as the Native Messaging host.
 pub fn run_native_messaging_host() -> i32 {
-    native_host::run()
+    #[cfg(unix)]
+    {
+        native_host::run()
+    }
+    #[cfg(not(unix))]
+    {
+        eprintln!("浏览器扩展采集暂不支持此操作系统");
+        1
+    }
 }
 
 #[cfg(debug_assertions)]

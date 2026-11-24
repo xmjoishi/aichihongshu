@@ -236,7 +236,7 @@ export default function EditNoteScreen() {
   }
   const aiBusy = loadingAll || loadingTitle || loadingBody || loadingTags;
   const [aiDrawerExpanded, setAiDrawerExpanded] = useState(false);
-  const aiPromptInputRef = useRef<TextInput>(null);
+  const aiPromptInputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
   // 拖动排序共享值：让其他图实时让位
   const dragFromSV = useSharedValue(-1);
   const dragToSV = useSharedValue(-1);

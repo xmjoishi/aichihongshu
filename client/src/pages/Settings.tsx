@@ -144,6 +144,7 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
   const [busy, setBusy] = useState<string | null>(null);
   const [installResult, setInstallResult] = useState<string | null>(null);
   const [status, setStatus] = useState<BrowserCaptureStatus | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [linkHops, setLinkHops] = useState<Array<[string, boolean, string]> | null>(null);
   const [testing, setTesting] = useState(false);
   const [communicationCheck, setCommunicationCheck] = useState<"idle" | "waiting" | "passed" | "failed">("idle");
@@ -154,9 +155,11 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
     try {
       const next = await browserCaptureStatus();
       setStatus(next);
+      setStatusError(null);
       return next;
-    } catch {
+    } catch (error) {
       setStatus(null);
+      setStatusError(browserCaptureErrorMessage(error));
       return null;
     }
   };
@@ -276,6 +279,10 @@ function BrowserCaptureSection({ standalone = false }: { standalone?: boolean })
     } catch (error) {
       toast(`复制失败：${(error as Error).message}`, "error");
     }
+  }
+
+  if (statusError) {
+    return <Section title="浏览器插件"><p role="status">{statusError}</p></Section>;
   }
 
   return (

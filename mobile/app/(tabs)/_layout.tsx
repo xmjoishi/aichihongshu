@@ -94,11 +94,13 @@ function TabItem({ isFocused, label, onPress, color, renderIcon }: TabItemProps)
 function FloatingTabBar({
   state,
   descriptors,
-  navigation,
+  emitter,
+  navigateToTab,
 }: {
   state: any;
   descriptors: any;
-  navigation: any;
+  emitter: any;
+  navigateToTab: (routeKey: string) => void;
 }) {
   const insets = useSafeAreaInsets();
   const [pillWidth, setPillWidth] = useState(0);
@@ -167,13 +169,13 @@ function FloatingTabBar({
               const color = isFocused ? '#ffffff' : '#18181b';
 
               const onPress = () => {
-                const event = navigation.emit({
+                const event = emitter.emit({
                   type: 'tabPress',
                   target: route.key,
                   canPreventDefault: true,
                 });
                 if (!isFocused && !event.defaultPrevented) {
-                  navigation.navigate(route.name, route.params as object);
+                  navigateToTab(route.key);
                 }
               };
 

@@ -6,7 +6,7 @@
 - iOS 模拟器运行
 - iOS 真机部署（Development Build）
 
-> 当前项目基于 `Expo SDK 56`（`expo ~56.0.4`）。
+> 当前项目基于 `Expo SDK 58`（`expo ~58.0.23`）。
 > 建议优先使用 **Dev Client**，不要依赖旧版 Expo Go。
 > 本项目移动端开发、联调、截图统一使用 **`iPhone 16 Pro iOS 26.5`**，不要混用 `iOS 18.x` 模拟器。
 
@@ -46,7 +46,7 @@ pnpm exec expo start --clear
 - Expo Go：扫码或手动输入 `exp://<本机IP>:8081`
 - Dev Client：运行后连接 `http://localhost:8081`
 
-> 若提示 "Project is incompatible with this version of Expo Go"，是 Expo Go 版本不支持 SDK 56。请走第 5 节真机 Dev Client。
+> 若提示 "Project is incompatible with this version of Expo Go"，请确认 Expo Go 支持项目使用的 SDK 58；也可参考第 5 节使用真机 Dev Client。
 
 ### 2.3 固定使用 iOS 26.5 模拟器
 

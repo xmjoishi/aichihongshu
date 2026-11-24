@@ -5,6 +5,9 @@
 moz*-image.png
 /node_modules/
 
+# 本地开发启动配置、WebView2 数据和排查产物
+/.tmp/
+
 # 原始抓取数据（体积大、含用户信息）
 data/crawl/
 data/analysis/
@@ -41,6 +44,11 @@ venv/
 dist/
 build/
 *.egg-info/
+/pip-build-tracker-*/
+/pip-ephem-wheel-cache-*/
+/pip-install-*/
+/pip-metadata-*/
+/pip-unpack-*/
 
 # 日志
 *.log

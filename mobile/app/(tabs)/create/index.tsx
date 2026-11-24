@@ -217,7 +217,7 @@ function Dropdown<T extends string>({
   options: { value: T; label: string }[];
   value: T; onChange: (v: T) => void;
   active: boolean;
-  triggerRef: React.RefObject<View | null>;
+  triggerRef: React.RefObject<React.ComponentRef<typeof View> | null>;
   visible: boolean; onClose: () => void;
 }) {
   const [pos, setPos] = useState({ x: 0, y: 0, w: 0 });
@@ -279,7 +279,7 @@ function FilterBar({
   counts: Record<StatusFilter, number>;
 }) {
   const [showSort, setShowSort] = useState(false);
-  const sortRef = useRefReact<View>(null);
+  const sortRef = useRefReact<React.ComponentRef<typeof View>>(null);
 
   const statusOptions: { value: StatusFilter; label: string }[] = [
     { value: 'all', label: '全部' },
@@ -418,7 +418,7 @@ export default function CreateScreen() {
 
   // 搜索框展开动画（宽度 0→1）
   const searchAnim = useRefReact(new Animated.Value(0)).current;
-  const inputRef = useRefReact<TextInput>(null);
+  const inputRef = useRefReact<React.ComponentRef<typeof TextInput>>(null);
 
   useEffect(() => {
     Animated.timing(searchAnim, {

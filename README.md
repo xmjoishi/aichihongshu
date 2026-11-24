@@ -53,6 +53,8 @@ npm run tauri
 
 Tauri 桌面通过 Rust commands 访问本地服务，无需启动兼容 HTTP 服务。
 
+Windows 的 PowerShell 启动命令、端口占用与 WebView2 排查见 [Windows 桌面启动手册](./docs/开发参考/Windows桌面启动手册.md)。
+
 ### 浏览器 Web 开发模式
 
 ```bash

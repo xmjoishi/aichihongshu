@@ -12,7 +12,7 @@ import {
   Animated,
   ActivityIndicator,
   Platform,
-  type ViewToken,
+  type ListViewToken,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useRef, useCallback, useEffect, useState } from 'react';
@@ -239,7 +239,7 @@ export default function LibraryScreen() {
   const loadAssetsRef = useRef<((reset?: boolean) => Promise<void>) | null>(null);
   const [visibleAssetIds, setVisibleAssetIds] = useState<Set<string>>(new Set());
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current;
-  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
+  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ListViewToken[] }) => {
     const next = new Set(viewableItems.flatMap((token) => {
       const item = token.item as ListItem | undefined;
       return item?.type === 'asset' ? [item.asset.id] : [];
@@ -592,10 +592,10 @@ export default function LibraryScreen() {
                   当前权限范围内没有可显示的照片
                 </Text>
               </View>
-            ) : null
+            ) : undefined
           }
           ListFooterComponent={
-            hasNextPage ? <ActivityIndicator color={Brand.red} style={{ marginVertical: 16 }} /> : null
+            hasNextPage ? <ActivityIndicator color={Brand.red} style={{ marginVertical: 16 }} /> : undefined
           }
         />
       )}
